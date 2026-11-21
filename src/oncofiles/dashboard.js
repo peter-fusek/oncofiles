@@ -1067,6 +1067,31 @@
       auth_failed: ['overenie odosielateľa neprešlo', 'sender check failed']
     };
 
+    // Google caps an unverified OAuth client at 100 users: warn from 80 on,
+    // by shape (diamond vs. disc) and by text, never by colour alone.
+    var OAUTH_USERS_WARN = 80;
+
+    function renderOauthUsers(data) {
+      var line = document.getElementById('oauth-users-line');
+      if (!line || !data) return;
+      clearEl(line);
+      var n = Number(data.google_oauth_users) || 0;
+      var cap = Number(data.cap) || 100;
+      var warn = n >= OAUTH_USERS_WARN;
+      line.className = 'curated-ops-note oauth-users-line' + (warn ? ' is-warn' : '');
+      var mark = document.createElement('span');
+      mark.className = 'state-mark ' + (warn ? 'attention' : 'ready');
+      mark.setAttribute('aria-hidden', 'true');
+      line.appendChild(mark);
+      var text = document.createElement('span');
+      setI18n(text,
+        'Používatelia Google OAuth: ' + n + ' / ' + cap +
+          (warn ? ' (pozor: blíži sa limit Googlu pre neoverenú aplikáciu)' : ''),
+        'Google OAuth users: ' + n + ' / ' + cap +
+          (warn ? ' (warning: approaching Google’s unverified-app cap)' : ''));
+      line.appendChild(text);
+    }
+
     function renderInboundUnmatched(data) {
       var totalsEl = document.getElementById('inbound-admin-totals');
       var body = document.getElementById('inbound-admin-body');
@@ -4473,6 +4498,11 @@
         if (key === 'inbound') {
           var unmatched = await apiFetch('/api/inbound-unmatched');
           if (unmatched) renderInboundUnmatched(unmatched);
+          return;
+        }
+        if (key === 'oauth') {
+          var oauthUsers = await apiFetch('/api/admin/oauth-users');
+          if (oauthUsers) renderOauthUsers(oauthUsers);
           return;
         }
         if (key === 'schedules') {

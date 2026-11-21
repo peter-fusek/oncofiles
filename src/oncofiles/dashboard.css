@@ -1078,6 +1078,8 @@
 
     /* #573 curated operations panel */
     .curated-ops-note { color: var(--text-muted); font-size: 0.8125rem; margin: 0 0 0.75rem; }
+    .oauth-users-line { display: flex; align-items: center; gap: 0.5rem; color: var(--ink); font-size: 0.9375rem; }
+    .oauth-users-line.is-warn { font-weight: 600; }
     .curated-ops-card { border: 1px solid var(--border); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
     .curated-ops-card h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
     .curated-ops-meta { color: var(--text-muted); font-size: 0.8125rem; margin-bottom: 0.5rem; overflow-wrap: anywhere; }

@@ -563,3 +563,42 @@ def test_trial_script_reads_public_config_and_gates_mail_on_open_and_inbound():
     trial = script[script.index("function applyTrialConfig") :]
     assert "a.textContent = addr;" in trial and "innerHTML" not in trial
     assert "[data-when][hidden] { display: none !important; }" in STYLE
+
+
+# ── static copy does not depend on the onboarding mode ───────────────────
+# Production runs ONBOARDING_MODE=open, so a static sentence that says access
+# is by invitation is wrong. Only the data-when="closed" lines (shown while the
+# mode is not open) may keep the invitation wording.
+
+_OLD_INVITE = ("while access is by invitation", "kým je prístup len na pozvanie")
+_CONTACT_EN = "if signing in does not work or you have questions, write to us"
+_CONTACT_SK = "ak sa vám nedarí prihlásiť alebo máte otázky,"
+
+
+def _flat(text: str) -> str:
+    return re.sub(r"\s+", " ", text).lower()
+
+
+def test_static_landing_copy_has_no_invitation_condition():
+    flat = _flat(LANDING)
+    for old in _OLD_INVITE:
+        assert old not in flat, old
+    # visible FAQ (data-en + text) and the FAQPage JSON-LD carry the new sentence
+    assert flat.count(_CONTACT_EN) == 2
+    assert flat.count(_CONTACT_SK) == 2  # data-sk + the visible text
+
+
+async def test_llms_and_topic_pages_have_no_invitation_condition():
+    from starlette.requests import Request
+
+    from oncofiles import server
+
+    def req(path: str) -> Request:
+        return Request({"type": "http", "method": "GET", "path": path, "headers": []})
+
+    en = _flat((await server.llms_txt(req("/llms.txt"))).body.decode())
+    sk = _flat((await server.llms_sk_txt(req("/llms-sk.txt"))).body.decode())
+    assert _CONTACT_EN in en and _CONTACT_SK in sk
+    source = _flat((SRC / "server.py").read_text(encoding="utf-8"))
+    for old in _OLD_INVITE:
+        assert old not in en and old not in sk and old not in source, old
