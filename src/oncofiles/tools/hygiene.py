@@ -928,7 +928,7 @@ async def _build_document_matrix(
         month = (
             None
             if doc.document_date is not None
-            else document_stage.document_month(doc.file_id, doc.structured_metadata)
+            else document_stage.document_month(doc.file_id, doc.structured_metadata, doc.filename)
         )
         has_date = doc.document_date is not None or month is not None
         stage = document_stage.describe(

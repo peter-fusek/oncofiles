@@ -328,6 +328,16 @@ def parse_filename(name: str) -> NameFields | None:
     )
 
 
+def month_of_standard_name(name: str | None) -> str | None:
+    """``YYYY-MM`` when ``name`` is a standard name with a ``YYYYMM00`` date token
+    (a Google-native title without extension included), else None (#919). The
+    name of an original IS its precision record: an original is never written."""
+    fields = parse_filename(name or "") or parse_filename(f"{name}.{NATIVE_EXT}")
+    if fields and date_precision(fields.date) == PRECISION_MONTH:
+        return f"{fields.date[:4]}-{fields.date[4:6]}"
+    return None
+
+
 GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps."
 # Extension the runner builds a Google-native name with and then strips (#919):
 # a Google Doc's title has no extension through the Drive API.

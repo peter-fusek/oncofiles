@@ -597,12 +597,15 @@ def _normalise_report() -> dict:
         # {folder, from, to, sidecar_from, sidecar_to, date_source, date_precision}:
         # within this run's cap (a real run renames exactly these); a month-precision
         # entry also has precision_keys: written | present | not_editable |
-        # front_matter_unreadable
+        # front_matter_unreadable (a sidecar), or from_filename (an original
+        # without a sidecar: never written, its YYYYMM00 name is the precision)
         "planned": [],
         "renamed": [],  # real runs: the planned entries that were done
         "deferred": [],  # over the cap / action budget: a later run does them
         "review": [],  # {source, code: name_not_standard, why}: no rename possible
-        "skipped": [],  # {source, code}: no_sidecar
+        # {source, code}: no_sidecar | target_not_standard | extension_changed
+        # (the last two: planner guards, #946)
+        "skipped": [],
         "counts": {},
     }
 
@@ -1484,16 +1487,9 @@ class Runner:
                 }
             )
             return
+        # #919: a month-dated note keeps its text untouched (an original is never
+        # written); its YYYYMM00 name carries the precision for the index.
         self._move_single(tree, folder, target_folder, item, new_name)
-        token = cls.fields.date if cls and cls.fields else ""
-        if naming_mod.date_precision(token) == naming_mod.PRECISION_MONTH:
-            # #919: the note is its own text: its front matter carries the precision
-            self._write_month_keys(
-                f"{target_folder}/{new_name}",
-                item,
-                self._sidecar_text(item),
-                naming_mod.iso_of(token),
-            )
         self.report.documents.append(
             {
                 "source": item.name,
@@ -1600,6 +1596,9 @@ class Runner:
                     # document's own text export (a read, never a write)
                     exported = self._content(item).decode("utf-8", errors="replace")
                     plan = normalise_mod.plan_name(text=f"{body}\n{exported}", **kw)
+                if plan.code in normalise_mod.GUARD_CODES:  # #946: never planned
+                    rep["skipped"].append({"source": label, "code": plan.code})
+                    continue
                 if plan.target is None:
                     rep["review"].append({"source": label, "code": plan.code, "why": plan.why})
                     continue
@@ -1612,7 +1611,10 @@ class Runner:
                     "date_source": plan.date_source,
                     "date_precision": plan.precision,
                 }
-                month = plan.precision == naming_mod.PRECISION_MONTH
+                # #919: the precision key goes into a SIDECAR only. An original
+                # (a text note that is its own text) is never written (maintainer
+                # rule 14.11.): its YYYYMM00 name alone means month precision.
+                month = plan.precision == naming_mod.PRECISION_MONTH and sidecar is not None
                 if month and self.actions_used + cost + 1 > self.opts.max_actions:
                     over = True  # the front-matter edit is one more file action
                 if over and real:
@@ -1631,14 +1633,14 @@ class Runner:
                 )
                 self._rename_in_place(tree, folder, item, sidecar, plan.target)
                 if month:
-                    target_item = sidecar if sidecar is not None else item
-                    target_name = entry["sidecar_to"] if sidecar else plan.target
                     entry["precision_keys"] = self._write_month_keys(
-                        f"{folder}/{target_name}",
-                        target_item,
+                        f"{folder}/{entry['sidecar_to']}",
+                        sidecar,
                         raw,
                         naming_mod.iso_of(plan.target[:8]),
                     )
+                elif plan.precision == naming_mod.PRECISION_MONTH:
+                    entry["precision_keys"] = "from_filename"  # an original: never written
                 current -= own
                 current |= {nfc(plan.target)} | ({nfc(entry["sidecar_to"])} if sidecar else set())
                 if real:
@@ -1654,6 +1656,10 @@ class Runner:
             "no_sidecar": sum(
                 1 for s in rep["skipped"] if s["code"] == normalise_mod.CODE_NO_SIDECAR
             ),
+            **{
+                code: sum(1 for s in rep["skipped"] if s["code"] == code)
+                for code in normalise_mod.GUARD_CODES
+            },
         }
         if any(rep["counts"].values()):
             logger.info(
@@ -1662,20 +1668,21 @@ class Runner:
                 " ".join(f"{k}={v}" for k, v in rep["counts"].items()),
             )
 
-    def _write_month_keys(self, path: str, target: Item, text: str, year_month: str) -> str:
+    def _write_month_keys(self, path: str, sidecar: Item, text: str, year_month: str) -> str:
         """#919: ``doc_date: "YYYY-MM"`` + ``doc_date_precision: month`` in the
-        front matter of ``target`` (a sidecar, or a text note that is its own
-        text), journaled first; only those keys change, the body stays byte for
-        byte (``normalise.with_month_keys``), ``drive_ops`` reads it back.
+        front matter of the SIDECAR ``target`` (never an original: maintainer
+        rule 14.11., locked by tests/test_919_month_precision.py), journaled
+        first; only those keys change, the body stays byte for byte
+        (``normalise.with_month_keys``), ``drive_ops`` reads it back.
 
         Returns ``written``, ``present`` (nothing to change), ``not_editable``
-        (not a ``.md`` / ``.txt`` text file: a JSON or CSV note is never edited) or
+        (not a markdown sidecar with a text mime) or
         ``front_matter_unreadable`` (an unclosed block: never guessed, the
         ``YYYYMM00`` name alone carries the precision for the index).
         """
         name = path.rsplit("/", 1)[-1].lower()
-        if not name.endswith((".md", ".txt")) or not is_text_state_mime(target.mime):
-            return "not_editable"  # a JSON / CSV note or a non-text mime: never edited
+        if not name.endswith(".md") or not is_text_state_mime(sidecar.mime):
+            return "not_editable"  # not a markdown sidecar: never edited
         new = normalise_mod.with_month_keys(text, year_month)
         if new is None:
             m = re.match(r"\A---\n(.*?)\n---(?=\n|\Z)", text, re.S)
@@ -1693,7 +1700,7 @@ class Runner:
                     "added_block": not text.startswith("---"),
                 },
             },
-            lambda: self.drive.update_text(target.id, new),
+            lambda: self.drive.update_text(sidecar.id, new),
         )
         return "written"
 

@@ -31,6 +31,7 @@ from tests.test_919_normalise_filed import run, sidecar
 from tests.test_curated_runner import (
     INBOX,
     LABS,
+    LOGS,
     README,
     REPORT,
     FakeDrive,
@@ -240,53 +241,133 @@ def _note_drive(body=NOTE_BODY, name=NOTE):
     return d, note
 
 
+STATE_FILES = {CANARY, "_changelog.md", "_actions.jsonl", "_index.json", "README.md"}
+
+
 class KeyJournalDrive(JournalCheckingDrive):
-    """Moves (parent class) and front-matter writes must be journaled first."""
+    """Moves (parent class) and sidecar key writes must be journaled first; every
+    content write is recorded so a test can prove no original was written."""
 
     key_write_journaled = False
 
     def update_text(self, fid, text, mime="text/markdown"):
-        if self.items[fid]["name"] != CANARY:
+        self.__dict__.setdefault("updated_ids", []).append(fid)
+        name = self.items[fid]["name"]
+        if name not in STATE_FILES:
             journal = self.download(self.find(self.root, CANARY)).decode()
             assert '"set_date_precision"' in journal, "key write not journaled first"
             self.key_write_journaled = True
         super().update_text(fid, text, mime)
 
+    def originals_written(self) -> list[str]:
+        """Ids of written files that are neither a sidecar, a state file nor a log."""
+        out = []
+        for fid in self.__dict__.get("updated_ids", []):
+            d = self.items[fid]
+            sidecar = d["name"].endswith(".md") and self.find(d["parent"], d["name"][:-3])
+            log = d["parent"] == self.folder.get(LOGS)
+            if d["name"] not in STATE_FILES and not sidecar and not log:
+                out.append(fid)
+        return out
 
-def test_normalise_renames_a_month_only_note_journaled_with_precision_keys():
+
+def test_normalise_renames_a_month_only_note_and_never_writes_the_original():
     d, note = _note_drive()
-    d.__class__ = KeyJournalDrive  # every move and key write journaled first
+    d.__class__ = KeyJournalDrive  # every move journaled first, writes recorded
     r = run(d, dry_run=False)
     assert r.status == "ok", r.message
     assert d.items[note]["name"] == NOTE_TARGET
     assert d.items[note]["parent"] == d.folder[REPORT]
     (rename,) = [a for a in r.actions if a["action"] == "normalise_rename"]
     assert rename["status"] == "done" and rename["to"] == [f"{REPORT}/{NOTE_TARGET}"]
-    (keys,) = [a for a in r.actions if a["action"] == "set_date_precision"]
-    assert keys["status"] == "done" and keys["path"] == f"{REPORT}/{NOTE_TARGET}"
+    # maintainer rule 14.11.: an original is never written, not even a text note
+    assert not [a for a in r.actions if a["action"] == "set_date_precision"]
+    assert note not in d.__dict__.get("updated_ids", [])
+    assert d.originals_written() == []
+    assert d.items[note]["content"] == NOTE_BODY  # byte for byte, no front matter added
     (entry,) = r.normalise["renamed"]
-    assert entry["date_precision"] == "month" and entry["precision_keys"] == "written"
+    assert entry["date_precision"] == "month" and entry["precision_keys"] == "from_filename"
     assert entry["date_source"] == "filename"
-    content = d.items[note]["content"]
-    assert content.startswith(b'---\ndoc_date: "2027-03"\ndoc_date_precision: "month"\n---\n')
-    assert content.endswith(NOTE_BODY)  # body byte for byte
-    assert content[len(content) - len(NOTE_BODY) :] == NOTE_BODY
-    front, pages = indexer.parse_sidecar(content.decode())
-    assert front == {"doc_date": "2027-03", "doc_date_precision": "month"}
-    assert pages == [NOTE_BODY.decode().strip()]
-    assert d.key_write_journaled  # the canary held the action before the write
+    # the YYYYMM00 name alone gives the index its month precision
+    (rec,) = [x for x in indexer.scan(d, d.root).records if x.filename == NOTE_TARGET]
+    assert rec.document_date is None and rec.metadata["doc_month"] == "2027-03"
 
 
-def test_normalise_keeps_existing_front_matter_and_body_bytes():
+def test_sidecar_key_write_is_journaled_and_no_original_is_written():
+    d = FakeDrive()
+    src = d.add("poznamky_marec.pdf", d.folder[LABS], b"PDF")
+    side = d.add(
+        "poznamky_marec.pdf.md", d.folder[LABS], sidecar("2027-03", "NOU", None, "Marec 2027")
+    )
+    d.items[side]["mime"] = "text/markdown"
+    d.__class__ = KeyJournalDrive
+    r = run(d, dry_run=False)
+    assert r.status == "ok", r.message
+    assert d.key_write_journaled
+    assert side in d.updated_ids and src not in d.updated_ids
+    assert d.originals_written() == []
+    assert d.items[src]["content"] == b"PDF"
+
+
+def test_inbox_month_text_note_is_filed_without_writing_it():
+    d = FakeDrive()
+    body = b"Poznamky marec 2027\n"
+    note = d.add("poznamky.md", d.folder[INBOX], body, modified="2027-05-01T0")
+    d.items[note]["mime"] = "text/markdown"
+    d.__class__ = KeyJournalDrive
+    o = RunOptions(now=datetime.fromisoformat("2027-06-01T06:30:00+00:00"), dry_run=False)
+    r = run_curated(d, d.root, o, extract_fn=fake_extract, propose_fn=lambda c, t: _raw("2027-03"))
+    assert r.status == "ok", r.message
+    assert d.items[note]["name"] == f"20270300-{BASE}.md"
+    assert d.items[note]["content"] == body
+    assert note not in d.__dict__.get("updated_ids", [])
+    assert d.originals_written() == []
+    assert not [a for a in r.actions if a["action"] == "set_date_precision"]
+
+
+def test_lock_update_text_only_on_sidecars_and_state_files():
+    """AST lock (maintainer rule 14.11.): in the runner and normalise, the file id
+    handed to update_text is a sidecar, the canary, the README or a state/log
+    file, never the id of an original (``item.id`` / ``target.id`` / ...)."""
+    import ast
+    import inspect
+
+    from oncofiles.curated import normalise as normalise_mod
+    from oncofiles.curated import runner as runner_mod
+
+    allowed = {
+        "self.canary_id", "readme_id", "sidecar.id", "f.id",
+        "root['_index.json'].id", "existing[name].id",
+    }  # fmt: skip
+    seen = []
+    for mod in (runner_mod, normalise_mod):
+        for node in ast.walk(ast.parse(inspect.getsource(mod))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "update_text"
+            ):
+                arg = ast.unparse(node.args[0])
+                seen.append(arg)
+                assert arg in allowed, f"update_text on {arg!r} in {mod.__name__}"
+    assert "sidecar.id" in seen
+
+
+def test_with_month_keys_keeps_existing_front_matter_and_body_bytes():
+    body = '---\nauthor: "opatrovatel"\ndoc_date: null\n---\n\nMarec 2027: poznamky\n'
+    assert normalise.with_month_keys(body, "2027-03") == (
+        '---\nauthor: "opatrovatel"\ndoc_date: "2027-03"\ndoc_date_precision: "month"\n---'
+        "\n\nMarec 2027: poznamky\n"
+    )
+
+
+def test_a_text_note_with_front_matter_is_renamed_but_never_written():
     body = b'---\nauthor: "opatrovatel"\ndoc_date: null\n---\n\nMarec 2027: poznamky\n'
     d, note = _note_drive(body)
     r = run(d, dry_run=False)
     assert r.status == "ok", r.message
-    content = d.items[note]["content"].decode()
-    assert content == (
-        '---\nauthor: "opatrovatel"\ndoc_date: "2027-03"\ndoc_date_precision: "month"\n---'
-        "\n\nMarec 2027: poznamky\n"
-    )
+    assert d.items[note]["name"] == NOTE_TARGET
+    assert d.items[note]["content"] == body
 
 
 def test_normalise_writes_precision_into_a_sidecar_pair():
@@ -413,10 +494,13 @@ def test_document_stage_month_row_is_not_missing_date():
         mime_type="text/markdown",
     )
     assert out["attention_reason"] is None and out["ready"]
-    # without the month the same row is missing_date
+    # no metadata, but a standard YYYYMM00 name: the name means month precision
     no_month = json.dumps({**json.loads(meta), "doc_date_precision": None})
+    assert document_stage.document_month("gdrive:synth-1", no_month, NOTE_TARGET) == "2027-03"
+    assert document_stage.document_month("gdrive:synth-1", no_month, "scan.md") is None
+    # without metadata and without such a name the row is missing_date
     out = document_stage.describe(
-        filename=NOTE_TARGET,
+        filename="poznamka_bez_datumu.md",
         file_id="gdrive:synth-1",
         structured_metadata=no_month,
         patient_id=PRIMARY_TEST_UUID,

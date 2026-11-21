@@ -5786,7 +5786,10 @@ async def api_doc_detail(request: Request) -> JSONResponse:
                 "document_date": (
                     doc.document_date.isoformat()
                     if doc.document_date
-                    else document_stage.document_month(doc.file_id, structured_metadata) or ""
+                    else document_stage.document_month(
+                        doc.file_id, structured_metadata, doc.filename
+                    )
+                    or ""
                 ),
                 "institution": doc.institution or "",
                 "ai_summary": doc.ai_summary or "",

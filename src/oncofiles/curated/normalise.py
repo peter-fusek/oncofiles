@@ -24,10 +24,17 @@ Rules:
   name gets the date token ``YYYYMM00`` when that month and year is printed on
   its own in the text and passes ``classify.validate``'s month checks (not the
   README birth month, not in the future, not before 1900). After the rename
-  the front matter gets ``doc_date: "YYYY-MM"`` and ``doc_date_precision:
-  month`` (key-only edit, body byte for byte; ``with_month_keys``). A full
-  printed day always wins over a month;
-* a Google-native file keeps no extension (#922 rule).
+  a SIDECAR's front matter gets ``doc_date: "YYYY-MM"`` and
+  ``doc_date_precision: month`` (key-only edit, body byte for byte;
+  ``with_month_keys``); an original (a text note without a sidecar) is never
+  written: its ``YYYYMM00`` name means month precision. A full printed day
+  always wins over a month;
+* a Google-native file keeps no extension (#922 rule); one whose title ends in
+  an extension (``….docx``) keeps that one;
+* hard guards (#946 dry run), month-precision targets included: a target the
+  checker refuses is skipped with ``target_not_standard``, one whose extension
+  differs from the source's with ``extension_changed`` (an extensionless
+  binary included); never planned.
 
 Pure functions, no I/O. Env (runtime, read at call time):
 ``CURATED_NORMALISE_FILED`` (default **false**: a missing env never renames;
@@ -68,6 +75,10 @@ DEFAULT_MAX = 10
 # Codes (report only; never document content).
 CODE_NAME_NOT_STANDARD = "name_not_standard"  # review: no rename possible
 CODE_NO_SIDECAR = "no_sidecar"  # skipped: the backfill adds one first
+# Hard guards of the planner (#946 dry-run finding), skipped with these codes:
+CODE_TARGET_NOT_STANDARD = "target_not_standard"  # naming.is_standard(target) False
+CODE_EXTENSION_CHANGED = "extension_changed"  # target extension != source extension
+GUARD_CODES = (CODE_TARGET_NOT_STANDARD, CODE_EXTENSION_CHANGED)
 # ``why`` of a name_not_standard entry
 WHY_NO_PRINTED_DATE = "no_printed_date"
 WHY_BUILT_NOT_STANDARD = "built_name_not_standard"
@@ -111,10 +122,38 @@ def is_month_only(name: str) -> bool:
     return bool(_MONTH_ONLY_RE.match(name or ""))
 
 
+# A dot-suffix in a Google-native title that reads as a file extension (a
+# letter, at most five characters: ``.docx``, ``.pdf``), e.g. a Google Doc
+# converted from an upload or a shortcut to a PDF. ``Kontrola 12.3.2027`` has
+# none: ``2027`` is part of the title.
+_NATIVE_EXT_RE = re.compile(r"(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{1,5}")
+
+
+def source_extension(name: str, *, native: bool) -> str:
+    """The extension a rename must keep, lower case; '' when there is none.
+
+    A binary file's extension is whatever follows its last dot. A Google-native
+    file has no extension through the Drive API (#922), but its title may still
+    end in one (``….docx``): that suffix is kept like a binary's, never dropped.
+    """
+    if "." not in name:
+        return ""
+    ext = name.rsplit(".", 1)[1]
+    if native and not _NATIVE_EXT_RE.fullmatch(ext):
+        return ""
+    return ext.lower()
+
+
+def _target_extension(target: str) -> str:
+    # a built name's fields hold no dots, so the last dot starts the extension
+    return target.rsplit(".", 1)[1].lower() if "." in target else ""
+
+
 def _stem(name: str, native: bool) -> str:
-    if native or "." not in name:
-        return name
-    return name.rsplit(".", 1)[0]
+    if native:
+        ext = source_extension(name, native=True)
+        return name[: -len(ext) - 1] if ext else name
+    return name.rsplit(".", 1)[0] if "." in name else name
 
 
 def near_standard_parts(name: str, contract: Contract, *, native: bool) -> list[str] | None:
@@ -288,21 +327,33 @@ def plan_name(
         hospital=hospital,
         subject=subject,
     )
-    if native:
+    src_ext = source_extension(name, native=native)
+    # Only a Google-native title WITHOUT an extension is built without one
+    # (#922). A native title ending in ``.docx`` keeps it (#946 dry run: the
+    # planner used to drop it); an extensionless binary is refused below.
+    strip = native and not src_ext
+    if strip:
         ext = NATIVE_EXT
         busy = taken | {f"{n}.{NATIVE_EXT}" for n in taken}
     else:
-        ext = name.rsplit(".", 1)[-1] if "." in name else "bin"
+        ext = src_ext or "bin"
         busy = set(taken)
     try:
         while True:
             built = with_collision_suffix(build_filename(fields, ext), busy)
-            final = built.removesuffix(f".{NATIVE_EXT}") if native else built
+            final = built.removesuffix(f".{NATIVE_EXT}") if strip else built
             if f"{final}.md" not in taken:
                 break
             busy.add(built)  # an orphan sidecar holds the pair's name: next suffix
     except ValueError:
         return Plan(code=CODE_NAME_NOT_STANDARD, why=WHY_NO_FREE_NAME)
-    if not is_standard(final, mime=mime) or final == name:
+    # Hard guards, whatever the builder returned: the checker (with the file's
+    # mime, as the runner's candidate check and document_stage call it) must
+    # accept the target, and the extension never changes (case aside).
+    if not is_standard(final, mime=mime):
+        return Plan(code=CODE_TARGET_NOT_STANDARD)
+    if _target_extension(final) != src_ext:
+        return Plan(code=CODE_EXTENSION_CHANGED)
+    if final == name:
         return Plan(code=CODE_NAME_NOT_STANDARD, why=WHY_BUILT_NOT_STANDARD)
     return Plan(target=final, date_source=source, precision=date_precision(day))
