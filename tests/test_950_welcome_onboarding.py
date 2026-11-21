@@ -145,6 +145,11 @@ async def send(db, *items):
     return resp
 
 
+def replies(sent):
+    """The welcome@ replies, without the phase 3 "ready" mail (tag trial_ready)."""
+    return [m for m in sent if "trial_ready" not in (m.get("tags") or [])]
+
+
 async def trials(db):
     async with db.db.execute("SELECT * FROM trial_accounts ORDER BY id") as cur:
         return [dict(r) for r in await cur.fetchall()]
@@ -335,7 +340,7 @@ async def test_welcome_reply_has_counts_terms_sign_in_and_the_address(idb, mails
     await send(idb, welcome_item(files=two_files(store)))
     [trial] = await trials(idb)
     address = (await inbound_email.ensure_address(idb, trial["patient_id"]))["address"]
-    [reply] = mails
+    [reply] = replies(mails)
     text = reply["text"]
     assert reply["to"] == [NEW] and reply["headers"] == {"Auto-Submitted": "auto-replied"}
     assert "prijali sme 2 dokument" in text and "we received 2 document" in text
@@ -353,7 +358,7 @@ async def test_reply_at_most_once_per_ten_minutes(idb, mails, brevo, model):
     store["w-c"] = pdf(953)
     files = [("SynthThird2027.pdf", "application/pdf", len(store["w-c"]), "w-c")]
     await send(idb, welcome_item(files=files, mid="<r-2@example.test>"))
-    assert len(mails) == 1
+    assert len(replies(mails)) == 1
     assert inbound_email.unmatched_overview()["totals"]["reply_throttled"] == 1
 
 
@@ -366,7 +371,7 @@ async def test_per_sender_mail_cap(idb, mails, brevo, model, monkeypatch):
     await send(idb, welcome_item(files=two_files(store), mid="<m-1@example.test>"))
     await send(idb, welcome_item(files=two_files(store), mid="<m-2@example.test>"))
     [trial] = await trials(idb)
-    assert len(await held_docs(idb, trial["patient_id"])) == 2 and len(mails) == 1
+    assert len(await held_docs(idb, trial["patient_id"])) == 2 and len(replies(mails)) == 1
     assert inbound_email.unmatched_overview()["totals"]["welcome_sender_capped"] == 1
 
 
@@ -383,7 +388,7 @@ async def test_global_new_trial_cap(idb, mails, brevo, model, monkeypatch):
     store, _ = brevo
     await send(idb, welcome_item(files=two_files(store)))
     await send(idb, welcome_item(sender=NEW2, files=two_files(store)))
-    assert len(await trials(idb)) == 1 and len(mails) == 1
+    assert len(await trials(idb)) == 1 and len(replies(mails)) == 1
     assert inbound_email.unmatched_overview()["totals"]["welcome_trial_cap"] == 1
 
 

@@ -525,6 +525,14 @@ async def run_pending(db, *, limit: int = MAX_JOBS_PER_RUN) -> Counter:
         counts[outcome] += 1
     if counts:
         logger.info("inbound: queue run %s", dict(sorted(counts.items())))
+        # #950 phase 3: a trial's first batch may be complete now that its mail
+        # is filed (the reader may have finished before the job ended)
+        from oncofiles import trial_funnel
+
+        try:
+            await trial_funnel.send_due_ready_mails(db)
+        except Exception as exc:  # noqa: BLE001 - mail never stops the queue
+            logger.warning("inbound: ready mails failed (%s)", type(exc).__name__)
     return counts
 
 

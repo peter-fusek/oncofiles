@@ -123,6 +123,23 @@ def inbox_md5s(gdrive, root_id: str) -> set[str]:
         own.close()
 
 
+def inbox_md5_ids(gdrive, root_id: str) -> dict[str, str]:
+    """md5 -> Drive id of the files in the inbox (read-only, like
+    :func:`inbox_md5s`). For the #950 phase 3 holding mover, which records the
+    Drive id of a held file that is already there. Blocking, own connection."""
+    own = gdrive.dedicated_copy()
+    try:
+        try:
+            inbox_id = resolve_inbox(own, root_id)
+        except InboxUnavailableError:
+            return {}
+        return {
+            i.md5: i.id for i in drive_ops.list_children(own, inbox_id) if i.md5 and not i.is_folder
+        }
+    finally:
+        own.close()
+
+
 def upload_to_inbox(gdrive, root_id: str, files: list[InboxFile]) -> list[dict]:
     """Write ``files`` into the inbox; one result per file, in order.
 

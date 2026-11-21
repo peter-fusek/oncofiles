@@ -1812,6 +1812,11 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
             replied = await _send_receipt(
                 th, msg.sender, accepted, skipped, now, welcome_address=welcome_address
             )
+            if replied and msg.welcome:
+                # #950 phase 3: time-to-value funnel (first welcome reply)
+                from oncofiles import trial_funnel
+
+                await trial_funnel.note_event(db, "first_reply_at", patient_id)
             if progress is not None:
                 await progress.mark_receipt_sent()
         # On the last attempt a temporary failure was reported in the receipt;

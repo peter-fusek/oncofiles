@@ -553,6 +553,17 @@ async def _try_download(
     from oncofiles import holding_store
 
     if holding_store.is_holding_file_id(doc.file_id):
+        moved = holding_store.moved_drive_id(doc.structured_metadata)
+        if moved:
+            # #950 phase 3: a verified copy lives in the patient's Drive; the
+            # row is served from there, never from the holding store again.
+            if gdrive is None:
+                return False, ["[In Google Drive: Drive client not configured]"], None
+            try:
+                content_bytes = await asyncio.to_thread(gdrive.download, moved)
+            except Exception as e:
+                return False, [f"[GDrive download failed: {type(e).__name__}]"], None
+            return True, _inline_content(doc, content_bytes), content_bytes
         # the request's patient: the row was loaded scoped to it, and the
         # file's associated data binds it to that patient (another one's id
         # never decrypts).

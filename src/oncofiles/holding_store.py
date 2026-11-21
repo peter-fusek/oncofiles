@@ -57,13 +57,16 @@ local model only.
 Retention (#734): NOTHING here deletes or overwrites a held file or a row.
 TODO(#950): the end of an unclaimed 30-day trial (``trial_accounts.
 trial_ends_at``) and the removal of a held copy after a verified move into
-Drive (phase 3) both need a RUNBOOK lifecycle entry and a reviewed
-``tests/test_no_automatic_deletion.py`` allowlist entry (maintainer decision).
+Drive (phase 3, ``holding.moved_to_drive`` set) both need a RUNBOOK lifecycle
+entry and a reviewed ``tests/test_no_automatic_deletion.py`` allowlist entry
+(maintainer decision). Until then a moved file's encrypted copy stays here,
+unused: reads go to the Drive copy (:func:`moved_drive_id`).
 
-Phase 3 seam: :func:`holding_mode` is the one predicate "this patient's new
-mail goes to the holding store" (a trial patient without a connected Drive
-folder). Once Drive is connected new mail goes through the #935 upload path
-again, and the held files wait for the phase 3 move (``read`` + sha256).
+:func:`holding_mode` is the one predicate "this patient's new mail goes to
+the holding store" (a trial patient without a connected Drive folder that is
+not converted yet). Once Drive is connected new mail goes through the #935
+upload path again, and the held files are copied into the curated inbox by
+``oncofiles.holding_move`` (phase 3).
 
 Logs: document ids, counts and ``patient_id[:4]`` only, never a file name.
 """
@@ -224,13 +227,38 @@ async def holding_mode(db, patient_id: str) -> bool:
     """True when this patient's new mail goes to the holding store: a trial
     patient (``trial_accounts``) without a connected Drive folder. The phase 3
     seam: once Drive is connected, mail goes to the #935 upload path again."""
-    if await db.get_trial(patient_id=patient_id) is None:
-        return False
+    trial = await db.get_trial(patient_id=patient_id)
+    if trial is None or trial.get("converted_at"):
+        return False  # phase 3: a converted trial is an ordinary patient
     try:
         token = await db.get_oauth_token(patient_id)
     except Exception:
         token = None
     return not (token is not None and getattr(token, "gdrive_folder_id", None))
+
+
+def holding_meta(structured_metadata) -> dict:
+    """``structured_metadata.holding`` of a row (a JSON string or a dict), or {}."""
+    meta = structured_metadata
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta or "{}")
+        except ValueError:
+            return {}
+    if not isinstance(meta, dict):
+        return {}
+    held = meta.get("holding")
+    return dict(held) if isinstance(held, dict) else {}
+
+
+def moved_drive_id(structured_metadata) -> str | None:
+    """The Drive id of a held file's verified copy (#950 phase 3), else None.
+
+    Once set, the row is served from that Drive copy, never from the store."""
+    moved = holding_meta(structured_metadata).get("moved_to_drive")
+    if isinstance(moved, dict) and isinstance(moved.get("drive_id"), str) and moved["drive_id"]:
+        return moved["drive_id"]
+    return None
 
 
 def _free_bytes() -> int:

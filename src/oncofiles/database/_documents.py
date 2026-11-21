@@ -11,6 +11,21 @@ from ._tenant import require_patient_id
 
 logger = logging.getLogger(__name__)
 
+# #950 phase 3: a holding-store row whose file was copied into the patient's
+# Drive is hidden from the document lists once the curated mirror row of that
+# copy exists (``holding.superseded_by`` set by the mover, or, before the next
+# mover run, a ``gdrive:<drive id>`` row of the copy's Drive id), so the
+# dashboard never shows one document twice. The row itself stays (#734):
+# nothing is deleted or trashed. Only for queries whose table is unaliased
+# ``documents``.
+HOLDING_VISIBLE_SQL = (
+    "NOT COALESCE(file_id LIKE 'holding:%' AND json_valid(structured_metadata) AND ("
+    "json_extract(structured_metadata, '$.holding.superseded_by') IS NOT NULL "
+    "OR EXISTS (SELECT 1 FROM documents m WHERE m.patient_id = documents.patient_id "
+    "AND m.deleted_at IS NULL AND m.file_id = 'gdrive:' || "
+    "json_extract(documents.structured_metadata, '$.holding.moved_to_drive.drive_id'))), 0)"
+)
+
 
 def _safe_row_to_document(row) -> Document | None:
     """Convert a row to Document, returning None on conversion errors."""
@@ -183,6 +198,7 @@ class DocumentMixin:
 
         async with self.db.execute(
             "SELECT * FROM documents WHERE deleted_at IS NULL AND patient_id = ? "
+            f"AND {HOLDING_VISIBLE_SQL} "
             "ORDER BY document_date DESC, created_at DESC LIMIT ? OFFSET ?",
             (patient_id, limit, offset),
         ) as cursor:
@@ -272,6 +288,7 @@ class DocumentMixin:
             params.append(query.date_to.isoformat())
 
         conditions.append("deleted_at IS NULL")
+        conditions.append(HOLDING_VISIBLE_SQL)  # #950 phase 3: never one document twice
         where = " AND ".join(conditions)
 
         if score_parts:
@@ -376,7 +393,8 @@ class DocumentMixin:
     async def count_documents(self, *, patient_id: str) -> int:
         """Count all active (non-deleted) documents."""
         async with self.db.execute(
-            "SELECT COUNT(*) as cnt FROM documents WHERE deleted_at IS NULL AND patient_id = ?",
+            "SELECT COUNT(*) as cnt FROM documents WHERE deleted_at IS NULL AND patient_id = ? "
+            f"AND {HOLDING_VISIBLE_SQL}",
             (patient_id,),
         ) as cursor:
             row = await cursor.fetchone()

@@ -83,6 +83,24 @@ def container_refusal(overview: dict) -> dict | None:
     }
 
 
+async def _after_trial_connect(db, patient_id: str) -> None:
+    """A welcome@ trial patient connected a curated root (#950 phase 3): note
+    the funnel instant and start copying its held files into the inbox
+    (``holding_move``, in the background, under the scheduler semaphore).
+    A patient without a trial, or a converted one, is a no-op. Never raises:
+    the folder is connected either way, and the scheduler job retries."""
+    try:
+        trial = await db.get_trial(patient_id=patient_id)
+        if trial is None or trial.get("converted_at"):
+            return
+        from oncofiles import holding_move, trial_funnel
+
+        await trial_funnel.note_event(db, "drive_connected_at", patient_id)
+        holding_move.kick(db)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("connect_folder: trial follow-up failed (%s)", type(exc).__name__)
+
+
 async def connect_folder(
     db,
     patient_id: str,
@@ -317,6 +335,8 @@ async def connect_folder(
                     "pipeline will process this folder.",
                 }
             )
+        if payload["curated_root"]:
+            await _after_trial_connect(db, patient_id)
         return FolderLinkOutcome("ok", 200, payload)
     if bootstrap:
         # Unreachable: a curated-layout folder was bootstrapped (or refused)
