@@ -4,7 +4,8 @@
 --
 -- The address is <first name, optional>-<token>@<INBOUND_DOMAIN>. The token is
 -- derived (HMAC of patient id + version with a purpose-bound key, #502), never
--- stored: token_hash is sha256(token) as hex, so a copy of the database does
+-- stored: token_hash is HMAC-SHA256(server-side key, token) as hex (key from
+-- secrets_keys.inbound_token_hash_key), so a copy of the database does
 -- not reveal any address. The webhook routes a mail by hashing the token of
 -- its recipient and looking the hash up here.
 --

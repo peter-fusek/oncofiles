@@ -7291,16 +7291,25 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
     return JSONResponse(inbound_email.unmatched_overview())
 
 
-async def _read_capped_body(request: Request, limit: int) -> bytes | None:
-    """The request body, or None as soon as it exceeds ``limit`` bytes."""
-    chunks: list[bytes] = []
-    size = 0
+async def _read_capped_body(request: Request, limit: int) -> bytearray | None:
+    """The request body in ONE buffer, or None as soon as it exceeds ``limit``."""
+    buf = bytearray()
     async for chunk in request.stream():
-        size += len(chunk)
-        if size > limit:
+        if len(buf) + len(chunk) > limit:
             return None
-        chunks.append(chunk)
-    return b"".join(chunks)
+        buf.extend(chunk)
+    return buf
+
+
+def _declared_too_large(request: Request, limit: int) -> bool:
+    try:
+        return int(request.headers.get("content-length") or 0) > limit
+    except ValueError:
+        return False
+
+
+def _inbound_busy() -> JSONResponse:
+    return JSONResponse({"error": "busy"}, status_code=503, headers={"Retry-After": "30"})
 
 
 @mcp.custom_route("/inbound/email", methods=["POST"])
@@ -7309,11 +7318,13 @@ async def inbound_email_webhook(request: Request) -> Response:
 
     Not a dashboard route: it is authenticated by the HMAC signature of the
     provider (contract in ``oncofiles.inbound_email``), keyed with its own
-    secret ``INBOUND_MIME_HMAC_SECRET``. Inert while that is unset: the app's
-    ordinary 404. Body capped
-    before anything is parsed (413); a missing or wrong signature is the same
-    404. After a valid signature always 202, whatever happened to the mail.
-    Nothing from the request content is logged.
+    secret ``INBOUND_MIME_HMAC_SECRET``. Order (infra review): FIRST the
+    adapter must be enabled, else the app's ordinary 404 before a single body
+    byte is read; then a read slot (``READ_SLOTS``, two at a time; full = 503,
+    nothing read); then the capped read (413); then the signature (it needs
+    the body), a missing or wrong one is the same 404. After a valid signature
+    always 202, whatever happened to the mail. Nothing from the request
+    content is logged.
     """
     from starlette.exceptions import HTTPException
 
@@ -7322,29 +7333,28 @@ async def inbound_email_webhook(request: Request) -> Response:
     secret = inbound_email.mime_secret()
     if not secret:
         raise HTTPException(status_code=404)
-    try:
-        declared = int(request.headers.get("content-length") or 0)
-    except ValueError:
-        declared = 0
-    if declared > inbound_email.MAX_BODY_BYTES:
-        return JSONResponse({"error": "request body too large"}, status_code=413)
-    raw = await _read_capped_body(request, inbound_email.MAX_BODY_BYTES)
-    if raw is None:
-        return JSONResponse({"error": "request body too large"}, status_code=413)
-    original_to = request.headers.get(inbound_email.RECIPIENT_HEADER, "")
-    auth = request.headers.get(inbound_email.AUTH_HEADER, "")
-    signature = request.headers.get(inbound_email.SIGNATURE_HEADER, "")
-    if not inbound_email.signature_ok(secret, signature, original_to, auth, raw):
-        logger.info("inbound: refused request (signature)")
-        raise HTTPException(status_code=404)
+    if inbound_email.READ_SLOTS.locked():
+        return _inbound_busy()
+    async with inbound_email.READ_SLOTS:
+        if _declared_too_large(request, inbound_email.MAX_BODY_BYTES):
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        raw = await _read_capped_body(request, inbound_email.MAX_BODY_BYTES)
+        if raw is None:
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        original_to = request.headers.get(inbound_email.RECIPIENT_HEADER, "")
+        auth = request.headers.get(inbound_email.AUTH_HEADER, "")
+        signature = request.headers.get(inbound_email.SIGNATURE_HEADER, "")
+        if not inbound_email.signature_ok(secret, signature, original_to, auth, raw):
+            logger.info("inbound: refused request (signature)")
+            raise HTTPException(status_code=404)
+        try:
+            message = inbound_email.parse_raw_mime(raw, original_to=original_to, auth=auth)
+        except inbound_email.UnparseableMessageError:
+            logger.info("inbound: dropped reason=unparseable")
+            return JSONResponse({"status": "accepted"}, status_code=202)
+        finally:
+            raw = None
     db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-    try:
-        message = inbound_email.parse_raw_mime(raw, original_to=original_to, auth=auth)
-    except inbound_email.UnparseableMessageError:
-        logger.info("inbound: dropped reason=unparseable")
-        return JSONResponse({"status": "accepted"}, status_code=202)
-    finally:
-        raw = b""
     try:
         await inbound_email.process_message(db_inst, message)
     except Exception as exc:
@@ -7359,12 +7369,15 @@ async def inbound_brevo_webhook(request: Request) -> Response:
 
     Brevo does not sign its calls: the webhook is created with the custom
     header ``X-Inbound-Token: <INBOUND_BREVO_TOKEN>`` (its own secret, never
-    the raw-MIME HMAC key), compared here in constant time before the JSON is
-    parsed. Inert (the app's 404) while ``INBOUND_BREVO_TOKEN`` is unset; a
-    missing or wrong token is the same 404. Body capped
-    before parsing (413). After a valid token always 202. Attachments are
-    fetched from Brevo (``BREVO_API_KEY``) only for a caregiver sender.
-    Nothing from the request content is logged.
+    the raw-MIME HMAC key). Order (infra review): FIRST the adapter must be
+    enabled, else the app's ordinary 404; then the token with
+    ``hmac.compare_digest`` (missing or wrong = the same 404); both before a
+    single body byte is read. Then a read slot (``READ_SLOTS``; full = 503),
+    the capped read (413) and the strict JSON parse (duplicate keys refused).
+    The answer is 202 right away; checks, attachment downloads, filing and the
+    receipt run in a background task (``inbound_email.spawn_processing``,
+    serialized under ``PROCESS_LOCK``). Nothing from the request content is
+    logged.
     """
     from starlette.exceptions import HTTPException
 
@@ -7373,33 +7386,28 @@ async def inbound_brevo_webhook(request: Request) -> Response:
     secret = inbound_email.brevo_token()
     if not secret:
         raise HTTPException(status_code=404)
-    try:
-        declared = int(request.headers.get("content-length") or 0)
-    except ValueError:
-        declared = 0
-    if declared > inbound_email.BREVO_MAX_BODY_BYTES:
-        return JSONResponse({"error": "request body too large"}, status_code=413)
-    raw = await _read_capped_body(request, inbound_email.BREVO_MAX_BODY_BYTES)
-    if raw is None:
-        return JSONResponse({"error": "request body too large"}, status_code=413)
     token = request.headers.get(inbound_email.BREVO_TOKEN_HEADER, "")
     if not inbound_email.brevo_token_ok(secret, token):
         logger.info("inbound: refused request (token)")
         raise HTTPException(status_code=404)
+    if inbound_email.READ_SLOTS.locked():
+        return _inbound_busy()
+    async with inbound_email.READ_SLOTS:
+        if _declared_too_large(request, inbound_email.BREVO_MAX_BODY_BYTES):
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        raw = await _read_capped_body(request, inbound_email.BREVO_MAX_BODY_BYTES)
+        if raw is None:
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        try:
+            messages = inbound_email.parse_brevo_payload(inbound_email.parse_json_strict(raw))
+        except inbound_email.UnparseableMessageError:
+            logger.info("inbound: dropped reason=unparseable")
+            return JSONResponse({"status": "accepted"}, status_code=202)
+        finally:
+            raw = None
     db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
-    try:
-        messages = inbound_email.parse_brevo_payload(json.loads(raw))
-    except (ValueError, inbound_email.UnparseableMessageError):
-        logger.info("inbound: dropped reason=unparseable")
-        return JSONResponse({"status": "accepted"}, status_code=202)
-    finally:
-        raw = b""
-    try:
-        for message in messages:
-            await inbound_email.process_message(db_inst, message)
-    except Exception as exc:
-        logger.error("inbound: processing failed (%s)", type(exc).__name__)
-        return JSONResponse({"error": "internal error"}, status_code=500)
+    if messages:
+        inbound_email.spawn_processing(db_inst, messages)
     return JSONResponse({"status": "accepted"}, status_code=202)
 
 

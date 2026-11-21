@@ -262,6 +262,12 @@ REACHABLE_ALLOWLIST: dict[tuple[str, str], str] = {
     "Drive calls of the #935 upload and the SMTP receipt run in workers",
     (
         "/inbound/brevo",
+        "create_task",
+    ): "#950 infra review: after the token check, capped read and strict JSON parse the "
+    "route answers 202 and processes in ONE background task (inbound_email.spawn_processing), "
+    "serialized under PROCESS_LOCK, never raising, logging counts only",
+    (
+        "/inbound/brevo",
         "_create_patient_clients",
     ): "#950, only after the signature and sender checks: "
     "the patient's Drive client, only for a known active token and a caregiver From "

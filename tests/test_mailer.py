@@ -322,3 +322,37 @@ def test_landing_says_check_email_only_when_queued():
     assert "check your" not in not_queued
     # The old unconditional message is gone.
     assert "Thank you, check your email." not in LANDING
+
+
+async def test_extra_headers_are_added(monkeypatch):
+    """#950: an automatic reply carries Auto-Submitted (RFC 3834)."""
+    instances = fake_smtp.install(monkeypatch)
+    ok = await mailer.send_mail(
+        [SUBSCRIBER], "Receipt", "body", headers={"Auto-Submitted": "auto-replied"}
+    )
+    assert ok is True
+    msg, _rcpt = instances[0].sent[0]
+    assert msg["Auto-Submitted"] == "auto-replied"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"From": "other@example.test"},
+        {"Message-ID": "<x@example.test>"},
+        {"Bad Name": "x"},
+        {"X-Ok\r\nBcc": "x"},
+        {"X-Ok": 1},
+    ],
+)
+async def test_extra_headers_cannot_replace_or_inject(monkeypatch, headers):
+    instances = fake_smtp.install(monkeypatch)
+    assert await mailer.send_mail([SUBSCRIBER], "s", "b", headers=headers) is False
+    assert instances == []
+
+
+async def test_extra_header_values_are_one_line(monkeypatch):
+    instances = fake_smtp.install(monkeypatch)
+    await mailer.send_mail([SUBSCRIBER], "s", "b", headers={"X-Note": "a\r\nBcc: x"})
+    msg, _rcpt = instances[0].sent[0]
+    assert msg["Bcc"] is None and "\n" not in msg["X-Note"]

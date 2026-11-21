@@ -15,7 +15,8 @@ ambiguous), about 50 bits, derived and never stored::
 
 ``inbound_address_key`` is the #502 purpose-bound key
 (``oncofiles.inbound_address.v1``, override ``INBOUND_ADDRESS_SECRET``). The
-table ``inbound_addresses`` (migration 095) keeps only ``sha256(token)``;
+table ``inbound_addresses`` (migration 095) keeps only ``token_hash(token)``,
+an HMAC with ``secrets_keys.inbound_token_hash_key`` (not a bare digest);
 the dashboard recomputes the address for display. Rotation = version + 1, the
 old row inactive. The prefix is informational and never checked: only the
 token routes, and the patient is determined ONLY by that token, never by From.
@@ -182,7 +183,14 @@ def derive_token(patient_id: str, version: int) -> str:
 
 
 def token_hash(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
+    """The stored routing key: HMAC of the token with a server-side key.
+
+    Keyed (``secrets_keys.inbound_token_hash_key``), not a bare digest, so a
+    copy of the table cannot be checked against guessed tokens offline.
+    """
+    from oncofiles.secrets_keys import inbound_token_hash_key
+
+    return hmac.new(inbound_token_hash_key(), token.encode(), hashlib.sha256).hexdigest()
 
 
 def gmail_prefix(caregiver_email: str | None) -> str:
@@ -286,12 +294,14 @@ def is_enabled() -> bool:
 # ── webhook signature ────────────────────────────────────────────────────
 
 
-def signed_payload(original_to: str, auth: str, body: bytes) -> bytes:
-    return original_to.encode() + b"\n" + auth.encode() + b"\n" + body
+def sign(secret: str, original_to: str, auth: str, body: bytes | bytearray) -> str:
+    """``sha256=<hex>`` over ``original_to + "\\n" + auth + "\\n" + body``.
 
-
-def sign(secret: str, original_to: str, auth: str, body: bytes) -> str:
-    mac = hmac.new(secret.encode(), signed_payload(original_to, auth, body), hashlib.sha256)
+    Fed incrementally, so the (up to 36 MiB) body is never copied.
+    """
+    mac = hmac.new(secret.encode(), digestmod=hashlib.sha256)
+    mac.update(original_to.encode() + b"\n" + auth.encode() + b"\n")
+    mac.update(body)
     return "sha256=" + mac.hexdigest()
 
 
@@ -512,7 +522,7 @@ BREVO_API_KEY_ENV = "BREVO_API_KEY"
 BREVO_AUTHSERV_ENV = "INBOUND_BREVO_AUTHSERV_ID"
 BREVO_MAX_BODY_BYTES = 8 * 1024 * 1024  # JSON only: bodies and headers, no files
 BREVO_MAX_ITEMS = 20
-_DOWNLOAD_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{1,512}$")
+_DOWNLOAD_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,512}$")  # no dots, no slashes
 
 
 def brevo_token_ok(secret: str, header: str) -> bool:
@@ -550,6 +560,7 @@ def _brevo_headers(raw) -> dict[str, list[str]]:
     return out
 
 
+_SINGLE_VALUED_AUTH_HEADERS = ("from", "sender", "return-path")
 _AR_HEADER_FROM = re.compile(r"(?:^|[\s;])header\.from=([^\s;]+)")
 _AR_DMARC_PASS = re.compile(r"(?:^|[\s;])dmarc=pass\b")
 
@@ -565,6 +576,13 @@ def _brevo_auth_pass(headers: dict[str, list[str]], sender: str) -> bool:
     """
     authserv = os.environ.get(BREVO_AUTHSERV_ENV, "").strip().lower()
     if not authserv:
+        return False
+    # A header the verdict leans on that should occur once but occurs more
+    # often: refused (fail closed).
+    if any(len(headers.get(name, [])) > 1 for name in _SINGLE_VALUED_AUTH_HEADERS):
+        return False
+    header_from = headers.get("from")
+    if header_from and _domain(parseaddr(header_from[0])[1]) != _domain(sender):
         return False
     trusted = [
         line.partition(";")[2].lower()
@@ -652,7 +670,14 @@ def parse_brevo_item(item: dict) -> InboundMessage:
             )
         )
     return_path = headers.get("return-path")
-    first = lambda name: (headers.get(name) or [""])[0].strip()  # noqa: E731
+
+    def first(name: str) -> str:
+        """The value the loop checks see: any non-trivial one wins."""
+        values = [v.strip() for v in headers.get(name) or [] if v.strip()]
+        if name == "auto-submitted":
+            values = [v for v in values if v.lower() != "no"] or values
+        return values[0] if values else ""
+
     ctype = first("content-type").lower()
     return InboundMessage(
         recipients=recipients,
@@ -1084,9 +1109,73 @@ async def _send_receipt(th: str, to: str, accepted: int, skipped: Counter, now: 
         return False
     _state.last_reply[th] = now
     subject, body = receipt_text(accepted, skipped)
-    sent = await mailer.send_mail([to], subject, body, tags=["inbound_receipt"])
+    sent = await mailer.send_mail(
+        [to],
+        subject,
+        body,
+        tags=["inbound_receipt"],
+        headers={"Auto-Submitted": "auto-replied"},  # RFC 3834: never answered by robots
+    )
     _state.counters["reply_sent" if sent else "reply_failed"] += 1
     return sent
+
+
+# ── concurrency ──────────────────────────────────────────────────────────
+
+# At most two inbound bodies are read at a time (infra review): a third
+# request is answered 503 before a byte of its body is read.
+READ_SLOTS = asyncio.Semaphore(2)
+# Every inbound mail is processed under ONE lock, one mail after another:
+# the app holds a single DB connection, and processing interleaves DB writes
+# (address rows, Drive-only rows of the upload) with Drive and SMTP awaits.
+# A dedicated lock, not the scheduler semaphore: a long scheduler job must not
+# hold mail back for hours.
+PROCESS_LOCK = asyncio.Lock()
+_BACKGROUND: set[asyncio.Task] = set()
+
+
+def parse_json_strict(raw: bytes | bytearray):
+    """``json.loads`` that refuses duplicate keys anywhere (fail closed)."""
+    import json
+
+    def pairs(items):
+        out = {}
+        for key, value in items:
+            if key in out:
+                raise UnparseableMessageError("duplicate key")
+            out[key] = value
+        return out
+
+    try:
+        return json.loads(raw, object_pairs_hook=pairs)
+    except UnparseableMessageError:
+        raise
+    except ValueError as exc:
+        raise UnparseableMessageError(type(exc).__name__) from exc
+
+
+async def _process_batch(db, messages: list[InboundMessage]) -> None:
+    done = failed = 0
+    for message in messages:
+        try:
+            await process_message(db, message)
+            done += 1
+        except Exception as exc:  # noqa: BLE001 - a background task never raises
+            failed += 1
+            logger.error("inbound: background processing failed (%s)", type(exc).__name__)
+    logger.info("inbound: background batch done=%d failed=%d", done, failed)
+
+
+def spawn_processing(db, messages: list[InboundMessage]) -> None:
+    """Process ``messages`` after the webhook answered (Brevo route).
+
+    The task holds a reference until it ends, never raises into the loop and
+    logs counts only. A deploy that kills it loses that mail (the provider
+    already got 202): a known limit of phase 1.
+    """
+    task = asyncio.create_task(_process_batch(db, messages))
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
 
 
 # ── core ─────────────────────────────────────────────────────────────────
@@ -1110,7 +1199,15 @@ def _find_token(msg: InboundMessage) -> str | None:
 
 
 async def process_message(db, msg: InboundMessage) -> Result:
-    """Route, check and file one parsed mail (provider-neutral core)."""
+    """Route, check and file one parsed mail (provider-neutral core).
+
+    Serialized through ``PROCESS_LOCK`` (one mail at a time).
+    """
+    async with PROCESS_LOCK:
+        return await _process_message(db, msg)
+
+
+async def _process_message(db, msg: InboundMessage) -> Result:
     token = _find_token(msg)
     row = await db.find_inbound_address(token_hash(token)) if token else None
     if row is None or not row["active"]:
