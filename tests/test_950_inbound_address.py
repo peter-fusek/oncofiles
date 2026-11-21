@@ -54,6 +54,7 @@ def _env(monkeypatch):
     monkeypatch.delenv("AUDIT_EMAIL_HASH_SECRET", raising=False)
     monkeypatch.setenv(inbound_email.MIME_SECRET_ENV, SECRET)
     monkeypatch.setenv(inbound_email.BREVO_TOKEN_ENV, BREVO_SECRET)
+    monkeypatch.setenv("INBOUND_JOBS_SECRET", "synthetic-inbound-jobs-secret-952")
     monkeypatch.delenv("MAIL_FROM", raising=False)
     inbound_email.reset_state()
     yield
@@ -1360,8 +1361,14 @@ def test_signature_over_a_bytearray_body():
     ],
 )
 async def test_brevo_json_duplicate_keys_fail_closed(idb, drive, mails, raw, monkeypatch):
+    from oncofiles import inbound_queue
+
     spawned = []
-    monkeypatch.setattr(inbound_email, "spawn_processing", lambda db, m: spawned.append(m))
+
+    async def _enqueue(db, m):
+        spawned.append(m)
+
+    monkeypatch.setattr(inbound_queue, "enqueue", _enqueue)
     headers = {"content-length": str(len(raw)), inbound_email.BREVO_TOKEN_HEADER: BREVO_SECRET}
     resp = await server.inbound_brevo_webhook(_Body(raw).request(idb, headers, "/inbound/brevo"))
     assert resp.status_code == 202 and spawned == []
@@ -1381,17 +1388,21 @@ async def test_brevo_answers_before_processing(idb, drive, mails, brevo):
     assert [f[0] for f in drive.files] == [FILENAMES[0]] and fetched == ["tok-a"]
 
 
-async def test_background_failure_never_raises(idb, monkeypatch, caplog):
-    async def boom(db, msg):
+async def test_background_failure_never_raises(idb, brevo, monkeypatch, caplog):
+    from oncofiles import inbound_queue
+
+    async def boom(db, msg, progress=None):
         raise RuntimeError("synthetic failure with a@example.test")
 
-    monkeypatch.setattr(inbound_email, "process_message", boom)
+    monkeypatch.setattr(inbound_email, "_process_message", boom)
     caplog.set_level(logging.INFO)
-    msg = inbound_email.InboundMessage(recipients=[], sender="", auth_pass=False)
-    inbound_email.spawn_processing(idb, [msg, msg])
+    addr = await address_of(idb)
+    item = brevo_item(addr, files=[("S.pdf", "application/pdf", 10, "tok-a")])
+    await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(item)])
+    inbound_queue.kick(idb)
     await drain()
     text = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("oncofiles"))
-    assert "background batch done=0 failed=2" in text and "@" not in text
+    assert "state=pending reason=error:RuntimeError" in text and "@" not in text
 
 
 async def test_processing_is_serialized(idb, drive, mails, monkeypatch):

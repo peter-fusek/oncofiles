@@ -19,6 +19,7 @@ from ._gmail import GmailMixin
 from ._hard_extract import HardExtractMixin
 from ._hard_facts import HardFactsMixin
 from ._inbound import InboundAddressMixin
+from ._inbound_jobs import InboundJobsMixin
 from ._onboarding import OnboardingEventsMixin
 from ._operational import OperationalMixin
 from ._patients import PatientsMixin
@@ -45,6 +46,7 @@ class Database(
     AnalyticsMixin,
     DashboardAccessLogMixin,
     InboundAddressMixin,
+    InboundJobsMixin,
     DatabaseBase,
 ):
     """Async database for document metadata: a local SQLite file via aiosqlite (#617)."""

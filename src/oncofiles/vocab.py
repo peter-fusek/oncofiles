@@ -395,6 +395,7 @@ _SPECS: dict[str, _Spec] = {
     ),
     "device_kind": _here(("llm-extractor",), "curated.clinical_store.device_id_for"),
     "dashboard_access_event": _from("oncofiles.database._access_log", "DASHBOARD_ACCESS_EVENTS"),
+    "inbound_job_state": _from("oncofiles.database._inbound_jobs", "INBOUND_JOB_STATES"),
 }
 
 # (table, column) → domain. Every enum-like column is here, in
@@ -468,6 +469,7 @@ COLUMN_DOMAINS: dict[tuple[str, str], str] = {
     ("calendar_entries", "status"): "calendar_event_status",
     ("devices", "kind"): "device_kind",
     ("dashboard_access_log", "event"): "dashboard_access_event",
+    ("inbound_jobs", "state"): "inbound_job_state",
 }
 
 # Codes used as keys into a reference table or an external code system that this
@@ -901,6 +903,12 @@ _LABELS: dict[str, dict[str, tuple[str, str]]] = {
         "sign_in": ("Prihlásenie", "Sign-in"),
         "patient_read": ("Čítanie cudzieho pacienta (admin)", "Admin read of another patient"),
         "acl_refused": ("Prístup odmietnutý", "Access refused"),
+    },
+    "inbound_job_state": {
+        "pending": ("Čaká na spracovanie", "Pending"),
+        "processing": ("Spracúva sa", "Processing"),
+        "done": ("Spracované", "Done"),
+        "failed": ("Zlyhalo", "Failed"),
     },
 }
 

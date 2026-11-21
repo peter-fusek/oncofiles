@@ -2263,6 +2263,33 @@ def _start_sync_scheduler(
     scheduler.add_listener(_job_error, EVENT_JOB_ERROR)
     scheduler.add_listener(_job_missed, EVENT_JOB_MISSED)
 
+    # #952: durable inbound mail queue. First run at the startup grace end
+    # (_defer_jobs_past_startup_grace moves next_run_time=now there), then
+    # every WORKER_INTERVAL_MIN; the Brevo route also kicks the worker right
+    # after an enqueue. Claims are conditional updates, so the old container
+    # of a rolling deploy and this one never take the same job.
+    async def _run_inbound_queue():
+        from oncofiles import inbound_queue
+
+        try:
+            async with _sync_semaphore:
+                await inbound_queue.run_pending(db)
+        except Exception:
+            logger.exception("inbound queue run failed")
+            raise
+
+    from oncofiles.inbound_queue import WORKER_INTERVAL_MIN
+
+    scheduler.add_job(
+        local_only_task("inbound_queue", _run_inbound_queue),
+        IntervalTrigger(minutes=WORKER_INTERVAL_MIN),
+        id="inbound_queue",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+        next_run_time=datetime.now(),
+    )
+
     # OF-1/OF-2: Periodic memory check — reclaim memory + graceful restart.
     # Start after 7 min to avoid false positives from startup sync spike (#366).
     scheduler.add_job(
@@ -4033,6 +4060,13 @@ async def readiness(request: Request) -> JSONResponse:
         except Exception:
             # Never let cost telemetry block readiness response.
             pass
+        # #952: inbound mail queue backlog, codes and counts only. One bounded
+        # query: pending / processing / failed rows through the state index;
+        # the ever-growing done rows are not read.
+        try:
+            result["inbound_jobs"] = await db.inbound_job_counts(include_done=False)
+        except Exception:
+            result["inbound_jobs"] = None
         return JSONResponse(result)
     except Exception:
         logger.exception("Readiness check failed")
@@ -7290,14 +7324,24 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
     """Admin zone: mail to patient addresses that was not filed (#950).
 
     In-memory, counts only: a keyed hash of the sender (never the address),
-    the patient id prefix, mails, files, reason codes and times, plus totals.
+    the patient id prefix, mails, files, reason codes and times, plus totals,
+    and the durable queue's counts per state / failure reason (#952).
     """
     err = _require_admin(request)
     if err:
         return err
     from oncofiles import inbound_email
 
-    return JSONResponse(inbound_email.unmatched_overview())
+    out = inbound_email.unmatched_overview()
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        # #952: durable queue counts (per state; failed per reason code, e.g.
+        # download_expired), so a lost mail is visible after a restart too.
+        out["jobs"] = await db_inst.inbound_job_counts()
+    except Exception as exc:
+        logger.warning("API inbound-unmatched: job counts failed (%s)", type(exc).__name__)
+        out["jobs"] = None
+    return JSONResponse(out)
 
 
 async def _read_capped_body(request: Request, limit: int) -> bytearray | None:
@@ -7398,12 +7442,18 @@ async def inbound_brevo_webhook(request: Request) -> Response:
     the raw-MIME HMAC key). Order (infra review): FIRST the adapter must be
     enabled, else the app's ordinary 404; then the token with
     ``hmac.compare_digest`` (missing or wrong = the same 404); both before a
-    single body byte is read. Then a read slot of its own
+    single body byte is read. Without the mandatory ``INBOUND_JOBS_SECRET``
+    (#952) the answer is then 503 + Retry-After, nothing read or queued, so
+    Brevo retries. Then a read slot of its own
     (``BREVO_READ_SLOTS``; full = 503; read deadline 408), the capped read
     (413) and the strict JSON parse (duplicate keys refused).
-    The answer is 202 right away; checks, attachment downloads, filing and the
-    receipt run in a background task (``inbound_email.spawn_processing``,
-    serialized under ``PROCESS_LOCK``). Nothing from the request content is
+    Then every routable mail is written to the durable queue ``inbound_jobs``
+    (#952, ``inbound_queue.enqueue``: encrypted minimal payload, one
+    transaction) BEFORE the 202; if that write fails the answer is 500, so
+    Brevo retries (an already queued mail is not queued twice). Checks,
+    attachment downloads, filing and the receipt run in the queue worker
+    (``inbound_queue.kick`` now, plus the startup and periodic runs),
+    serialized under ``PROCESS_LOCK``. Nothing from the request content is
     logged.
     """
     from starlette.exceptions import HTTPException
@@ -7417,6 +7467,13 @@ async def inbound_brevo_webhook(request: Request) -> Response:
     if not inbound_email.brevo_token_ok(secret, token):
         logger.info("inbound: refused request (token)")
         raise HTTPException(status_code=404)
+    from oncofiles import inbound_queue
+
+    if not inbound_queue.configured():
+        # #952: INBOUND_JOBS_SECRET is mandatory; without it nothing can be
+        # queued safely, so Brevo is asked to retry later (fail closed).
+        inbound_queue._warn_unconfigured_once()
+        return _inbound_busy()
     if inbound_email.BREVO_READ_SLOTS.locked():
         return _inbound_busy()
     async with inbound_email.BREVO_READ_SLOTS:
@@ -7436,7 +7493,12 @@ async def inbound_brevo_webhook(request: Request) -> Response:
             raw = None
     db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
     if messages:
-        inbound_email.spawn_processing(db_inst, messages)
+        try:
+            await inbound_queue.enqueue(db_inst, messages)
+        except Exception as exc:
+            logger.error("inbound: enqueue failed (%s)", type(exc).__name__)
+            return JSONResponse({"error": "internal error"}, status_code=500)
+        inbound_queue.kick(db_inst)
     return JSONResponse({"status": "accepted"}, status_code=202)
 
 

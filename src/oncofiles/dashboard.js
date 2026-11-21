@@ -1079,6 +1079,22 @@
           'Filed mails: ' + (t.mails_filed || 0) + ', files accepted: ' + (t.files_accepted || 0) +
           ', unmatched: ' + unmatched + ', unknown address: ' + ((t.unknown_token || 0) + (t.inactive_token || 0)) + '.');
       clearEl(body);
+      // #952: durable queue (counts survive restarts). download_expired = the
+      // attachments waited longer than Brevo keeps them; nothing was filed.
+      var jobs = data && data.jobs;
+      if (jobs) {
+        var fr = jobs.failed_reasons || {};
+        var jobLine = document.createElement('p');
+        jobLine.className = 'curated-ops-meta';
+        setI18n(jobLine,
+          'Fronta: čaká ' + (jobs.pending || 0) + ', spracúva sa ' + (jobs.processing || 0) +
+            ', hotové ' + (jobs.done || 0) + ', zlyhalo ' + (jobs.failed || 0) +
+            ' (prílohy expirovali: ' + (fr.download_expired || 0) + ', limit pokusov: ' + (fr.max_attempts || 0) + ').',
+          'Queue: pending ' + (jobs.pending || 0) + ', processing ' + (jobs.processing || 0) +
+            ', done ' + (jobs.done || 0) + ', failed ' + (jobs.failed || 0) +
+            ' (attachments expired: ' + (fr.download_expired || 0) + ', attempts used up: ' + (fr.max_attempts || 0) + ').');
+        body.appendChild(jobLine);
+      }
       var senders = (data && data.senders) || [];
       if (!senders.length) {
         var empty = document.createElement('p');

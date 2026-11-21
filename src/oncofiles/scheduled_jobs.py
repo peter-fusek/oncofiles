@@ -117,6 +117,13 @@ CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
         "Zmazanie záznamov prístupov do dashboardu starších ako 90 dní",
         "Delete dashboard access log rows older than 90 days",
     ),
+    "inbound_queue": (
+        "infra",
+        "Fronta prijatej pošty",
+        "Inbound mail queue",
+        "Spracuje dokumenty poslané e-mailom, ktoré čakajú vo fronte (aj po reštarte)",
+        "Process documents sent by e-mail that wait in the queue (also after a restart)",
+    ),
     "pipeline_integrity": (
         "pipeline",
         "Integrita pipeline",

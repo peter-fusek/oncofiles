@@ -264,8 +264,9 @@ REACHABLE_ALLOWLIST: dict[tuple[str, str], str] = {
         "/inbound/brevo",
         "create_task",
     ): "#950 infra review: after the token check, capped read and strict JSON parse the "
-    "route answers 202 and processes in ONE background task (inbound_email.spawn_processing), "
-    "serialized under PROCESS_LOCK, never raising, logging counts only",
+    "route writes the mail to the durable queue (#952, inbound_queue.enqueue) before its 202 "
+    "and kicks ONE queue drain task (inbound_queue.kick), serialized under PROCESS_LOCK, "
+    "never raising, logging counts only",
     (
         "/inbound/brevo",
         "_create_patient_clients",
@@ -329,7 +330,8 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "/readiness",
         "readiness",
-    ): "db.ping(2 s); 24 h prompt_log SUM for the operator only",
+    ): "db.ping(2 s); 24 h prompt_log SUM and the #952 inbound_jobs backlog COUNT "
+    "(open/failed rows via the state index) for the operator only",
     ("/api/stats", "api_stats"): "1 + N(patients) COUNTs, at most once per 5 min (cache)",
     ("/api/logout", "api_logout"): "one revocation row, only for a token that verifies",
     (
@@ -341,7 +343,9 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "/inbound/brevo",
         "inbound_brevo_webhook",
-    ): "#950 after a valid token: the same work as /inbound/email",
+    ): "#950 after a valid token: token-hash lookup and one inbound_jobs INSERT "
+    "(ON CONFLICT DO NOTHING) per routable mail (#952, one transaction); the queue "
+    "worker then does the /inbound/email work",
     (
         "/inbound/email",
         "inbound_email_webhook",

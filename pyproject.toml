@@ -18,6 +18,9 @@ dependencies = [
     "google-auth-oauthlib>=1.1.0",
     "sqlglot>=25.0.0",
     "python-multipart>=0.0.18",
+    # #952: AES-GCM of the queued inbound mail payload. Already in the lock
+    # through authlib / google-auth; declared because we import it directly.
+    "cryptography>=44.0.0",
 ]
 
 [project.optional-dependencies]

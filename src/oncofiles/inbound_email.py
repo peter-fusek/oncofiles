@@ -99,7 +99,11 @@ Rules (maintainer decisions 2026-11-21 + infra review)
   subject or a file name.
 
 Counters and the unmatched-sender list live in memory (lost on restart,
-bounded); phase 1 adds no other table.
+bounded). The Brevo route does not process in the request: it writes each
+mail to the durable queue ``inbound_jobs`` before answering 202 and the worker
+in :mod:`oncofiles.inbound_queue` processes it (#952), so a deploy never loses
+a mail. The raw-MIME route (disabled in production) still processes
+synchronously before its 202; a failure there is a 500 the provider retries.
 """
 
 from __future__ import annotations
@@ -327,6 +331,9 @@ class InboundAttachment:
     # ``data`` empty: the core downloads only after the sender check passed.
     fetch: Callable[[], Awaitable[bytes | None]] | None = None
     declared_size: int | None = None
+    # The provider's download reference (Brevo ``DownloadToken``), kept so the
+    # durable queue (#952) can rebuild ``fetch`` after a restart. Never logged.
+    ref: str = ""
 
 
 @dataclass
@@ -667,6 +674,7 @@ def parse_brevo_item(item: dict) -> InboundMessage:
                 inline=bool(att.get("ContentID")) and not att.get("Name"),
                 fetch=_brevo_fetcher(token, api_key, MAX_FILE_BYTES + 1),
                 declared_size=size,
+                ref=token,
             )
         )
     return_path = headers.get("return-path")
@@ -1137,6 +1145,8 @@ READ_DEADLINE_S = 30
 # A dedicated lock, not the scheduler semaphore: a long scheduler job must not
 # hold mail back for hours.
 PROCESS_LOCK = asyncio.Lock()
+# Background tasks of this feature (the #952 queue worker kicked by the Brevo
+# route); a reference is held until each task ends.
 _BACKGROUND: set[asyncio.Task] = set()
 
 
@@ -1160,31 +1170,54 @@ def parse_json_strict(raw: bytes | bytearray):
         raise UnparseableMessageError(type(exc).__name__) from exc
 
 
-async def _process_batch(db, messages: list[InboundMessage]) -> None:
-    done = failed = 0
-    for message in messages:
-        try:
-            await process_message(db, message)
-            done += 1
-        except Exception as exc:  # noqa: BLE001 - a background task never raises
-            failed += 1
-            logger.error("inbound: background processing failed (%s)", type(exc).__name__)
-    logger.info("inbound: background batch done=%d failed=%d", done, failed)
-
-
-def spawn_processing(db, messages: list[InboundMessage]) -> None:
-    """Process ``messages`` after the webhook answered (Brevo route).
-
-    The task holds a reference until it ends, never raises into the loop and
-    logs counts only. A deploy that kills it loses that mail (the provider
-    already got 202): a known limit of phase 1.
-    """
-    task = asyncio.create_task(_process_batch(db, messages))
-    _BACKGROUND.add(task)
-    task.add_done_callback(_BACKGROUND.discard)
-
-
 # ── core ─────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class JobProgress:
+    """Durable progress of one queued mail (#952), so a retry never files twice.
+
+    ``filed`` holds the sha256 (and, for a provider reference, the download
+    token) of every file already filed by an earlier attempt;
+    ``receipt_sent`` says the caregiver already got the receipt.
+    ``save`` (set by the queue worker) persists the change on the event loop
+    before the next file is filed.
+    """
+
+    filed: set[str] = field(default_factory=set)
+    receipt_sent: bool = False
+    save: Callable[[], Awaitable[None]] | None = None
+    # A job claimed before: every file is first checked read-only against what
+    # is already stored (``_stored_md5s``), so a write whose progress save was
+    # lost is never repeated.
+    retry: bool = False
+
+    async def mark_filed(self, sha: str, ref: str = "") -> None:
+        self.filed.add(sha)
+        if ref:
+            self.filed.add(ref)
+        if self.save is not None:
+            await self.save()
+
+    async def mark_receipt_sent(self) -> None:
+        self.receipt_sent = True
+        if self.save is not None:
+            await self.save()
+
+
+async def _stored_md5s(db, patient_id: str) -> set[str]:
+    """md5s already stored for the patient that the document md5 check misses.
+
+    The curated mirror rows' ``source_md5`` (a file the pipeline already filed
+    out of the inbox) and one read-only listing of the curated inbox
+    (``dashboard_upload.stored_inbox_md5s``). A failed listing raises: the
+    attempt fails and is retried, never risking a second copy.
+    """
+    from oncofiles.dashboard_upload import stored_inbox_md5s
+
+    state = await db.curated_index_state(patient_id=patient_id)
+    md5s = {s["source_md5"] for s in state.values() if s.get("source_md5") and not s["deleted"]}
+    return md5s | await stored_inbox_md5s(db, patient_id, log_pid=patient_id[:4])
 
 
 @dataclass
@@ -1213,7 +1246,7 @@ async def process_message(db, msg: InboundMessage) -> Result:
         return await _process_message(db, msg)
 
 
-async def _process_message(db, msg: InboundMessage) -> Result:
+async def _process_message(db, msg: InboundMessage, progress: JobProgress | None = None) -> Result:
     token = _find_token(msg)
     row = await db.find_inbound_address(token_hash(token)) if token else None
     if row is None or not row["active"]:
@@ -1231,7 +1264,13 @@ async def _process_message(db, msg: InboundMessage) -> Result:
         return Result("ignored_loop", pp)
 
     async with _state.lock(patient_id):
-        mid_key = th + ":" + hashlib.sha256(msg.message_id.encode()).hexdigest()
+        # Bound to the sender and the verdict (security review): an unmatched
+        # or forged mail with a real mail's Message-ID never blocks the real one.
+        mid_key = hashlib.sha256(
+            "\n".join(
+                (th, msg.message_id, msg.sender.strip().lower(), str(bool(msg.auth_pass)))
+            ).encode()
+        ).hexdigest()
         if msg.message_id and mid_key in _state.done_ids:
             _state.counters["duplicate_delivery"] += 1
             logger.info("inbound: patient %s duplicate delivery ignored", pp)
@@ -1274,10 +1313,22 @@ async def _process_message(db, msg: InboundMessage) -> Result:
             return Result("rate_limited", pp)
 
         skipped: Counter = Counter(msg.parse_skips)
+        prefiled = 0
+        if progress is not None and progress.filed:
+            # A retried queue job (#952): what an earlier attempt filed is not
+            # downloaded or filed again; it counts as accepted.
+            keep = []
+            for a in msg.attachments:
+                if a.ref and a.ref in progress.filed:
+                    prefiled += 1
+                else:
+                    keep.append(a)
+            msg.attachments = keep
         await _load_referenced(msg, skipped)
         recent = _state.recent.setdefault(patient_id, OrderedDict())
         seen: set[str] = set()
-        candidates: list[tuple[str, bytes, str]] = []
+        candidates: list[tuple[str, bytes, str, str]] = []
+        stored: set[str] | None = None  # md5s already stored (retried jobs only)
         total = 0
         for i, att in enumerate(msg.attachments):
             checked = screen(att, i)
@@ -1286,7 +1337,23 @@ async def _process_message(db, msg: InboundMessage) -> Result:
                 continue
             name, _mime = checked
             sha = hashlib.sha256(att.data).hexdigest()
+            if progress is not None and sha in progress.filed:
+                prefiled += 1
+                seen.add(sha)
+                continue
             md5 = hashlib.md5(att.data, usedforsecurity=False).hexdigest()
+            if progress is not None and progress.retry:
+                # #952 infra review: an earlier attempt may have been killed
+                # after Drive confirmed the write but before the progress
+                # save. Read-only check of what is stored; a hit is filed.
+                if stored is None:
+                    stored = await _stored_md5s(db, patient_id)
+                if md5 in stored or await db.document_md5_exists(md5, patient_id=patient_id):
+                    prefiled += 1
+                    seen.add(sha)
+                    await progress.mark_filed(sha, att.ref)
+                    _state.counters["retry_already_stored"] += 1
+                    continue
             if (
                 sha in seen
                 or sha in recent
@@ -1302,12 +1369,12 @@ async def _process_message(db, msg: InboundMessage) -> Result:
                 skipped["mail_too_large"] += 1
                 continue
             total += len(att.data)
-            candidates.append((name, att.data, sha))
+            candidates.append((name, att.data, sha, att.ref))
 
-        accepted = 0
+        accepted = prefiled
         stop_code: str | None = None
         today = _files_today(th, now)
-        for name, data, sha in candidates:
+        for name, data, sha, ref in candidates:
             if stop_code:
                 skipped[stop_code if stop_code in _STOPPING else "not_attempted"] += 1
                 continue
@@ -1318,14 +1385,16 @@ async def _process_message(db, msg: InboundMessage) -> Result:
             if code == "uploaded":
                 accepted += 1
                 _remember(recent, sha, RECENT_MAX)
+                if progress is not None:
+                    await progress.mark_filed(sha, ref)
                 continue
             skipped[code] += 1
             if code in _STOPPING or code == "store_failed":
                 stop_code = code
-        if accepted:
-            _state.files_day.setdefault(th, []).append((now, accepted))
+        if accepted - prefiled:
+            _state.files_day.setdefault(th, []).append((now, accepted - prefiled))
         _state.counters["mails_filed"] += 1
-        _state.counters["files_accepted"] += accepted
+        _state.counters["files_accepted"] += accepted - prefiled
         for code, n in skipped.items():
             _state.counters[f"skipped_{code}"] += n
         if msg.message_id:
@@ -1337,6 +1406,8 @@ async def _process_message(db, msg: InboundMessage) -> Result:
             dict(sorted(skipped.items())),
         )
         replied = False
-        if accepted or skipped:
+        if (accepted or skipped) and not (progress is not None and progress.receipt_sent):
             replied = await _send_receipt(th, msg.sender, accepted, skipped, now)
+            if progress is not None:
+                await progress.mark_receipt_sent()
         return Result("filed", pp, accepted, skipped, replied)
