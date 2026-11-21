@@ -32,7 +32,7 @@ from oncofiles.calendar_sync import (
 )
 from oncofiles.database import Database
 from oncofiles.models import CalendarEntry, DocumentCategory
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PATIENT_A_UUID, make_doc
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "oncofiles"
 
@@ -53,7 +53,7 @@ def _mock_ctx(db: Database, gdrive: MagicMock | None = None) -> MagicMock:
 
 async def _treatment_event_count(db: Database) -> int:
     async with db.db.execute(
-        "SELECT COUNT(*) AS n FROM treatment_events WHERE patient_id = ?", (ERIKA_UUID,)
+        "SELECT COUNT(*) AS n FROM treatment_events WHERE patient_id = ?", (PATIENT_A_UUID,)
     ) as cur:
         return (await cur.fetchone())["n"]
 
@@ -78,7 +78,7 @@ def _event(event_id: str, summary: str) -> dict:
 async def test_keyword_fallback_marks_possibly_medical_with_keyword_type(db: Database):
     with patch("oncofiles.cloud_guard.cloud_ai_enabled", return_value=False):
         is_medical, _, event_type = await _classify_event_medical(
-            "Lab visit", "", "", patient_id=ERIKA_UUID
+            "Lab visit", "", "", patient_id=PATIENT_A_UUID
         )
     assert is_medical is True
     assert event_type == KEYWORD_EVENT_TYPE
@@ -87,12 +87,12 @@ async def test_keyword_fallback_marks_possibly_medical_with_keyword_type(db: Dat
 async def test_calendar_keyword_match_creates_no_treatment_event(db: Database):
     cal = _calendar([_event("ev_930_a", "CT kontrola"), _event("ev_930_b", "Lab")])
     with patch("oncofiles.cloud_guard.cloud_ai_enabled", return_value=False):
-        stats = await _calendar_sync_inner(db, cal, True, patient_id=ERIKA_UUID)
+        stats = await _calendar_sync_inner(db, cal, True, patient_id=PATIENT_A_UUID)
 
     assert stats["medical"] == 2  # still shown as possibly medical
     assert stats["treatment_events_created"] == 0
     assert await _treatment_event_count(db) == 0
-    entries = await db.list_calendar_entries(patient_id=ERIKA_UUID)
+    entries = await db.list_calendar_entries(patient_id=PATIENT_A_UUID)
     assert {e.google_event_id for e in entries} == {"ev_930_a", "ev_930_b"}
     assert all(e.is_medical for e in entries)
     assert all(e.treatment_event_id is None for e in entries)
@@ -104,7 +104,7 @@ async def test_calendar_model_classification_still_creates_treatment_event(db: D
         "oncofiles.calendar_sync._classify_event_medical",
         return_value=(True, 0.9, "chemo"),
     ):
-        stats = await _calendar_sync_inner(db, cal, True, patient_id=ERIKA_UUID)
+        stats = await _calendar_sync_inner(db, cal, True, patient_id=PATIENT_A_UUID)
     assert stats["treatment_events_created"] == 1
     assert await _treatment_event_count(db) == 1
 
@@ -116,7 +116,7 @@ async def test_auto_create_refuses_keyword_type_directly(db: Database):
         start_time=datetime(2027, 4, 12, 9, 0, tzinfo=UTC),
         is_medical=True,
     )
-    entry.patient_id = ERIKA_UUID
+    entry.patient_id = PATIENT_A_UUID
     entry = await db.upsert_calendar_entry(entry)
     assert await _auto_create_treatment_event(db, entry, KEYWORD_EVENT_TYPE) is None
     assert await _treatment_event_count(db) == 0
@@ -128,7 +128,7 @@ async def test_auto_create_refuses_keyword_type_directly(db: Database):
 async def test_related_documents_empty_returns_note(db: Database):
     from oncofiles.tools.documents import RELATED_DOCUMENTS_NONE_NOTE, get_related_documents
 
-    doc = await db.insert_document(make_doc(file_id="file_930_rel"), patient_id=ERIKA_UUID)
+    doc = await db.insert_document(make_doc(file_id="file_930_rel"), patient_id=PATIENT_A_UUID)
     result = json.loads(await get_related_documents(_mock_ctx(db), doc.id))
     assert result["related"] == []
     assert result["total"] == 0
@@ -176,15 +176,15 @@ async def test_rename_without_document_date_keeps_name(db: Database):
         gdrive_id="gd_930_nodate",
         gdrive_modified_time=datetime(2031, 11, 23, 17, 41, tzinfo=UTC),
     )
-    await db.insert_document(doc, patient_id=ERIKA_UUID)
+    await db.insert_document(doc, patient_id=PATIENT_A_UUID)
     gdrive = MagicMock()
     gdrive.batch_rename.side_effect = lambda renames: {fid: True for fid in renames}
 
-    stats = await _rename_to_standard(db, gdrive, patient_id=ERIKA_UUID)
+    stats = await _rename_to_standard(db, gdrive, patient_id=PATIENT_A_UUID)
 
     assert stats["renamed"] == 0
     gdrive.batch_rename.assert_not_called()
-    docs = await db.list_documents(patient_id=ERIKA_UUID)
+    docs = await db.list_documents(patient_id=PATIENT_A_UUID)
     assert [d.filename for d in docs] == ["scan kontrola.pdf"]
 
 
@@ -199,12 +199,12 @@ async def test_rename_with_document_date_uses_that_date(db: Database):
         gdrive_id="gd_930_dated",
         gdrive_modified_time=datetime(2031, 11, 23, 17, 41, tzinfo=UTC),
     )
-    await db.insert_document(doc, patient_id=ERIKA_UUID)
+    await db.insert_document(doc, patient_id=PATIENT_A_UUID)
     gdrive = MagicMock()
     gdrive.batch_rename.side_effect = lambda renames: {fid: True for fid in renames}
     gdrive.get_file_parents.return_value = []
 
-    stats = await _rename_to_standard(db, gdrive, patient_id=ERIKA_UUID)
+    stats = await _rename_to_standard(db, gdrive, patient_id=PATIENT_A_UUID)
 
     assert stats["renamed"] == 1
     (renames,) = gdrive.batch_rename.call_args.args
@@ -216,13 +216,13 @@ async def test_rename_with_document_date_uses_that_date(db: Database):
 
 @pytest.fixture
 def primary_clinic():
-    patient_context._contexts[ERIKA_UUID] = {
+    patient_context._contexts[PATIENT_A_UUID] = {
         "name": "Jana Testova",
         "primary_institution": "ZZZClinic",
         "treatment": {"institution": "ZZZClinic"},
     }
     yield
-    patient_context._contexts.pop(ERIKA_UUID, None)
+    patient_context._contexts.pop(PATIENT_A_UUID, None)
 
 
 async def _institution(db: Database, doc_id: int):
@@ -235,7 +235,7 @@ async def test_backfill_missing_institutions_skips_gdrive_rows(db: Database, pri
 
     doc = make_doc(file_id="gdrive:synthetic930a", institution=None)
     doc.category = DocumentCategory.CHEMO_SHEET
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PATIENT_A_UUID)
     await db.update_structured_metadata(doc.id, json.dumps({"providers": []}))
 
     stats = await backfill_missing_institutions(db.db)
@@ -251,17 +251,17 @@ async def test_patient_context_fallback_skips_gdrive_and_curated_rows(db: Databa
 
     drive_only = make_doc(file_id="gdrive:synthetic930b", institution=None)
     drive_only.category = DocumentCategory.DISCHARGE
-    drive_only = await db.insert_document(drive_only, patient_id=ERIKA_UUID)
+    drive_only = await db.insert_document(drive_only, patient_id=PATIENT_A_UUID)
     curated = make_doc(file_id="file_930_curated", institution=None)
     curated.category = DocumentCategory.DISCHARGE
-    curated = await db.insert_document(curated, patient_id=ERIKA_UUID)
+    curated = await db.insert_document(curated, patient_id=PATIENT_A_UUID)
     legacy = make_doc(file_id="file_930_legacy", institution=None)
     legacy.category = DocumentCategory.DISCHARGE
-    legacy = await db.insert_document(legacy, patient_id=ERIKA_UUID)
+    legacy = await db.insert_document(legacy, patient_id=PATIENT_A_UUID)
 
     indexer.register_curated_ids([curated.id])
     try:
-        stats = await backfill_institution_from_patient_context(db.db, patient_id=ERIKA_UUID)
+        stats = await backfill_institution_from_patient_context(db.db, patient_id=PATIENT_A_UUID)
     finally:
         indexer.forget_curated_ids([curated.id])
 
@@ -286,7 +286,7 @@ async def test_validate_categories_real_run_does_not_crash(db: Database):
         filename="20270115_JanaTestova_NOU_Report_PacientAdvokat.pdf",
         category=DocumentCategory.REPORT,
     )
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PATIENT_A_UUID)
     await db.update_structured_metadata(doc.id, json.dumps({"document_type": "report"}))
 
     dry = json.loads(await validate_categories(_mock_ctx(db), dry_run=True))
@@ -297,7 +297,7 @@ async def test_validate_categories_real_run_does_not_crash(db: Database):
     assert entry["action"] == "corrected"
     assert entry["suggested_category"] == "advocate"
     assert real["summary"]["corrected"] >= 1
-    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+    updated = await db.get_document(doc.id, patient_id=PATIENT_A_UUID)
     assert updated.category.value == "advocate"
 
 
@@ -309,7 +309,7 @@ def test_filename_parser_unknown_institution_log_has_no_filename(caplog):
 
     src = "20270326_JanaTestova_Unknown_ChemoSheet_Zorvanx.pdf"
     with caplog.at_level(logging.INFO, logger="oncofiles.filename_parser"):
-        assert rename_to_standard(src, patient_id=ERIKA_UUID) == src
+        assert rename_to_standard(src, patient_id=PATIENT_A_UUID) == src
     assert caplog.records, "expected the #404 info line"
     text = "\n".join(r.getMessage() for r in caplog.records)
     assert "Zorvanx" not in text
