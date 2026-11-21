@@ -1326,6 +1326,8 @@ def _facts_of(text: str, vocab) -> set[tuple]:
 
     front, pages = parse_sidecar(text)
     day = str(front.get("doc_date") or "")[:10] or None
+    if day and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        day = None  # a month-precision "YYYY-MM" (#919) is no report day
     category = category_for(str(front.get("doc_type") or "other")).value
     facts, _ = extract_lab_facts(pages, vocab, report_date=day,
                                  inline=category in _INLINE_CATEGORIES)  # fmt: skip

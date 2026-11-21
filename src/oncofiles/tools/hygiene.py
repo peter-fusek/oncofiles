@@ -924,7 +924,13 @@ async def _build_document_matrix(
     doc_statuses = []
     for doc in docs:
         has_ocr = doc.id in ocr_ids
-        has_date = doc.document_date is not None
+        # #919: a curated document dated by month only has document_date NULL
+        month = (
+            None
+            if doc.document_date is not None
+            else document_stage.document_month(doc.file_id, doc.structured_metadata)
+        )
+        has_date = doc.document_date is not None or month is not None
         stage = document_stage.describe(
             filename=doc.filename,
             file_id=doc.file_id,
@@ -940,6 +946,7 @@ async def _build_document_matrix(
         )
         status = {
             "doc": doc,
+            "month": month,
             "has_ocr": has_ocr,
             "has_ai": doc.ai_summary is not None,
             "has_metadata": bool(doc.structured_metadata),
@@ -995,7 +1002,9 @@ async def _build_document_matrix(
                 "id": doc.id,
                 "filename": doc.filename[:60] if truncate_names else doc.filename,
                 "category": doc.category.value,
-                "date": str(doc.document_date) if doc.document_date else None,
+                # #919: a month-precision date is "YYYY-MM" (the dashboard shows
+                # 03/2027); the shape itself says the precision, no extra key
+                "date": str(doc.document_date) if doc.document_date else s["month"],
                 "institution": doc.institution,
                 "gdrive_id": doc.gdrive_id,
                 "has_ocr": s["has_ocr"],

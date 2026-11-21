@@ -41,6 +41,7 @@ from datetime import UTC, datetime
 from oncofiles.curated import classify as classify_mod
 from oncofiles.curated import extract as extract_mod
 from oncofiles.curated import llm, llm_input, review_codes
+from oncofiles.curated import naming as naming_mod
 from oncofiles.curated import normalise as normalise_mod
 from oncofiles.curated import orientation as orientation_mod
 from oncofiles.curated import vocabulary as vocab_mod
@@ -53,7 +54,12 @@ from oncofiles.curated.contract import (
     nfc,
     parse_contract,
 )
-from oncofiles.curated.drive_ops import CANARY_NAME, Item, WriteVerificationError
+from oncofiles.curated.drive_ops import (
+    CANARY_NAME,
+    Item,
+    WriteVerificationError,
+    is_text_state_mime,
+)
 from oncofiles.curated.naming import (
     NATIVE_EXT,
     build_filename,
@@ -407,7 +413,13 @@ def render_sidecar(
     meta = {
         "source_file": source_name,
         "patient": contract.patient_display,
-        "doc_date": (f"{fields.date[:4]}-{fields.date[4:6]}-{fields.date[6:]}" if fields else None),
+        "doc_date": naming_mod.iso_of(fields.date) if fields else None,
+        # #919: only a month-precision date carries the key (day sidecars unchanged)
+        **(
+            {naming_mod.PRECISION_KEY: naming_mod.PRECISION_MONTH}
+            if fields and naming_mod.date_precision(fields.date) == naming_mod.PRECISION_MONTH
+            else {}
+        ),
         "institution": fields.institution if fields else raw.get("institution"),
         "doc_type": cls.doc_type if cls else None,
         "doctor": raw.get("doctor"),
@@ -582,13 +594,15 @@ def _normalise_report() -> dict:
     return {
         "enabled": False,  # CURATED_NORMALISE_FILED for this run (real renames)
         "max_per_run": 0,
-        # {folder, from, to, sidecar_from, sidecar_to, date_source}: within this
-        # run's cap (a real run renames exactly these)
+        # {folder, from, to, sidecar_from, sidecar_to, date_source, date_precision}:
+        # within this run's cap (a real run renames exactly these); a month-precision
+        # entry also has precision_keys: written | present | not_editable |
+        # front_matter_unreadable
         "planned": [],
         "renamed": [],  # real runs: the planned entries that were done
         "deferred": [],  # over the cap / action budget: a later run does them
         "review": [],  # {source, code: name_not_standard, why}: no rename possible
-        "skipped": [],  # {source, code}: month_only_date | no_sidecar
+        "skipped": [],  # {source, code}: no_sidecar
         "counts": {},
     }
 
@@ -1471,6 +1485,15 @@ class Runner:
             )
             return
         self._move_single(tree, folder, target_folder, item, new_name)
+        token = cls.fields.date if cls and cls.fields else ""
+        if naming_mod.date_precision(token) == naming_mod.PRECISION_MONTH:
+            # #919: the note is its own text: its front matter carries the precision
+            self._write_month_keys(
+                f"{target_folder}/{new_name}",
+                item,
+                self._sidecar_text(item),
+                naming_mod.iso_of(token),
+            )
         self.report.documents.append(
             {
                 "source": item.name,
@@ -1516,7 +1539,10 @@ class Runner:
         one journaled pair, at most ``normalise_max`` renames per run. A dry run
         plans and writes nothing; with ``normalise_filed`` off a real run does
         nothing (the preview still shows the plan). No date printed in the text
-        → no rename, code ``name_not_standard``; a month-only note → skipped.
+        → no rename, code ``name_not_standard``. A month-precision date (#919)
+        is filed as ``YYYYMM00`` and its front matter (sidecar, or the text note
+        itself) then gets ``doc_date`` + ``doc_date_precision: month``
+        (``_write_month_keys``).
         """
         from oncofiles.curated.indexer import parse_sidecar  # indexer imports this module
 
@@ -1538,9 +1564,6 @@ class Runner:
                 if n.startswith(".") or _is_sidecar(n, names) or is_standard(n, mime=item.mime):
                     continue
                 label = f"{folder}/{item.name}"
-                if normalise_mod.is_month_only(n):
-                    rep["skipped"].append({"source": label, "code": normalise_mod.CODE_MONTH_ONLY})
-                    continue
                 # a text note is its own text (no sidecar); a Google Doc never is
                 text_source = _is_text_source(item) and not is_google_native(item.mime)
                 sidecar = None if text_source else self._existing_sidecar(tree, folder, item)
@@ -1587,7 +1610,14 @@ class Runner:
                     "sidecar_from": sidecar.name if sidecar else None,
                     "sidecar_to": f"{plan.target}.md" if sidecar else None,
                     "date_source": plan.date_source,
+                    "date_precision": plan.precision,
                 }
+                month = plan.precision == naming_mod.PRECISION_MONTH
+                if month and self.actions_used + cost + 1 > self.opts.max_actions:
+                    over = True  # the front-matter edit is one more file action
+                if over and real:
+                    rep["deferred"].append({"source": label})
+                    continue
                 if over:  # dry run: show what a later run would do
                     rep["deferred"].append(entry)
                     continue
@@ -1600,6 +1630,15 @@ class Runner:
                     " (pair)" if sidecar else "",
                 )
                 self._rename_in_place(tree, folder, item, sidecar, plan.target)
+                if month:
+                    target_item = sidecar if sidecar is not None else item
+                    target_name = entry["sidecar_to"] if sidecar else plan.target
+                    entry["precision_keys"] = self._write_month_keys(
+                        f"{folder}/{target_name}",
+                        target_item,
+                        raw,
+                        naming_mod.iso_of(plan.target[:8]),
+                    )
                 current -= own
                 current |= {nfc(plan.target)} | ({nfc(entry["sidecar_to"])} if sidecar else set())
                 if real:
@@ -1609,8 +1648,8 @@ class Runner:
             "renamed": len(rep["renamed"]),
             "deferred": len(rep["deferred"]),
             "review": len(rep["review"]),
-            "month_only": sum(
-                1 for s in rep["skipped"] if s["code"] == normalise_mod.CODE_MONTH_ONLY
+            "month_precision": sum(
+                1 for p in rep["planned"] if p.get("date_precision") == naming_mod.PRECISION_MONTH
             ),
             "no_sidecar": sum(
                 1 for s in rep["skipped"] if s["code"] == normalise_mod.CODE_NO_SIDECAR
@@ -1622,6 +1661,41 @@ class Runner:
                 self.run_id,
                 " ".join(f"{k}={v}" for k, v in rep["counts"].items()),
             )
+
+    def _write_month_keys(self, path: str, target: Item, text: str, year_month: str) -> str:
+        """#919: ``doc_date: "YYYY-MM"`` + ``doc_date_precision: month`` in the
+        front matter of ``target`` (a sidecar, or a text note that is its own
+        text), journaled first; only those keys change, the body stays byte for
+        byte (``normalise.with_month_keys``), ``drive_ops`` reads it back.
+
+        Returns ``written``, ``present`` (nothing to change), ``not_editable``
+        (not a ``.md`` / ``.txt`` text file: a JSON or CSV note is never edited) or
+        ``front_matter_unreadable`` (an unclosed block: never guessed, the
+        ``YYYYMM00`` name alone carries the precision for the index).
+        """
+        name = path.rsplit("/", 1)[-1].lower()
+        if not name.endswith((".md", ".txt")) or not is_text_state_mime(target.mime):
+            return "not_editable"  # a JSON / CSV note or a non-text mime: never edited
+        new = normalise_mod.with_month_keys(text, year_month)
+        if new is None:
+            m = re.match(r"\A---\n(.*?)\n---(?=\n|\Z)", text, re.S)
+            return "present" if m or not text.startswith("---") else "front_matter_unreadable"
+        self._act(
+            {
+                "action": "set_date_precision",
+                "path": path,
+                "keys": ["doc_date", naming_mod.PRECISION_KEY],
+                "precision": naming_mod.PRECISION_MONTH,
+                # undo: restore the previous front matter (keys only; body untouched)
+                "undo": {
+                    "op": "front_matter_keys",
+                    "path": path,
+                    "added_block": not text.startswith("---"),
+                },
+            },
+            lambda: self.drive.update_text(target.id, new),
+        )
+        return "written"
 
     def _rename_in_place(self, tree, folder, item, sidecar, new_name) -> None:
         """Rename source (+ sidecar) inside ``folder``: journaled first, confirmed

@@ -2,6 +2,10 @@
 
     YYYYMMDD-PatientName-Institution-DocumentType-DoctorName-HospitalName[-Subject][-nn].ext
 
+The date is a real calendar day, or ``YYYYMM00`` (#919, maintainer decision
+2026-11-21) for a document whose printed date has only a month and a year:
+day ``00`` with a month 01–12, never a ``00`` month and no other partial form.
+
 Six mandatory hyphen-separated fields, every field CamelCase ASCII with no
 diacritics, spaces or underscores, so ``basename.split('-')`` parses the whole
 name. Missing values are the literal ``Unknown``; the position says which field
@@ -15,12 +19,13 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from datetime import date
 
 UNKNOWN = "Unknown"
 MAX_LEN = 120
 SUBJECT_MAX = 30
 
-_DATE_RE = re.compile(r"^\d{8}$")
+_DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
 _FIELD_RE = re.compile(r"^[A-Za-z0-9]+$")
 _NN_RE = re.compile(r"^\d{2}$")
 # date-Patient-Institution-Type-Doctor-Hospital[-Subject][-nn].ext
@@ -29,6 +34,51 @@ _NAME_RE = re.compile(
     r"-(?P<doc_type>[A-Za-z0-9]+)-(?P<doctor>[A-Za-z0-9]+)-(?P<hospital>[A-Za-z0-9]+)"
     r"(?:-(?P<subject>[A-Za-z][A-Za-z0-9]*))?(?:-(?P<nn>\d{2}))?\.(?P<ext>[a-z0-9]+)$"
 )
+
+
+PRECISION_DAY = "day"
+PRECISION_MONTH = "month"
+# Sidecar / text-note front-matter key of a month-precision date (#919)
+PRECISION_KEY = "doc_date_precision"
+
+
+def date_precision(token: str | None) -> str | None:
+    """``day`` for a real calendar date ``YYYYMMDD``, ``month`` for ``YYYYMM00``
+    with a month 01–12 (#919), None for anything else (``YYYY0000``, ``20271301``,
+    ``20270230``, ``Unknown``, …). The ONE date rule of builder and checker."""
+    m = _DATE_RE.match(token or "")
+    if not m:
+        return None
+    year, month, day = (int(g) for g in m.groups())
+    if not 1 <= month <= 12 or year < 1:
+        return None
+    if day == 0:
+        return PRECISION_MONTH
+    try:
+        date(year, month, day)
+    except ValueError:
+        return None
+    return PRECISION_DAY
+
+
+def month_token(year_month: str) -> str:
+    """``2027-03`` → ``20270300`` (the month-precision date token, #919)."""
+    m = re.fullmatch(r"(\d{4})-(\d{2})", year_month or "")
+    token = f"{m.group(1)}{m.group(2)}00" if m else ""
+    if date_precision(token) != PRECISION_MONTH:
+        raise ValueError(f"invalid month {year_month!r} — must be YYYY-MM")
+    return token
+
+
+def iso_of(token: str) -> str | None:
+    """The sidecar ``doc_date`` of a date token: ``2027-03-05`` for a day,
+    ``2027-03`` for a month (#919), None for an invalid token."""
+    precision = date_precision(token)
+    if precision == PRECISION_DAY:
+        return f"{token[:4]}-{token[4:6]}-{token[6:]}"
+    if precision == PRECISION_MONTH:
+        return f"{token[:4]}-{token[4:6]}"
+    return None
 
 
 def ascii_fold(value: str) -> str:
@@ -176,7 +226,7 @@ def has_title(token: str | None) -> bool:
 
 @dataclass(frozen=True)
 class NameFields:
-    date: str  # YYYYMMDD or "Unknown"
+    date: str  # YYYYMMDD, or YYYYMM00 for a month-precision date (#919)
     patient: str
     institution: str
     doc_type: str
@@ -222,12 +272,13 @@ def subject_token(value: str | None) -> str | None:
 def build_filename(fields: NameFields, ext: str, *, max_len: int = MAX_LEN) -> str:
     """Build a standard filename. Raises ValueError on an invalid date.
 
-    The date must be ``YYYYMMDD``. ``Unknown`` is not accepted for the date: a
+    The date must be a real ``YYYYMMDD`` or a month-precision ``YYYYMM00``
+    (``date_precision``, #919). ``Unknown`` is not accepted for the date: a
     document with no reliable clinical date stays in the inbox for review
     (README §5), it does not get a placeholder date.
     """
-    if not _DATE_RE.match(fields.date or ""):
-        raise ValueError(f"invalid document date {fields.date!r} — must be YYYYMMDD")
+    if date_precision(fields.date) is None:
+        raise ValueError(f"invalid document date {fields.date!r} — must be YYYYMMDD or YYYYMM00")
     ext = (ext or "").lower().lstrip(".")
     if not re.fullmatch(r"[a-z0-9]+", ext):
         raise ValueError(f"invalid extension {ext!r}")
@@ -262,7 +313,7 @@ def build_filename(fields: NameFields, ext: str, *, max_len: int = MAX_LEN) -> s
 def parse_filename(name: str) -> NameFields | None:
     """Parse a standard filename; None if it does not follow the standard."""
     m = _NAME_RE.match(name or "")
-    if not m:
+    if not m or date_precision(m.group("date")) is None:
         return None
     nn = m.group("nn")
     return NameFields(

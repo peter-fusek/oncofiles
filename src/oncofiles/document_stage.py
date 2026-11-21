@@ -30,6 +30,7 @@ never a filename or a document value.
 from __future__ import annotations
 
 import json
+import re
 
 # Steps a person can follow, in the order they happen.
 STEPS = ("extracted", "named", "filed")
@@ -117,6 +118,26 @@ def is_named(
     from oncofiles.filename_parser import is_standard_format
 
     return is_standard_format(filename, patient_id=patient_id)
+
+
+_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+def document_month(file_id: str | None, structured_metadata=None) -> str | None:
+    """``YYYY-MM`` of a curated row dated by month only (#919), else None.
+
+    The curated indexer stores such a document with ``document_date`` NULL
+    (never a day printed nowhere) and ``doc_date_precision: "month"`` plus
+    ``doc_month`` in its metadata. A row that has this month HAS a date: it
+    is never ``missing_date``, and the dashboard shows ``03/2027``.
+    """
+    if not is_curated_row(file_id, structured_metadata):
+        return None
+    meta = _metadata(structured_metadata)
+    month = meta.get("doc_month")
+    if meta.get("doc_date_precision") == "month" and isinstance(month, str):
+        return month if _MONTH_RE.match(month) else None
+    return None
 
 
 def is_extracted(*, has_text: bool, extractable: bool) -> bool:
@@ -258,6 +279,8 @@ def describe(
     # Parse the metadata once, and only for a row that can be curated at all
     # (a legacy row's AI metadata is large and never read here).
     structured_metadata = _metadata(structured_metadata) if is_curated_file_id(file_id) else None
+    # #919: a month-precision curated document is dated (document_date NULL by design)
+    has_date = has_date or document_month(file_id, structured_metadata) is not None
     reason = attention_reason(
         file_id=file_id,
         structured_metadata=structured_metadata,
