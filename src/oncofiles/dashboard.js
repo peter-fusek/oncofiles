@@ -117,6 +117,7 @@
       if (typeof relabelPatients === 'function' && patientsCache.length) relabelPatients();
       if (typeof renderTable === 'function' && docsData.length) renderTable();
       if (typeof renderActivity === 'function' && activityData) renderActivity(null);
+      if (typeof renderQuickLook === 'function' && quickLook && quickLook.id !== null) renderQuickLook();
     }
 
     function toggleDashLang() {
@@ -325,6 +326,8 @@
       sessionStorage.removeItem('oncofiles_email');
       sessionStorage.removeItem('oncofiles_name');
       _swrCacheClearAll();
+      closeQuickLook();
+      resetThumbs();  // previews belong to this sign-in
       TOKEN = '';
       authMode = '';
       if (autoRefreshTimer) clearInterval(autoRefreshTimer);
@@ -621,6 +624,16 @@
       if (path.indexOf('/api/doc-detail/') === 0) {
         var detailId = path.split('/').pop();
         return (d.details || {})[detailId] || demoUploadDetail(detailId) || { error: 'not found' };
+      }
+      if (path === '/api/doc-thumbnails') {
+        // the ids asked for, each with its drawing or null, like the real route (#948)
+        var all = d.thumbnails || {};
+        var out = {};
+        String(new URL(url, location.origin).searchParams.get('ids') || '').split(',').forEach(function (id) {
+          id = id.trim();
+          if (id) out[id] = all[id] || null;
+        });
+        return { thumbnails: out };
       }
       return null;
     }
@@ -2947,8 +2960,11 @@
       return d.stage !== 'ready' && d.stage !== 'attention';
     }
 
-    // A new patient starts on the full list: no tile filter, no search, no open row.
+    // A new patient starts on the full list: no tile filter, no search, no open
+    // row, no quick look, and none of the previous patient's previews.
     function resetDocView() {
+      closeQuickLook();
+      resetThumbs();
       openDoc = { id: null, data: null };
       docsSignature = '';
       var search = document.getElementById('doc-search');
@@ -2980,8 +2996,9 @@
       var attentionTile = document.querySelector('#summary-cards .card[data-filter="attention"]');
       if (attentionTile) attentionTile.classList.toggle('has-items', attention > 0);
 
+      // An unchanged list draws nothing again: no flicker, no preview asked twice.
       var signature = JSON.stringify(rows);
-      if (signature === docsSignature && document.querySelector('#doc-tbody .doc-row')) return;
+      if (signature === docsSignature && docsDrawn()) return;
       docsSignature = signature;
       docsData = rows.map(function(d) {
         d.stage_rank = STAGE_RANK[d.stage] !== undefined ? STAGE_RANK[d.stage] : 1;
@@ -2990,24 +3007,35 @@
       renderTable();
     }
 
+    /** Whether the visible view (list or grid) already shows documents. */
+    function docsDrawn() {
+      return !!document.querySelector(docView === 'grid' ? '#doc-grid .doc-card' : '#doc-tbody .doc-row');
+    }
+
     function tableMessage(sk, en) {
       var tbody = document.getElementById('doc-tbody');
       clearEl(tbody);
       var tr = document.createElement('tr');
       var td = document.createElement('td');
-      td.setAttribute('colspan', '7');
+      td.setAttribute('colspan', '8');
       td.className = 'table-empty';
       setI18n(td, sk, en);
       tr.appendChild(td);
       tbody.appendChild(tr);
+      var grid = document.getElementById('doc-grid');
+      if (grid) {
+        clearEl(grid);
+        var li = document.createElement('li');
+        li.className = 'grid-empty';
+        grid.appendChild(setI18n(li, sk, en));
+      }
     }
 
-    function renderTable() {
-      var tbody = document.getElementById('doc-tbody');
-      var countEl = document.getElementById('docs-count');
+    /** The documents the tiles and the search let through, in the current sort order
+        (one list for the table, the grid and the quick look's previous / next). */
+    function docListView() {
       var searchEl = document.getElementById('doc-search');
       var query = (searchEl ? searchEl.value : '').toLowerCase().trim();
-
       var filtered = docsData.filter(matchesFilter);
       if (query) {
         filtered = filtered.filter(function(d) {
@@ -3016,6 +3044,31 @@
             .join(' ').toLowerCase().indexOf(query) !== -1;
         });
       }
+      // Missing values always sort last, whatever the direction.
+      var sorted = filtered.slice().sort(function(a, b) {
+        var va = sortCol === 'filename' ? loc(a, 'filename') : sortCol === 'institution' ? loc(a, 'institution') : a[sortCol];
+        var vb = sortCol === 'filename' ? loc(b, 'filename') : sortCol === 'institution' ? loc(b, 'institution') : b[sortCol];
+        var ea = va == null || va === '';
+        var eb = vb == null || vb === '';
+        if (ea || eb) return ea && eb ? 0 : ea ? 1 : -1;
+        if (typeof va === 'string') va = va.toLowerCase();
+        if (typeof vb === 'string') vb = vb.toLowerCase();
+        if (va < vb) return sortAsc ? -1 : 1;
+        if (va > vb) return sortAsc ? 1 : -1;
+        return 0;
+      });
+      return { query: query, filtered: filtered, sorted: sorted };
+    }
+
+    function renderTable() {
+      var tbody = document.getElementById('doc-tbody');
+      var countEl = document.getElementById('docs-count');
+      var view = docListView();
+      var query = view.query;
+      var filtered = view.filtered;
+      // the previous tiles are gone: watch only the ones drawn now
+      resetThumbObserver();
+      if (quickLook.id !== null) renderQuickLookNav();
       if (countEl) {
         if (docsData.length === 0) { countEl.removeAttribute('data-sk'); countEl.removeAttribute('data-en'); countEl.textContent = ''; }
         else setI18n(countEl, 'zobrazených ' + filtered.length + ' z ' + docsData.length, 'showing ' + filtered.length + ' of ' + docsData.length);
@@ -3032,23 +3085,11 @@
         return;
       }
 
-      // Missing values always sort last, whatever the direction.
-      var sorted = filtered.slice().sort(function(a, b) {
-        var va = sortCol === 'filename' ? loc(a, 'filename') : sortCol === 'institution' ? loc(a, 'institution') : a[sortCol];
-        var vb = sortCol === 'filename' ? loc(b, 'filename') : sortCol === 'institution' ? loc(b, 'institution') : b[sortCol];
-        var ea = va == null || va === '';
-        var eb = vb == null || vb === '';
-        if (ea || eb) return ea && eb ? 0 : ea ? 1 : -1;
-        if (typeof va === 'string') va = va.toLowerCase();
-        if (typeof vb === 'string') vb = vb.toLowerCase();
-        if (va < vb) return sortAsc ? -1 : 1;
-        if (va > vb) return sortAsc ? 1 : -1;
-        return 0;
-      });
+      if (docView === 'grid') { renderGrid(view.sorted); return; }
 
       clearEl(tbody);
       var reopen = null;
-      sorted.forEach(function(d) {
+      view.sorted.forEach(function(d) {
         var tr = buildDocRow(d);
         tbody.appendChild(tr);
         if (openDoc.id !== null && d.id === openDoc.id) reopen = { doc: d, tr: tr };
@@ -3064,6 +3105,22 @@
       tr.setAttribute('role', 'button');
       tr.setAttribute('aria-expanded', 'false');
 
+      // #948: the preview opens the quick look; the rest of the row opens the detail
+      var tdThumb = document.createElement('td');
+      tdThumb.className = 'col-thumb';
+      var thumbBtn = document.createElement('button');
+      thumbBtn.type = 'button';
+      thumbBtn.className = 'thumb-btn';
+      thumbBtn.setAttribute('data-doc-id', String(d.id));
+      thumbBtn.setAttribute('aria-haspopup', 'dialog');
+      thumbBtn.appendChild(buildThumb(d));
+      var thumbLabel = document.createElement('span');
+      thumbLabel.className = 'sr-only';
+      thumbBtn.appendChild(setI18n(thumbLabel, 'Zväčšený náhľad', 'Large preview'));
+      thumbBtn.addEventListener('click', function(e) { e.stopPropagation(); openQuickLook(d.id, thumbBtn); });
+      tdThumb.appendChild(thumbBtn);
+      tr.appendChild(tdThumb);
+
       var tdToggle = document.createElement('td');
       tdToggle.className = 'col-toggle';
       var chev = document.createElement('span');
@@ -3075,23 +3132,12 @@
       var name = loc(d, 'filename');
       var tdFn = document.createElement('td');
       tdFn.className = 'filename';
-      var nameSpan = document.createElement('span');
-      nameSpan.className = 'filename-text';
-      // standard names have no spaces: let them break after _ and -
-      String(name).split(/(?<=[_-])/).forEach(function(part, i) {
-        if (i) nameSpan.appendChild(document.createElement('wbr'));
-        nameSpan.appendChild(document.createTextNode(part));
-      });
-      tdFn.appendChild(nameSpan);
+      tdFn.appendChild(filenameText(name, 'filename-text'));
       tdFn.title = name;
       tr.appendChild(tdFn);
 
       var tdCat = document.createElement('td');
-      var badge = document.createElement('span');
-      badge.className = 'category-badge';
-      var cat = CATEGORY_TEXT[d.category] || [d.category || '', d.category || ''];
-      setI18n(badge, cat[0], cat[1]);
-      tdCat.appendChild(badge);
+      tdCat.appendChild(categoryBadge(d.category));
       tr.appendChild(tdCat);
 
       var tdInst = document.createElement('td');
@@ -3112,15 +3158,9 @@
 
       var tdStage = document.createElement('td');
       tdStage.className = 'cell-stage';
-      var kind = stageKind(d);
-      var chip = document.createElement('span');
-      chip.className = 'stage-chip ' + kind;
-      chip.appendChild(stateMark(kind));
-      var label = stageLabel(d);
-      chip.appendChild(setI18n(document.createElement('span'), label[0], label[1]));
       var stageBox = document.createElement('div');
       stageBox.className = 'stage-box';
-      stageBox.appendChild(chip);
+      stageBox.appendChild(stageChip(d));
       stageBox.appendChild(buildStepTrack(d));
       tdStage.appendChild(stageBox);
       tr.appendChild(tdStage);
@@ -3131,6 +3171,35 @@
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleDocDetail(d, tr); }
       });
       return tr;
+    }
+
+    /** A file name that may break after _ and - (standard names have no spaces). */
+    function filenameText(name, cls) {
+      var span = document.createElement('span');
+      span.className = cls;
+      String(name).split(/(?<=[_-])/).forEach(function(part, i) {
+        if (i) span.appendChild(document.createElement('wbr'));
+        span.appendChild(document.createTextNode(part));
+      });
+      return span;
+    }
+
+    function categoryBadge(category) {
+      var badge = document.createElement('span');
+      badge.className = 'category-badge';
+      var cat = CATEGORY_TEXT[category] || [category || '', category || ''];
+      return setI18n(badge, cat[0], cat[1]);
+    }
+
+    /** The status as a shape plus a label (never colour alone); `short` for the grid cards. */
+    function stageChip(d, short) {
+      var kind = stageKind(d);
+      var chip = document.createElement('span');
+      chip.className = 'stage-chip ' + kind;
+      chip.appendChild(stateMark(kind));
+      var label = short && d.stage === 'ready' ? ['Pripravený', 'Ready'] : stageLabel(d);
+      chip.appendChild(setI18n(document.createElement('span'), label[0], label[1]));
+      return chip;
     }
 
     /** Three small marks, one per step: filled = done, hollow = waiting. */
@@ -3176,7 +3245,7 @@
       var detailRow = document.createElement('tr');
       detailRow.className = 'doc-detail-row';
       var detailTd = document.createElement('td');
-      detailTd.setAttribute('colspan', '7');
+      detailTd.setAttribute('colspan', '8');
       detailRow.appendChild(detailTd);
       tr.parentNode.insertBefore(detailRow, tr.nextSibling);
 
@@ -3254,27 +3323,52 @@
       return box;
     }
 
-    function renderDocDetail(doc, data, detailTd) {
+    /** The document detail. In the quick look (`opts.overlay`) the overlay has its
+        own close button and shows the first page itself, so the detail brings no
+        close button and no Drive preview frame; the Drive link goes to
+        `opts.linkHost` under the large preview. */
+    function renderDocDetail(doc, data, detailTd, opts) {
+      opts = opts || {};
+      var overlay = !!opts.overlay;
       clearEl(detailTd);
 
       var panel = document.createElement('div');
-      panel.className = 'doc-detail-panel';
+      panel.className = 'doc-detail-panel' + (overlay ? ' is-overlay' : '');
 
-      // Close button
+      function driveLink() {
+        if (!data.gdrive_url || !/^https:\/\//.test(data.gdrive_url)) return null;
+        var gdriveLink = document.createElement('a');
+        gdriveLink.href = data.gdrive_url;
+        gdriveLink.target = '_blank';
+        gdriveLink.rel = 'noopener';
+        gdriveLink.className = 'detail-drive-link';
+        var gdriveLinkSpan = document.createElement('span');
+        gdriveLinkSpan.setAttribute('data-sk', 'Otvoriť v Google Drive');
+        gdriveLinkSpan.setAttribute('data-en', 'Open in Google Drive');
+        gdriveLinkSpan.textContent = 'Open in Google Drive';
+        gdriveLink.appendChild(gdriveLinkSpan);
+        return gdriveLink;
+      }
+
+      // Close button (the quick look has its own)
       var closeBtn = document.createElement('button');
       closeBtn.className = 'detail-close';
       closeBtn.textContent = '\u00d7';
       closeBtn.title = dashLang === 'sk' ? 'Zavrieť' : 'Close';
       closeBtn.setAttribute('aria-label', closeBtn.title);
       closeBtn.onclick = function(e) { e.stopPropagation(); closeDocDetail(); };
-      panel.appendChild(closeBtn);
+      if (!overlay) panel.appendChild(closeBtn);
       panel.appendChild(buildStepList(doc, data));
       var cols = document.createElement('div');
       cols.className = 'doc-detail-cols';
       panel.appendChild(cols);
 
-      // ── Left column: preview (skip if no preview available) ──
-      if (data.preview_url || data.gdrive_url) {
+      if (overlay) {
+        var qlLink = driveLink();
+        if (qlLink && opts.linkHost) opts.linkHost.appendChild(qlLink);
+        cols.classList.add('single');
+      } else if (data.preview_url || data.gdrive_url) {
+        // ── Left column: preview (skip if no preview available) ──
         var left = document.createElement('div');
         left.className = 'doc-detail-left';
 
@@ -3296,19 +3390,8 @@
           left.appendChild(noPreview);
         }
 
-        if (data.gdrive_url && /^https:\/\//.test(data.gdrive_url)) {
-          var gdriveLink = document.createElement('a');
-          gdriveLink.href = data.gdrive_url;
-          gdriveLink.target = '_blank';
-          gdriveLink.rel = 'noopener';
-          gdriveLink.className = 'detail-drive-link';
-          var gdriveLinkSpan = document.createElement('span');
-          gdriveLinkSpan.setAttribute('data-sk', 'Otvori\u0165 v Google Drive');
-          gdriveLinkSpan.setAttribute('data-en', 'Open in Google Drive');
-          gdriveLinkSpan.textContent = 'Open in Google Drive';
-          gdriveLink.appendChild(gdriveLinkSpan);
-          left.appendChild(gdriveLink);
-        }
+        var leftLink = driveLink();
+        if (leftLink) left.appendChild(leftLink);
 
         cols.appendChild(left);
       } else {
@@ -3488,6 +3571,477 @@
       detailTd.appendChild(panel);
       applyDashLang();
     }
+
+    // ── Previews, grid and quick look (#948) ─────────────────────────────
+    /* Previews come from GET /api/doc-thumbnails?ids=…&size=s|l (the demo answers
+       from its own data): only for tiles near the viewport, up to 24 ids per call,
+       ONE request at a time (the server holds one DB connection), kept for the
+       page's lifetime and dropped when the patient changes. A document without a
+       preview (null) keeps its flat file-type mark: never an emoji, never a
+       broken image. */
+    var THUMB_BATCH = 24;
+    var DOC_VIEW_KEY = 'oncofiles_doc_view';
+    var SVG_NS = 'http://www.w3.org/2000/svg';
+    var docView = readDocView();       // list | grid, remembered per browser
+    var thumbCache = new Map();        // 'id:s' | 'id:l' -> {src, src_en?} | null (no preview)
+    var thumbWanted = [];              // small previews to ask for, in order
+    var thumbInFlight = [];            // cache keys ('id:size') of the one request under way
+    var thumbLargeWanted = null;       // the one large preview the quick look waits for
+    var thumbBusy = false;
+    var thumbGen = 0;                  // bumped when the patient changes: late answers are dropped
+    var thumbsOff = false;             // the route is not there (404): marks only
+    var thumbPumpTimer = null;
+    var thumbObserver = null;
+    var quickLook = { id: null, opener: null, details: {} };
+    var IMAGE_EXT = { jpg: 1, jpeg: 1, png: 1, gif: 1, webp: 1, heic: 1, heif: 1, tif: 1, tiff: 1, bmp: 1 };
+    var TEXT_DOC_EXT = { doc: 1, docx: 1, odt: 1, rtf: 1, txt: 1, md: 1, pages: 1 };
+    var SORT_DIR_TEXT = {
+      date: [['od najstarších', 'oldest first'], ['od najnovších', 'newest first']],
+      text: [['A–Z', 'A–Z'], ['Z–A', 'Z–A']],
+      stage: [['najprv vyžadujúce pozornosť', 'needs attention first'], ['najprv pripravené', 'ready first']]
+    };
+
+    function readDocView() {
+      try { return localStorage.getItem(DOC_VIEW_KEY) === 'grid' ? 'grid' : 'list'; }
+      catch (e) { return 'list'; }
+    }
+
+    function findDoc(id) {
+      for (var i = 0; i < docsData.length; i++) if (String(docsData[i].id) === String(id)) return docsData[i];
+      return null;
+    }
+
+    function indexOfDoc(list, id) {
+      for (var i = 0; i < list.length; i++) if (String(list[i].id) === String(id)) return i;
+      return -1;
+    }
+
+    function thumbKey(id, size) { return String(id) + ':' + size; }
+
+    /** pdf | image | doc | other, from the file name's extension (rows carry no mime type). */
+    function fileKind(d) {
+      var m = /\.([a-z0-9]{1,5})$/i.exec(String(d.filename || ''));
+      var ext = m ? m[1].toLowerCase() : '';
+      if (ext === 'pdf') return { kind: 'pdf', label: 'PDF' };
+      if (IMAGE_EXT[ext]) return { kind: 'image', label: ext === 'jpeg' ? 'JPG' : ext.toUpperCase().slice(0, 4) };
+      if (TEXT_DOC_EXT[ext]) return { kind: 'doc', label: ext === 'docx' ? 'DOC' : ext.toUpperCase().slice(0, 4) };
+      return { kind: 'other', label: ext ? ext.toUpperCase().slice(0, 4) : '' };
+    }
+
+    function svgEl(tag, attrs) {
+      var el = document.createElementNS(SVG_NS, tag);
+      Object.keys(attrs).forEach(function (k) { el.setAttribute(k, attrs[k]); });
+      return el;
+    }
+
+    /** The flat file-type mark: shown while a preview loads, and for good when there is none. */
+    function typeMark(d) {
+      var info = fileKind(d);
+      var svg = svgEl('svg', { viewBox: '0 0 40 52', 'class': 'type-mark type-' + info.kind, 'aria-hidden': 'true', focusable: 'false' });
+      if (info.kind === 'image') {
+        svg.appendChild(svgEl('rect', { x: 7, y: 9, width: 26, height: 20, rx: 2, 'class': 'tm-frame' }));
+        svg.appendChild(svgEl('circle', { cx: 26, cy: 15, r: 2.6, 'class': 'tm-sun' }));
+        svg.appendChild(svgEl('path', { d: 'M8.5 27.5l7-8.5 5 6 3-3.5 8 6z', 'class': 'tm-hill' }));
+      } else {
+        [[9, 24], [14, 18], [19, 22], [24, 14]].forEach(function (l) {
+          svg.appendChild(svgEl('rect', { x: 8, y: l[0], width: l[1], height: 2.2, rx: 1.1, 'class': 'tm-line' }));
+        });
+      }
+      if (info.label) {
+        svg.appendChild(svgEl('rect', { x: 8, y: 34, width: 24, height: 11, rx: 2.5, 'class': 'tm-badge' }));
+        var label = svgEl('text', { x: 20, y: 42.1, 'text-anchor': 'middle', 'class': 'tm-label' });
+        label.textContent = info.label;
+        svg.appendChild(label);
+      }
+      return svg;
+    }
+
+    /** The picture of a preview; if it cannot be drawn, the file-type mark takes its place. */
+    function thumbImg(entry, d) {
+      var img = document.createElement('img');
+      img.alt = '';
+      img.decoding = 'async';
+      img.addEventListener('error', function () {
+        var box = img.parentNode;
+        if (box) { box.replaceChild(typeMark(d), img); box.classList.remove('has-img'); }
+      });
+      img.src = loc(entry, 'src');
+      return img;
+    }
+
+    /** A preview tile: the cached picture, else the file-type mark (asked for when it scrolls near). */
+    function buildThumb(d) {
+      var box = document.createElement('span');
+      box.className = 'doc-thumb';
+      box.setAttribute('data-thumb-id', String(d.id));
+      var entry = thumbCache.get(thumbKey(d.id, 's'));
+      if (entry) {
+        box.appendChild(thumbImg(entry, d));
+        box.classList.add('has-img');
+      } else {
+        box.appendChild(typeMark(d));
+        if (entry === undefined && !thumbsOff) observeThumb(box);
+      }
+      return box;
+    }
+
+    function observeThumb(box) {
+      if (typeof IntersectionObserver === 'undefined') { wantThumb(box.getAttribute('data-thumb-id')); return; }
+      if (!thumbObserver) {
+        thumbObserver = new IntersectionObserver(function (entries, observer) {
+          entries.forEach(function (en) {
+            if (!en.isIntersecting) return;
+            observer.unobserve(en.target);
+            wantThumb(en.target.getAttribute('data-thumb-id'));
+          });
+        }, { rootMargin: '320px 0px' });
+      }
+      thumbObserver.observe(box);
+    }
+
+    function resetThumbObserver() {
+      if (thumbObserver) { thumbObserver.disconnect(); thumbObserver = null; }
+    }
+
+    function wantThumb(id) {
+      id = String(id);
+      if (thumbsOff || thumbCache.has(thumbKey(id, 's'))) return;
+      if (thumbWanted.indexOf(id) !== -1 || thumbInFlight.indexOf(thumbKey(id, 's')) !== -1) return;
+      thumbWanted.push(id);
+      scheduleThumbPump();
+    }
+
+    function scheduleThumbPump() {
+      if (thumbPumpTimer) return;
+      // a short pause collects the tiles of one scroll into one request
+      thumbPumpTimer = setTimeout(function () { thumbPumpTimer = null; pumpThumbs(); }, 40);
+    }
+
+    function isPreview(entry) {
+      function ok(src) { return typeof src === 'string' && src.indexOf('data:image/') === 0; }
+      return !!entry && ok(entry.src) && (entry.src_en == null || ok(entry.src_en));
+    }
+
+    /** One request at a time: the quick look's large preview first, else the next small batch. */
+    async function pumpThumbs() {
+      if (thumbBusy || thumbsOff) return;
+      var size, ids;
+      if (thumbLargeWanted !== null) { size = 'l'; ids = [thumbLargeWanted]; thumbLargeWanted = null; }
+      else if (thumbWanted.length) { size = 's'; ids = thumbWanted.splice(0, THUMB_BATCH); }
+      else return;
+      thumbBusy = true;
+      thumbInFlight = ids.map(function (id) { return thumbKey(id, size); });
+      var gen = thumbGen;
+      var answer = {};
+      try {
+        var data = await apiFetch('/api/doc-thumbnails?ids=' + ids.map(encodeURIComponent).join(',') + '&size=' + size);
+        answer = (data && data.thumbnails) || {};
+      } catch (e) {
+        if (e && e.status === 404) thumbsOff = true;  // marks stay; nothing is asked again
+      }
+      thumbBusy = false;
+      thumbInFlight = [];
+      if (gen === thumbGen) {
+        ids.forEach(function (id) {
+          var entry = answer[id];
+          thumbCache.set(thumbKey(id, size), isPreview(entry) ? entry : null);
+          if (size === 's') applyThumb(id);
+          else if (quickLook.id !== null && String(quickLook.id) === id) showLargePreview();
+        });
+      }
+      pumpThumbs();
+    }
+
+    /** A preview arrived: swap it into every tile of that document once it is decoded. */
+    function applyThumb(id) {
+      var entry = thumbCache.get(thumbKey(id, 's'));
+      var d = findDoc(id);
+      if (!entry || !d) return;  // null: the file-type mark stays
+      document.querySelectorAll('.doc-thumb[data-thumb-id="' + Number(id) + '"]').forEach(function (box) {
+        if (box.querySelector('img')) return;
+        var img = thumbImg(entry, d);
+        var swap = function () { clearEl(box); box.appendChild(img); box.classList.add('has-img'); };
+        if (img.decode) img.decode().then(swap, function () { thumbCache.set(thumbKey(id, 's'), null); });
+        else swap();
+      });
+      if (quickLook.id !== null && String(quickLook.id) === String(id)) showLargePreview();
+    }
+
+    function resetThumbs() {
+      thumbGen += 1;
+      thumbCache.clear();
+      thumbWanted = [];
+      thumbLargeWanted = null;
+      thumbsOff = false;
+      resetThumbObserver();
+    }
+
+    // ── Grid view ──
+
+    function setDocView(view) {
+      docView = view === 'grid' ? 'grid' : 'list';
+      try { localStorage.setItem(DOC_VIEW_KEY, docView); } catch (e) { /* no storage: the choice lasts this page */ }
+      updateDocViewControls();
+      renderTable();
+    }
+
+    function updateDocViewControls() {
+      var grid = docView === 'grid';
+      [['view-btn-list', !grid], ['view-btn-grid', grid]].forEach(function (pair) {
+        var btn = document.getElementById(pair[0]);
+        if (!btn) return;
+        btn.classList.toggle('is-active', pair[1]);
+        btn.setAttribute('aria-pressed', pair[1] ? 'true' : 'false');
+      });
+      var tableWrap = document.getElementById('doc-table-wrap');
+      var gridWrap = document.getElementById('doc-grid-wrap');
+      var legend = document.querySelector('.steps-legend');  // explains the list's step marks
+      if (tableWrap) tableWrap.hidden = grid;
+      if (gridWrap) gridWrap.hidden = !grid;
+      if (legend) legend.hidden = grid;
+      syncGridSort();
+    }
+
+    /** The grid's "sorted by" line follows the table's sort column and direction. */
+    function syncGridSort() {
+      var select = document.getElementById('grid-sort-col');
+      if (select) select.value = sortCol;
+      var arrow = document.getElementById('grid-sort-arrow');
+      if (arrow) arrow.textContent = sortAsc ? '▲' : '▼';
+      var label = document.getElementById('grid-sort-dir-label');
+      if (label) {
+        var kind = (sortCol === 'date' || sortCol === 'uploaded_at') ? 'date' : sortCol === 'stage_rank' ? 'stage' : 'text';
+        var text = SORT_DIR_TEXT[kind][sortAsc ? 0 : 1];
+        setI18n(label, text[0], text[1]);
+      }
+    }
+
+    function defaultSortAsc(col) { return !(col === 'uploaded_at' || col === 'date'); }
+
+    /** One sort for the table and the grid: header arrows, the grid line, the list. */
+    function setSort(col, asc) {
+      sortCol = col;
+      sortAsc = asc;
+      document.querySelectorAll('th[data-sort]').forEach(function (th) {
+        var on = th.dataset.sort === col;
+        if (on) th.setAttribute('aria-sort', asc ? 'ascending' : 'descending');
+        else th.removeAttribute('aria-sort');
+        th.querySelector('.sort-arrow').textContent = on ? (asc ? '▲' : '▼') : '';
+      });
+      syncGridSort();
+      renderTable();
+    }
+
+    function setGridSort(col) { setSort(col, defaultSortAsc(col)); }
+    function toggleSortDir() { setSort(sortCol, !sortAsc); }
+
+    function renderGrid(sorted) {
+      var grid = document.getElementById('doc-grid');
+      clearEl(grid);
+      sorted.forEach(function (d) { grid.appendChild(buildDocCard(d)); });
+    }
+
+    /** A card: preview, name (two lines), category and date, status shape and label. */
+    function buildDocCard(d) {
+      var li = document.createElement('li');
+      li.className = 'doc-card-item';
+      var card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'doc-card is-' + stageKind(d);
+      card.setAttribute('data-doc-id', String(d.id));
+      card.setAttribute('aria-haspopup', 'dialog');
+      var name = loc(d, 'filename');
+      card.title = name;
+
+      var shot = document.createElement('span');
+      shot.className = 'doc-card-shot';
+      shot.appendChild(buildThumb(d));
+      card.appendChild(shot);
+
+      var body = document.createElement('span');
+      body.className = 'doc-card-body';
+      body.appendChild(filenameText(name, 'doc-card-name'));
+      var meta = document.createElement('span');
+      meta.className = 'doc-card-meta';
+      meta.appendChild(categoryBadge(d.category));
+      var date = document.createElement('span');
+      date.className = 'doc-card-date';
+      date.textContent = fmtDate(d.date);
+      meta.appendChild(date);
+      body.appendChild(meta);
+      var foot = document.createElement('span');
+      foot.className = 'doc-card-stage';
+      foot.appendChild(stageChip(d, true));  // the steps are in the quick look's detail
+      body.appendChild(foot);
+      card.appendChild(body);
+
+      card.addEventListener('click', function () { openQuickLook(d.id, card); });
+      li.appendChild(card);
+      return li;
+    }
+
+    // ── Quick look: the first page large, the document detail beside it ──
+
+    function openQuickLook(id, opener) {
+      var d = findDoc(id);
+      var overlay = document.getElementById('quicklook');
+      if (!d || !overlay) return;
+      var wasOpen = quickLook.id !== null;
+      quickLook.id = d.id;
+      if (!wasOpen) {
+        quickLook.opener = opener || document.activeElement;
+        overlay.hidden = false;
+        lockPageScroll(true);
+      }
+      renderQuickLook();
+      if (!wasOpen) document.getElementById('ql-panel').focus();
+    }
+
+    function renderQuickLook() {
+      var d = findDoc(quickLook.id);
+      if (!d) return;
+      renderQuickLookNav();
+      showLargePreview();
+      renderQuickLookDetail(d);
+    }
+
+    /** Title, category and date, position in the list, previous / next. */
+    function renderQuickLookNav() {
+      var d = findDoc(quickLook.id);
+      if (!d) return;
+      document.getElementById('ql-title').textContent = loc(d, 'filename');
+      var meta = document.getElementById('ql-meta');
+      clearEl(meta);
+      meta.appendChild(categoryBadge(d.category));
+      var date = document.createElement('span');
+      date.className = 'ql-date';
+      date.textContent = fmtDate(d.date);
+      meta.appendChild(date);
+      meta.appendChild(stageChip(d));
+      var list = docListView().sorted;
+      var idx = indexOfDoc(list, d.id);
+      document.getElementById('ql-pos').textContent = idx >= 0 ? (idx + 1) + ' / ' + list.length : '';
+      var prev = document.getElementById('ql-prev');
+      var next = document.getElementById('ql-next');
+      prev.disabled = idx <= 0;
+      next.disabled = idx < 0 || idx >= list.length - 1;
+      // a button that just became disabled must not keep (and lose) the focus
+      if (document.activeElement === prev || document.activeElement === next) {
+        if (document.activeElement.disabled) document.getElementById('ql-panel').focus();
+      }
+    }
+
+    /** The large first page; until it arrives, the small preview or the file-type mark. */
+    function showLargePreview() {
+      var d = findDoc(quickLook.id);
+      var page = document.getElementById('ql-page');
+      if (!d || !page) return;
+      var large = thumbCache.get(thumbKey(d.id, 'l'));
+      var entry = large || thumbCache.get(thumbKey(d.id, 's'));
+      clearEl(page);
+      if (entry) {
+        var img = thumbImg(entry, d);
+        img.alt = (dashLang === 'sk' ? 'Prvá strana: ' : 'First page: ') + loc(d, 'filename');
+        page.appendChild(img);
+      } else {
+        page.appendChild(typeMark(d));
+      }
+      page.classList.toggle('has-img', !!entry);
+      var waiting = large === undefined && !thumbsOff;
+      page.classList.toggle('is-loading', waiting);
+      if (waiting && thumbInFlight.indexOf(thumbKey(d.id, 'l')) === -1) {
+        thumbLargeWanted = String(d.id);  // only the latest: arrows held down ask for one page
+        scheduleThumbPump();
+      }
+    }
+
+    function renderQuickLookDetail(d) {
+      var host = document.getElementById('ql-detail');
+      var links = document.getElementById('ql-links');
+      clearEl(links);
+      var cached = quickLook.details[d.id];
+      if (cached) { renderDocDetail(d, cached, host, { overlay: true, linkHost: links }); return; }
+      clearEl(host);
+      var loading = document.createElement('div');
+      loading.className = 'doc-detail-loading';
+      loading.appendChild(setI18n(document.createElement('span'), 'Načítavam detail…', 'Loading detail…'));
+      host.appendChild(loading);
+      var id = d.id;
+      function failed() {
+        if (quickLook.id !== id) return;
+        clearEl(loading);
+        loading.appendChild(setI18n(document.createElement('span'), 'Detail sa nepodarilo načítať.', 'The detail could not be loaded.'));
+      }
+      apiFetch('/api/doc-detail/' + id).then(function (data) {
+        if (!data || data.error) { failed(); return; }
+        quickLook.details[id] = data;
+        if (quickLook.id === id) renderDocDetail(findDoc(id) || d, data, host, { overlay: true, linkHost: links });
+      }).catch(failed);
+    }
+
+    /** Left / Right: the previous or next document of the list as it is filtered and sorted now. */
+    function quickLookStep(delta) {
+      if (quickLook.id === null) return;
+      var list = docListView().sorted;
+      var idx = indexOfDoc(list, quickLook.id);
+      var next = idx < 0 ? null : list[idx + Number(delta)];
+      if (next) openQuickLook(next.id);
+    }
+
+    function closeQuickLook() {
+      var overlay = document.getElementById('quicklook');
+      if (!overlay || quickLook.id === null) return;
+      var lastId = quickLook.id;
+      var opener = quickLook.opener;
+      quickLook = { id: null, opener: null, details: {} };
+      thumbLargeWanted = null;
+      overlay.hidden = true;
+      ['ql-page', 'ql-detail', 'ql-links'].forEach(function (elId) { clearEl(document.getElementById(elId)); });
+      lockPageScroll(false);
+      // Focus goes back where the person was: the tile or card of the document
+      // shown last (the opener itself unless they moved on with the arrows).
+      var sel = docView === 'grid' ? '#doc-grid .doc-card' : '#doc-tbody .thumb-btn';
+      var target = document.querySelector(sel + '[data-doc-id="' + Number(lastId) + '"]');
+      if (!target && opener && opener.isConnected) target = opener;
+      if (target) target.focus();
+    }
+
+    function lockPageScroll(on) {
+      var root = document.documentElement;
+      if (on) {
+        var gap = window.innerWidth - root.clientWidth;  // keep the page from shifting
+        root.classList.add('ql-lock');
+        if (gap > 0) document.body.style.paddingRight = gap + 'px';
+      } else {
+        root.classList.remove('ql-lock');
+        document.body.style.paddingRight = '';
+      }
+    }
+
+    /** Tab stays inside the open quick look. */
+    function trapQuickLookFocus(e) {
+      var panel = document.getElementById('ql-panel');
+      var items = Array.prototype.filter.call(
+        panel.querySelectorAll('button, a[href], [tabindex]:not([tabindex="-1"])'),
+        function (el) { return !el.disabled && el.offsetParent !== null; });
+      if (!items.length) { e.preventDefault(); panel.focus(); return; }
+      var first = items[0];
+      var last = items[items.length - 1];
+      var active = document.activeElement;
+      if (e.shiftKey && (active === first || active === panel || !panel.contains(active))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (active === last || !panel.contains(active))) { e.preventDefault(); first.focus(); }
+    }
+
+    document.addEventListener('keydown', function (e) {
+      if (quickLook.id === null) return;
+      if (e.key === 'Tab') { trapQuickLookFocus(e); return; }
+      if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        e.preventDefault();
+        quickLookStep(e.key === 'ArrowLeft' ? -1 : 1);
+      }
+    });
+
+    updateDocViewControls();
 
     // ── One event log ────────────────────────────────────────────────────
 
@@ -4337,27 +4891,17 @@
     document.querySelectorAll('th[data-sort]').forEach(function(th) {
       th.addEventListener('click', function() {
         var col = th.dataset.sort;
-        if (sortCol === col) {
-          sortAsc = !sortAsc;
-        } else {
-          sortCol = col;
-          // dates open newest first, text columns A to Z
-          sortAsc = !(col === 'uploaded_at' || col === 'date');
-        }
-        document.querySelectorAll('th[data-sort]').forEach(function(other) {
-          other.removeAttribute('aria-sort');
-          other.querySelector('.sort-arrow').textContent = '';
-        });
-        th.setAttribute('aria-sort', sortAsc ? 'ascending' : 'descending');
-        th.querySelector('.sort-arrow').textContent = sortAsc ? '\u25B2' : '\u25BC';
-        renderTable();
+        // the same column flips; a new one opens dates newest first, text A to Z
+        setSort(col, sortCol === col ? !sortAsc : defaultSortAsc(col));
       });
     });
 
-    // Escape or a click on the backdrop closes the Connect-AI dialog (it holds
-    // nothing a person could lose). The patient wizard stays open on purpose.
+    // Escape or a click on the backdrop closes the quick look and the Connect-AI
+    // dialog (they hold nothing a person could lose). The patient wizard stays
+    // open on purpose.
     document.addEventListener('keydown', function(e) {
       if (e.key !== 'Escape') return;
+      if (quickLook.id !== null) { closeQuickLook(); return; }
       var share = document.getElementById('share-overlay');
       if (share && share.classList.contains('active')) { hideShareModal(); return; }
       var pop = document.getElementById('integration-popover');

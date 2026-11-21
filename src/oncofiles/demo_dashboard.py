@@ -10,10 +10,13 @@ for every API path the dashboard calls an answer of the same shape:
     documents  ~ GET /api/documents
     details    ~ GET /api/doc-detail/{id}   (keyed by document id)
     activity   ~ GET /api/activity
+    thumbnails ~ GET /api/doc-thumbnails  (keyed by document id; the script
+                 answers each request with the ids it asked for, #948)
 
 Everything is made up (names, institution, values, dates in 2027), per the
 synthetic-fixtures rule. A few text fields carry an English twin (``*_en``)
 so the demo reads naturally in both languages; real API rows never have them.
+The previews are SVG drawings of the invented pages (``demo_thumbnails``).
 No database, no Drive, no model: a pure function of constants.
 """
 
@@ -21,6 +24,7 @@ from __future__ import annotations
 
 import re
 
+from oncofiles import demo_thumbnails
 from oncofiles.document_stage import stage_of
 
 PATIENT_ID = "demo-patient"
@@ -232,6 +236,14 @@ _EXTRA = [
     ),
 ]
 
+# How the preview of a demo-only document is drawn, when not as a printed page:
+# (style, title sk, title en). The sk/en titles name a page whose text has none.
+_PICTURE = {
+    10: ("scan", "Laboratórny výsledok", "Lab report"),
+    11: ("printout_photo", "", ""),
+    12: ("note_photo", "", ""),
+}
+
 # Upload times of the six showcase documents (ids 1–6), a day or two after the
 # document date, as if the caregiver scanned them once back home.
 _SHOWCASE_UPLOADED = {
@@ -307,8 +319,18 @@ def build(showcase_documents: list[dict], version: str) -> dict:
     """The ``dashboard`` section of ``/api/demo-data``."""
     rows: list[dict] = []
     details: dict[str, dict] = {}
+    pictures: list[dict] = []
 
     for doc in showcase_documents:
+        pictures.append(
+            {
+                "id": doc["id"],
+                "category": doc["category"],
+                "title": doc.get("title_sk", ""),
+                "title_en": doc.get("title_en", ""),
+                "lines": (doc.get("pages") or [{}])[0].get("lines") or [],
+            }
+        )
         uploaded = _plus_days(doc["date"], 1) + _SHOWCASE_UPLOADED.get(doc["id"], "T09:00:00")
         row = _row(
             doc["id"],
@@ -342,6 +364,18 @@ def build(showcase_documents: list[dict], version: str) -> dict:
         )
         rows.append(row)
         details[str(doc_id)] = _detail(row, (s_sk, s_en), pages)
+        style, title_sk, title_en = _PICTURE.get(doc_id, ("printed", "", ""))
+        pictures.append(
+            {
+                "id": doc_id,
+                "category": cat,
+                "style": style,
+                "title": title_sk,
+                "title_en": title_en,
+                "text": pages[0][0] if pages else "",
+                "text_en": pages[0][1] if pages else "",
+            }
+        )
 
     rows.sort(key=lambda r: r["uploaded_at"], reverse=True)
     ready = sum(1 for r in rows if r["stage"] == "ready")
@@ -422,6 +456,7 @@ def build(showcase_documents: list[dict], version: str) -> dict:
             "documents": rows,
         },
         "details": details,
+        "thumbnails": demo_thumbnails.build(pictures),
         "activity": {
             "events": [
                 run("2027-04-13T19:05:00", "auto", 1, 0, waiting=1),

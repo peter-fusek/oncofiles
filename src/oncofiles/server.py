@@ -5678,6 +5678,52 @@ async def api_doc_detail(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/doc-thumbnails", methods=["GET"])
+async def api_doc_thumbnails(request: Request) -> JSONResponse:
+    """Previews of the patient's documents (#948, rules in ``doc_thumbnails``).
+
+    ``?ids=12,15&size=s|l[&patient_id=<slug|uuid>]``: at most 24 ids, ``l``
+    one id. 200 ``{"thumbnails": {"<id>": {"src": "data:image/..."} | null}}``
+    in request order. Unknown, foreign, deleted, excluded and preview-less
+    documents are all ``null`` (#590); so is everything while
+    ``GOOGLE_INTEGRATION_ENABLED`` is off or the caller has no patient.
+    400 ``{"error": <code>}`` for a malformed query. ``Cache-Control:
+    private, no-store``. Drive is only read; no DB write.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    from oncofiles import doc_thumbnails
+
+    no_store = {"Cache-Control": "private, no-store"}
+    try:
+        ids, size = doc_thumbnails.parse_query(
+            request.query_params.get("ids"), request.query_params.get("size")
+        )
+    except doc_thumbnails.BadRequestError as bad:
+        return JSONResponse({"error": bad.code}, status_code=400, headers=no_store)
+
+    try:
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        # #867: no own-patient fallback for a named patient; a sentinel makes
+        # every id null, the same answer as unknown ids (#590).
+        patient_id = await _get_dashboard_patient_id(request, fallback_to_own=False)
+        thumbnails = await doc_thumbnails.thumbnails_for(
+            db,
+            patient_id,
+            ids,
+            size,
+            google_enabled=GOOGLE_INTEGRATION_ENABLED,
+            make_clients=_create_patient_clients,
+        )
+        return JSONResponse({"thumbnails": thumbnails}, headers=no_store)
+    except Exception as exc:
+        # The type only: a message could carry a URL or a name.
+        logger.error("API doc-thumbnails error: %s", type(exc).__name__)
+        return JSONResponse({"error": "internal error"}, status_code=500, headers=no_store)
+
+
 @mcp.custom_route("/api/reconciliation", methods=["GET"])
 async def api_reconciliation(request: Request) -> JSONResponse:
     """DB vs GDrive reconciliation report. Requires bearer or dashboard session auth."""
