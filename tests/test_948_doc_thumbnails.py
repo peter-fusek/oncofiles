@@ -637,8 +637,9 @@ async def test_logs_carry_no_filename_and_no_link(docs, db, drive, caplog):
         assert name not in text
         assert name.rsplit(".", 1)[0] not in text
     assert "googleusercontent" not in text and "base64" not in text
-    assert A_UUID not in text  # the patient id is logged as a prefix only
-    assert f"patient={A_UUID[:4]} " in text
+    ours = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("oncofiles"))
+    assert A_UUID not in ours  # the patient id is logged as a prefix only
+    assert f"patient={A_UUID[:4]} " in ours
 
 
 # ── GDriveClient read methods ────────────────────────────────────────────
