@@ -614,8 +614,26 @@ _AR_HEADER_FROM = re.compile(r"(?:^|[\s;])header\.from=([^\s;]+)")
 _AR_DMARC_PASS = re.compile(r"(?:^|[\s;])dmarc=pass\b")
 
 
-def _brevo_auth_pass(headers: dict[str, list[str]], sender: str) -> bool:
+# Why the trusted verdict refused a Brevo item (go-live diagnostics, #950):
+# one code per refusal, in the order of the checks. Counted in memory and
+# shown in the admin overview as ``auth_refusals``; never a header value.
+AUTH_REFUSAL_REASONS = (
+    "authserv_unset",
+    "single_header_repeated",
+    "from_header_mismatch",
+    "no_trusted_line",
+    "multiple_trusted_lines",
+    "dmarc_not_pass",
+    "header_from_missing",
+    "header_from_mismatch",
+)
+
+
+def _brevo_auth_refusal(headers: dict[str, list[str]], sender: str) -> str | None:
     """The trusted Authentication-Results verdict for ``sender`` (fail closed).
+
+    Returns ``None`` on a pass, otherwise the first failing check as a code of
+    :data:`AUTH_REFUSAL_REASONS`.
 
     Only lines whose authserv-id equals ``INBOUND_BREVO_AUTHSERV_ID`` count.
     More than one such line = refused (a sender may have planted a copy with
@@ -625,29 +643,140 @@ def _brevo_auth_pass(headers: dict[str, list[str]], sender: str) -> bool:
     """
     authserv = os.environ.get(BREVO_AUTHSERV_ENV, "").strip().lower()
     if not authserv:
-        return False
+        return "authserv_unset"
     # A header the verdict leans on that should occur once but occurs more
     # often: refused (fail closed).
     if any(len(headers.get(name, [])) > 1 for name in _SINGLE_VALUED_AUTH_HEADERS):
-        return False
+        return "single_header_repeated"
     header_from = headers.get("from")
     if header_from and _domain(parseaddr(header_from[0])[1]) != _domain(sender):
-        return False
+        return "from_header_mismatch"
     trusted = [
         line.partition(";")[2].lower()
         for line in headers.get("authentication-results", [])
         if line.partition(";")[0].strip().lower() == authserv
     ]
-    if len(trusted) != 1:
-        return False
+    if not trusted:
+        return "no_trusted_line"
+    if len(trusted) > 1:
+        return "multiple_trusted_lines"
     line = trusted[0]
     if not _AR_DMARC_PASS.search(line):
-        return False
+        return "dmarc_not_pass"
     match = _AR_HEADER_FROM.search(line)
     if not match:
-        return False
+        return "header_from_missing"
     domain = match.group(1).strip().strip('"').rstrip(".").lower()
-    return bool(domain) and domain == _domain(sender)
+    if not domain or domain != _domain(sender):
+        return "header_from_mismatch"
+    return None
+
+
+def _brevo_auth_pass(headers: dict[str, list[str]], sender: str) -> bool:
+    """True only when :func:`_brevo_auth_refusal` finds nothing; a refusal is
+    counted by reason code (admin overview ``auth_refusals``)."""
+    reason = _brevo_auth_refusal(headers, sender)
+    if reason is None:
+        return True
+    _state.auth_refusals[reason] += 1
+    return False
+
+
+# Authserv-id candidates (go-live diagnostics, #950): infra must learn which
+# authserv-id Brevo's MX writes before setting INBOUND_BREVO_AUTHSERV_ID. For
+# every item of a payload that passed the token check, the part before the
+# first ";" of each Authentication-Results header is kept ONLY when it looks
+# like a hostname; anything else is just counted as invalid. Nothing else of
+# the header (nor addresses, subjects, bodies) is kept or logged.
+AUTHSERV_CANDIDATES_MAX = 20
+_HOSTNAME_RE = re.compile(r"^[a-z0-9.-]{1,253}$")
+
+
+def _authserv_ids(headers: dict[str, list[str]]) -> tuple[Counter, int]:
+    """Hostname-shaped authserv-ids of one item with the number of A-R lines
+    carrying each (header order kept), and the number of A-R headers whose
+    authserv-id is not hostname-shaped."""
+    hosts: Counter = Counter()
+    invalid = 0
+    for line in headers.get("authentication-results", []):
+        candidate = line.partition(";")[0].strip().lower()
+        if _HOSTNAME_RE.match(candidate):
+            hosts[candidate] += 1
+        else:
+            invalid += 1
+    return hosts, invalid
+
+
+LINES_BUCKETS = ("1", "2", "3+")  # A-R lines carrying one id within one item
+
+
+def _lines_bucket(lines: int) -> str:
+    return str(lines) if lines < 3 else "3+"
+
+
+def _note_authserv_candidates(hosts: Counter) -> None:
+    """Count one item's hostnames, with a lines-per-item histogram (``2`` =
+    the provider's own line plus a planted copy, ``1`` = one line only). At
+    most ``AUTHSERV_CANDIDATES_MAX`` are kept: a new one replaces the one on
+    the fewest items (oldest on a tie), so a burst of planted one-off values
+    never pushes out the id seen on every mail."""
+    book = _state.authserv_hosts
+    now = _now_iso()
+    for host, lines in hosts.items():
+        entry = book.get(host)
+        if entry is None:
+            if len(book) >= AUTHSERV_CANDIDATES_MAX:
+                victim = min(book, key=lambda h: (book[h]["items"], book[h]["last_at"]))
+                del book[victim]
+                _state.authserv_stats["evicted"] += 1
+            entry = book[host] = {
+                "items": 0,
+                "lines_per_item": dict.fromkeys(LINES_BUCKETS, 0),
+                "last_at": now,
+            }
+        entry["items"] += 1
+        entry["lines_per_item"][_lines_bucket(lines)] += 1
+        entry["last_at"] = now
+
+
+def authserv_candidates() -> dict:
+    """Admin overview: hostname candidates with counts, plus totals."""
+    hosts = sorted(
+        (
+            {"host": h, **e, "lines_per_item": dict(e["lines_per_item"])}
+            for h, e in _state.authserv_hosts.items()
+        ),
+        key=lambda e: (-e["items"], e["host"]),
+    )
+    stats = _state.authserv_stats
+    return {
+        "hosts": hosts,
+        "items_seen": stats["items"],
+        "items_without_header": stats["no_header"],
+        "invalid": stats["invalid"],
+        "evicted": stats["evicted"],
+    }
+
+
+def _log_authserv_candidates(items: list) -> None:
+    """Collect the candidates of one payload; one INFO line per item with the
+    hostnames and how many A-R lines carry each (hostnames and counts only)."""
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        headers = _brevo_headers(item.get("Headers"))
+        _state.authserv_stats["items"] += 1
+        if not headers.get("authentication-results"):
+            _state.authserv_stats["no_header"] += 1
+            logger.info("inbound: authserv-id candidates: none (no Authentication-Results)")
+            continue
+        hosts, invalid = _authserv_ids(headers)
+        _state.authserv_stats["invalid"] += invalid
+        _note_authserv_candidates(hosts)
+        listed = ", ".join(f"{h}(lines={n})" for h, n in hosts.items()) or "none"
+        if invalid:
+            listed += f"; invalid={invalid}"
+        logger.info("inbound: authserv-id candidates: %s", listed)
 
 
 def _mailbox(value) -> str:
@@ -774,8 +903,11 @@ def parse_brevo_payload(payload) -> list[InboundMessage]:
     """All messages of one Brevo webhook call (at most ``BREVO_MAX_ITEMS``)."""
     if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
         raise UnparseableMessageError("payload")
+    items = payload["items"][:BREVO_MAX_ITEMS]
+    if items:
+        _log_authserv_candidates(items)
     out = []
-    for item in payload["items"][:BREVO_MAX_ITEMS]:
+    for item in items:
         try:
             out.append(parse_brevo_item(item))
         except UnparseableMessageError:
@@ -932,6 +1064,10 @@ class _State:
         self.done_ids: OrderedDict[str, None] = OrderedDict()
         self.recent: dict[str, OrderedDict[str, None]] = {}  # patient -> sha256 filed
         self.locks: dict[str, asyncio.Lock] = {}
+        # go-live diagnostics (#950): auth refusal codes, authserv candidates
+        self.auth_refusals: Counter = Counter()
+        self.authserv_hosts: dict[str, dict] = {}
+        self.authserv_stats: Counter = Counter()
 
     def lock(self, key: str) -> asyncio.Lock:
         lk = self.locks.get(key)
@@ -996,6 +1132,8 @@ def unmatched_overview() -> dict:
         "enabled": is_enabled(),
         "senders": senders,
         "totals": dict(_state.counters),
+        "auth_refusals": {r: _state.auth_refusals[r] for r in AUTH_REFUSAL_REASONS},
+        "authserv_candidates": authserv_candidates(),
     }
 
 

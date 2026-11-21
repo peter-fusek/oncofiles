@@ -7378,6 +7378,8 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
     In-memory, counts only: a keyed hash of the sender (never the address),
     the patient id prefix, mails, files, reason codes and times, plus totals,
     and the durable queue's counts per state / failure reason (#952).
+    Go-live diagnostics: ``auth_refusals`` (counter per refusal code) and
+    ``authserv_candidates`` (hostname-shaped authserv-ids only, counts, times).
     """
     err = _require_admin(request)
     if err:
