@@ -123,8 +123,11 @@ At enqueue the verdict is therefore unknown. A mail goes:
 * otherwise (a From that CLAIMS to be the caregiver, or a welcome@ mail) into
   the separate ``claimed`` bucket, table ``inbound_claimed_jobs`` (migration
   099), with its own small caps over open rows: ``MAX_CLAIMED_JOBS_PER_TOKEN``
-  per address, ``MAX_CLAIMED_WELCOME_JOBS`` for welcome@,
-  ``MAX_CLAIMED_JOBS_TOTAL`` in all, ``MAX_CLAIMED_PER_SENDER`` per From and
+  per address, ``MAX_CLAIMED_JOBS_TOTAL`` for all address buckets,
+  ``MAX_CLAIMED_WELCOME_JOBS`` for welcome@ (a separate pool: a welcome@
+  flood never uses the patients' slots), ``MAX_CLAIMED_PER_SENDER`` per
+  bucket and canonical From (forgeries of the caregiver's From to welcome@
+  never touch the caregiver's slots at the patient address) and
   ``MAX_CLAIMED_PER_DOMAIN`` per From organisational domain within an address
   bucket (never in the welcome bucket: every welcome@ sender is a Gmail user).
   A mail over an open cap is stored ``deferred`` (no download, no DNS;
@@ -133,10 +136,13 @@ At enqueue the verdict is therefore unknown. A mail goes:
   promoted``); a deferred row older than ``BREVO_ATTACHMENT_RETENTION_S``
   ends ``failed`` / ``download_expired``. Only beyond the deferred bounds
   (``MAX_DEFERRED_PER_TOKEN``, ``MAX_DEFERRED_PER_SENDER``,
-  ``MAX_DEFERRED_TOTAL``) is a mail dropped and counted
-  (``jobs_claimed_dropped_<cap>``). The Brevo batch is always answered 202
-  (infra review: one flooded address never fails a whole batch), and a real
-  mail that arrives during a forged flood waits instead of being lost. The
+  ``MAX_DEFERRED_TOTAL`` for the address buckets, ``MAX_DEFERRED_WELCOME``
+  for welcome@, again separate pools): a welcome@ mail is then dropped and
+  counted (``jobs_claimed_dropped_<cap>``, the batch still gets 202), while
+  a mail to a patient address makes the batch answer 503 + Retry-After
+  (``jobs_claimed_full``; nothing written, Brevo retries, rows it already
+  holds are no-ops on the retry), so a patient's real mail is never dropped.
+  A real mail that arrives during a forged flood waits instead. The
   dedupe key includes a digest of the delivery's Brevo ``Uuid`` and download
   tokens, so a forged or refused copy with the same Message-ID and From never
   suppresses a later real delivery.
@@ -225,8 +231,10 @@ MAX_UNTRUSTED_JOBS_TOTAL = 100
 # them is deferred (below), never a 503 for the whole batch (infra review).
 MAX_CLAIMED_JOBS_PER_TOKEN = 5
 MAX_CLAIMED_WELCOME_JOBS = 20
-MAX_CLAIMED_JOBS_TOTAL = 50
-MAX_CLAIMED_PER_SENDER = 2  # per canonical From address, all buckets
+MAX_CLAIMED_JOBS_TOTAL = 50  # all ADDRESS buckets; welcome@ has its own pool
+# Per (bucket, canonical From): forgeries carrying the caregiver's From sent to
+# welcome@ never use the slots of the caregiver's mail to the patient address.
+MAX_CLAIMED_PER_SENDER = 2
 # Per From organisational domain within one ADDRESS bucket. Not applied to the
 # welcome bucket (maintainer decision on #966): every welcome@ sender is a
 # Gmail user, so it would cap all of gmail.com; there the per-sender cap and
@@ -235,11 +243,14 @@ MAX_CLAIMED_PER_SENDER = 2  # per canonical From address, all buckets
 MAX_CLAIMED_PER_DOMAIN = 2
 # Over an open cap a mail is stored ``deferred`` (security review of #966: no
 # download, no DNS) and promoted to pending when a slot frees up; only beyond
-# these bounds is it dropped and counted. Per address token (address buckets
-# only), per canonical sender, and in total.
+# these bounds is it dropped and counted. Per canonical sender; per address
+# token and for all address buckets together; welcome@ is a separate pool
+# (security review of #966: a welcome@ flood from many Gmail senders never
+# uses up the deferred slots of the patients' addresses).
 MAX_DEFERRED_PER_TOKEN = 10
 MAX_DEFERRED_PER_SENDER = 10
 MAX_DEFERRED_TOTAL = 50
+MAX_DEFERRED_WELCOME = 30
 # A welcome@ row whose key lookup failed (dns_failed) is retried this often,
 # then ends failed (infra review: a slow DNS server must not hold the bucket).
 WELCOME_DNS_RETRIES = 1
@@ -604,6 +615,7 @@ def _claimed_caps() -> dict[str, int]:
         "deferred_bucket": MAX_DEFERRED_PER_TOKEN,
         "deferred_sender": MAX_DEFERRED_PER_SENDER,
         "deferred_total": MAX_DEFERRED_TOTAL,
+        "deferred_welcome": MAX_DEFERRED_WELCOME,
     }
 
 
@@ -638,7 +650,15 @@ async def enqueue(
             direct.append(msg)
         else:
             claimed.append((bucket, msg))
-    n_claimed = await _enqueue_claimed(db, claimed) if claimed else 0
+    n_claimed = 0
+    if claimed:
+        try:
+            n_claimed = await _enqueue_claimed(db, claimed)
+        except InboundQueueFullError:
+            # an address bucket beyond its deferred bound: 503, Brevo retries
+            inbound_email._state.counters["jobs_claimed_full"] += 1
+            logger.warning("inbound: claimed address bucket full, batch refused (503)")
+            raise
     for msg in direct:
         token = inbound_email._find_token(msg)
         if token is None and inbound_welcome.is_welcome(msg):
@@ -888,6 +908,12 @@ async def _verify_one(db) -> str | None:
     async with inbound_email.PROCESS_LOCK:
         if temporary is not None:
             return await retry_or_fail(temporary)
+        # infra review of #966: the verification ran without the lock; make
+        # sure this worker still holds the row before promoting it
+        new = _iso(_now())
+        if not await db.touch_inbound_claimed_job(ctx["id"], lease=lease["value"], now=new):
+            return lease_lost()
+        lease["value"] = new
         msg.auth_mode = ""
         msg.auth_pass = verdict.ok
         reason = "verified" if verdict.ok else (verdict.reason or "dkim_invalid")

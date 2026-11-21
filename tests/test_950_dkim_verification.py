@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 
 from oncofiles import inbound_dkim, inbound_email, inbound_queue, inbound_welcome, server
+from oncofiles.database._inbound_jobs import InboundQueueFullError
 from tests.test_950_inbound_address import (  # noqa: F401 - fixtures
     CARER,
     PID,
@@ -1042,16 +1043,97 @@ async def test_over_an_open_cap_the_item_is_deferred_not_dropped(idb, dkim_brevo
     assert inbound_email._state.counters["jobs_claimed_deferred_total"] == 1
 
 
-async def test_beyond_the_deferred_bound_the_item_is_dropped(idb, dkim_brevo, monkeypatch):
+async def test_beyond_the_address_deferred_bound_the_batch_gets_503(
+    idb, drive, dkim_brevo, monkeypatch
+):
+    """Infra review: a patient's real mail is never dropped. Beyond the
+    deferred bound of an address bucket the batch answers 503 (nothing
+    written) and Brevo retries; what it already holds is a no-op then."""
     monkeypatch.setattr(inbound_queue, "MAX_DEFERRED_PER_SENDER", 1)
     addr = await address_of(idb)
-    items = [dkim_item(addr, eml=f"eml-{n}") for n in range(4)]
+    held = [dkim_item(addr, eml=f"eml-{n}") for n in range(3)]
+    for item in held:
+        assert (await _post(idb, item)).status_code == 202
+    assert [r["state"] for r in await _rows(idb, "inbound_claimed_jobs")] == [
+        "pending",
+        "pending",
+        "deferred",
+    ]
+    late = dkim_item(addr, eml="eml-late")
+    resp = await _post(idb, held[0], late)
+    assert resp.status_code == 503 and resp.headers.get("retry-after")
+    assert len(await _rows(idb, "inbound_claimed_jobs")) == 3  # nothing written
+    assert inbound_email._state.counters["jobs_claimed_full"] == 1
+    assert inbound_email._state.counters["jobs_claimed_dropped"] == 0
+    await inbound_queue.run_pending(idb)  # the held rows are verified and leave
+    assert (await _post(idb, held[0], late)).status_code == 202  # the retry
+    assert len(await _rows(idb, "inbound_claimed_jobs")) == 4
+
+
+async def test_beyond_the_welcome_deferred_bound_the_item_is_dropped(idb, dkim_brevo, monkeypatch):
+    monkeypatch.setattr(inbound_queue, "MAX_DEFERRED_PER_SENDER", 1)
+    items = [dkim_item(WELCOME, sender="synth.flood@gmail.com", eml=f"eml-{n}") for n in range(4)]
     assert (await _post(idb, *items)).status_code == 202
     states = [r["state"] for r in await _rows(idb, "inbound_claimed_jobs")]
     assert states == ["pending", "pending", "deferred"]
     counters = inbound_email._state.counters
     assert counters["jobs_claimed_dropped"] == 1
     assert counters["jobs_claimed_dropped_deferred_sender"] == 1
+
+
+async def test_welcome_forgeries_of_the_caregiver_never_block_the_patient_address(
+    idb, drive, mails, dkim_brevo, rsa_key
+):
+    """Infra review: the sender caps count per (bucket, sender). Forgeries
+    carrying the caregiver's From sent to the public welcome@ fill only the
+    welcome slots; the caregiver's real mail to the patient address is
+    queued, verified and filed."""
+    files, emls, _fetched, records = dkim_brevo
+    pem, record = rsa_key
+    records[key_name()] = record
+    bound = inbound_queue.MAX_CLAIMED_PER_SENDER + inbound_queue.MAX_DEFERRED_PER_SENDER
+    forgeries = [dkim_item(WELCOME, eml=f"eml-forged-{n}") for n in range(bound + 1)]
+    assert (await _post(idb, *forgeries)).status_code == 202
+    assert inbound_email._state.counters["jobs_claimed_dropped_deferred_sender"] == 1
+    addr = await address_of(idb)
+    files["att-real"] = pdf(3)
+    emls["eml-real"] = sign(raw_mail(to=addr), pem)
+    real = dkim_item(addr, eml="eml-real", files=[("SynthReal2027.pdf", "att-real")])
+    assert (await _post(idb, real)).status_code == 202
+    async with idb.db.execute(
+        "SELECT state FROM inbound_claimed_jobs WHERE bucket <> 'welcome'"
+    ) as cur:
+        assert [r[0] for r in await cur.fetchall()] == ["pending"]
+    await inbound_queue.run_pending(idb)
+    assert [f[1] for f in drive.files] == [pdf(3)]
+
+
+async def test_a_lost_lease_after_verification_skips_the_promotion(
+    idb, drive, dkim_brevo, monkeypatch
+):
+    """Infra review: the lease is touched under the lock before the
+    promotion; if another worker took the row over meanwhile, nothing is
+    queued and nothing is finished by this worker."""
+    calls = {"n": 0}
+    real_touch = idb.touch_inbound_claimed_job
+
+    async def _touch(job_id, *, lease, now):
+        calls["n"] += 1
+        if calls["n"] >= 2:  # the touch before the promotion
+            return False
+        return await real_touch(job_id, lease=lease, now=now)
+
+    async def _verify(eml_token, sender, api_key, recipient_ok):
+        return inbound_dkim.Verdict(True, None, DOMAIN, "s2027")
+
+    monkeypatch.setattr(idb, "touch_inbound_claimed_job", _touch)
+    monkeypatch.setattr(inbound_dkim, "verify_message", _verify)
+    addr = await address_of(idb)
+    await _post(idb, dkim_item(addr, eml="eml-1"))
+    counts = await inbound_queue.run_pending(idb, limit=1)
+    assert counts == {"claimed:lease_lost": 1}
+    assert await _trusted_jobs(idb) == []
+    assert (await _rows(idb, "inbound_claimed_jobs"))[0]["state"] == "processing"
 
 
 async def test_deferred_row_past_the_retention_ends_download_expired(idb, dkim_brevo, monkeypatch):
@@ -1067,6 +1149,45 @@ async def test_deferred_row_past_the_retention_ends_download_expired(idb, dkim_b
     rows = await _rows(idb, "inbound_claimed_jobs")
     assert all(r["state"] == "failed" and r["reason"] == "download_expired" for r in rows)
     assert inbound_email._state.counters["claimed_deferred_expired"] == 1
+
+
+async def test_welcome_flood_leaves_the_address_pools_working(
+    idb, drive, mails, dkim_brevo, rsa_key, monkeypatch
+):
+    """Security review: welcome@ and the address buckets are separate pools,
+    open and deferred. A welcome@ flood from many Gmail senders that fills
+    both welcome pools leaves address-bucket deferral and verification
+    working."""
+    files, emls, _fetched, records = dkim_brevo
+    pem, record = rsa_key
+    records[key_name()] = record
+    monkeypatch.setattr(inbound_queue, "MAX_CLAIMED_WELCOME_JOBS", 3)
+    monkeypatch.setattr(inbound_queue, "MAX_DEFERRED_WELCOME", 3)
+    monkeypatch.setattr(inbound_queue, "MAX_CLAIMED_JOBS_TOTAL", 3)
+    monkeypatch.setattr(inbound_queue, "MAX_DEFERRED_TOTAL", 3)
+    flood = [dkim_item(WELCOME, sender=f"synth.flood{n}@{DOMAIN}", eml="eml-x") for n in range(8)]
+    assert (await _post(idb, *flood)).status_code == 202
+    counters = inbound_email._state.counters
+    assert counters["jobs_claimed_deferred_welcome"] == 3
+    assert counters["jobs_claimed_dropped_deferred_welcome"] == 2
+    # the patient's address still gets its open slots, then its deferred ones
+    addr = await address_of(idb)
+    files["att-real"] = pdf(5)
+    emls["eml-real"] = sign(raw_mail(to=addr), pem)
+    real = dkim_item(addr, eml="eml-real", files=[("SynthReal2027.pdf", "att-real")])
+    assert (await _post(idb, real)).status_code == 202
+    async with idb.db.execute(
+        "SELECT state FROM inbound_claimed_jobs WHERE bucket <> 'welcome' ORDER BY id"
+    ) as cur:
+        assert [r[0] for r in await cur.fetchall()] == ["pending"]
+    # address-bucket deferral still has room (its own pool)
+    monkeypatch.setattr(inbound_queue, "MAX_CLAIMED_PER_DOMAIN", 0)  # force deferral
+    second = dkim_item(addr, eml="eml-second")
+    assert (await _post(idb, second)).status_code == 202
+    assert counters["jobs_claimed_deferred_domain"] == 1
+    monkeypatch.setattr(inbound_queue, "MAX_CLAIMED_PER_DOMAIN", 2)
+    await inbound_queue.run_pending(idb)
+    assert [f[1] for f in drive.files] == [pdf(5)]
 
 
 async def test_three_gmail_senders_to_welcome_are_all_queued(idb, dkim_brevo):
@@ -1102,6 +1223,7 @@ async def test_domain_cap_still_applies_to_an_address_bucket(idb):
         "deferred_bucket": 0,
         "deferred_sender": 0,
         "deferred_total": 0,
+        "deferred_welcome": 0,
     }
 
     def row(n, bucket):
@@ -1116,9 +1238,12 @@ async def test_domain_cap_still_applies_to_an_address_bucket(idb):
         }
 
     result = await idb.insert_inbound_claimed_jobs(
-        [row(n, "token-hash-a") for n in range(3)], caps=caps
+        [row(n, "token-hash-a") for n in range(2)], caps=caps
     )
-    assert result["inserted"] == 2 and result["dropped"] == {"deferred_total": 1}
+    assert result["inserted"] == 2
+    # the third is over the domain cap and, with no deferred room, refused
+    with pytest.raises(InboundQueueFullError):
+        await idb.insert_inbound_claimed_jobs([row(2, "token-hash-a")], caps=caps)
     result = await idb.insert_inbound_claimed_jobs(
         [row(n, "welcome") for n in range(10, 13)], caps=caps
     )
@@ -1230,3 +1355,13 @@ def test_infra_limits():
     assert {b"rsa-sha256", b"ed25519-sha256"} == inbound_dkim.ACCEPTED_ALGORITHMS
     assert inbound_queue.MAX_CLAIMED_PER_SENDER == 2
     assert inbound_queue.MAX_CLAIMED_PER_DOMAIN == 2
+
+
+def test_address_card_says_bcc_does_not_work():
+    from pathlib import Path
+
+    html = (Path(inbound_dkim.__file__).parent / "dashboard.html").read_text()
+    assert 'class="inbound-terms inbound-bcc-note"' in html
+    note = html.partition('inbound-bcc-note"')[2].partition("</p>")[0]
+    assert "data-sk=" in note and "data-en=" in note
+    assert "Bcc" in note and "To (or Cc)" in note

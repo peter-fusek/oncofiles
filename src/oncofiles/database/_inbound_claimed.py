@@ -17,7 +17,7 @@ No helper deletes a row (#734): a verified job ends ``done`` or ``failed``.
 from __future__ import annotations
 
 from ._base import DatabaseBase
-from ._inbound_jobs import INBOUND_JOB_STATES
+from ._inbound_jobs import INBOUND_JOB_STATES, InboundQueueFullError
 
 # The claimed table's states: the queue's four plus ``deferred`` (security
 # review of #966: an over-cap mail is parked, never lost while there is room).
@@ -28,37 +28,50 @@ _OPEN_STATES = "('pending', 'processing')"
 def _checks(row: dict, *, deferred: bool) -> tuple:
     """(cap name, in-batch key, SQL filter, params) of every cap of ``row``.
 
-    Open caps (``deferred=False``): per bucket (``address`` / ``welcome``),
-    ``total``, ``sender`` (all buckets) and ``domain`` (address buckets only:
-    maintainer decision, every welcome@ sender is a Gmail user). Deferred
-    caps: ``deferred_bucket`` (address buckets), ``deferred_sender`` and
-    ``deferred_total``.
+    The welcome bucket and the address buckets are SEPARATE pools (security
+    review of #966): a welcome@ flood from many Gmail senders can never use
+    up the slots of the patients' addresses, nor the other way round.
+
+    The sender caps count per (bucket, canonical sender) (infra review of
+    #966): forgeries carrying the caregiver's From sent to the public welcome@
+    never use the slots of that caregiver's real mail to the patient address.
+
+    Open caps (``deferred=False``): ``sender`` (per bucket and canonical
+    sender); for welcome@ ``welcome`` (its whole pool); for an address
+    bucket ``address`` (per token), ``total`` (all address buckets) and
+    ``domain`` (per From domain; never in welcome@: maintainer decision,
+    every welcome@ sender is a Gmail user). Deferred caps:
+    ``deferred_sender`` (per bucket and sender); for welcome@ ``deferred_welcome``; for an address
+    bucket ``deferred_bucket`` (per token) and ``deferred_total`` (all
+    address buckets).
     """
     bucket, sender, domain = row["bucket"], row["sender_hash"], row["domain_hash"]
     welcome = bucket == "welcome"
     if deferred:
         out = (
-            ("deferred_total", ("d_total",), "", ()),
-            ("deferred_sender", ("d_sender", sender), "sender_hash = ?", (sender,)),
-        )
-        if not welcome:
-            out += (("deferred_bucket", ("d_bucket", bucket), "bucket = ?", (bucket,)),)
-        return out
-    out = (
-        ("welcome" if welcome else "address", ("bucket", bucket), "bucket = ?", (bucket,)),
-        ("total", ("total",), "", ()),
-        ("sender", ("sender", sender), "sender_hash = ?", (sender,)),
-    )
-    if not welcome:
-        out += (
             (
-                "domain",
-                ("domain", bucket, domain),
-                "bucket = ? AND domain_hash = ?",
-                (bucket, domain),
+                "deferred_sender",
+                ("d_sender", bucket, sender),
+                "bucket = ? AND sender_hash = ?",
+                (bucket, sender),
             ),
         )
-    return out
+        if welcome:
+            return out + (("deferred_welcome", ("d_welcome",), "bucket = 'welcome'", ()),)
+        return out + (
+            ("deferred_bucket", ("d_bucket", bucket), "bucket = ?", (bucket,)),
+            ("deferred_total", ("d_total",), "bucket <> 'welcome'", ()),
+        )
+    out = (
+        ("sender", ("sender", bucket, sender), "bucket = ? AND sender_hash = ?", (bucket, sender)),
+    )
+    if welcome:
+        return out + (("welcome", ("welcome",), "bucket = 'welcome'", ()),)
+    return out + (
+        ("address", ("bucket", bucket), "bucket = ?", (bucket,)),
+        ("total", ("total",), "bucket <> 'welcome'", ()),
+        ("domain", ("domain", bucket, domain), "bucket = ? AND domain_hash = ?", (bucket, domain)),
+    )
 
 
 class InboundClaimedJobsMixin(DatabaseBase):
@@ -88,9 +101,13 @@ class InboundClaimedJobsMixin(DatabaseBase):
         row already queued (a Brevo retry of the same delivery) is never
         counted. A row within the open caps (:func:`_checks`) is ``pending``;
         over one it is stored ``deferred`` (no download, no DNS) while the
-        deferred caps allow, and only beyond those is it DROPPED and counted.
-        The route answers 202 either way (infra review of #966: one flooded
-        address never makes the whole Brevo batch fail).
+        deferred caps allow. Beyond those (infra review of #966): a welcome@
+        row is DROPPED and counted (the route still answers 202); an ADDRESS
+        bucket row raises ``InboundQueueFullError("claimed")`` before anything
+        is written, so the route answers 503 + Retry-After and Brevo retries
+        (rows of the batch it already holds are no-ops on the retry: the
+        dedupe key includes the delivery hash). A patient's real mail is never
+        dropped.
         """
         keep: list[tuple[dict, str]] = []
         deferred: dict[str, int] = {}
@@ -113,6 +130,8 @@ class InboundClaimedJobsMixin(DatabaseBase):
             else:
                 over_deferred = await self._over(row, caps, added, deferred=True)
                 if over_deferred is not None:
+                    if row["bucket"] != "welcome":
+                        raise InboundQueueFullError("claimed")
                     dropped[over_deferred] = dropped.get(over_deferred, 0) + 1
                     continue
                 deferred[over] = deferred.get(over, 0) + 1
