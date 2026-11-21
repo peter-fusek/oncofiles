@@ -30,7 +30,7 @@ OTHER_PID = "ffffffff-ffff-4fff-8fff-ffffffffffff"
 @pytest.mark.parametrize(
     "sql",
     [
-        # The table that matched Michal's screenshot.
+        # The table that matched the external user's screenshot.
         "SELECT * FROM patients",
         "SELECT slug, display_name, caregiver_email FROM patients",
         # Other PII tables excluded from the allow-list.
@@ -77,7 +77,7 @@ def test_schema_qualified_table_denied():
 @pytest.mark.parametrize(
     "sql",
     [
-        # Original Michal-era bypasses on an allow-listed table.
+        # Original bypasses from the external-user report on an allow-listed table.
         "SELECT * FROM documents",  # no WHERE
         "SELECT * FROM documents WHERE patient_id LIKE '%'",
         "SELECT * FROM documents WHERE patient_id IS NOT NULL",

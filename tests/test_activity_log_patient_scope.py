@@ -1,6 +1,6 @@
 """Regression lock: activity_log cross-patient read scoping + backfill admin gate.
 
-Closes the last Michal-sweep gap discovered during the "no misses" pass:
+Closes the last gap of the external-user security sweep discovered during the "no misses" pass:
 `search_activity_log` / `get_activity_stats` / `add_activity_log` previously
 never used the `activity_log.patient_id` column (added migration 029).
 Any caller could enumerate every patient's tool-call history.

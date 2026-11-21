@@ -59,7 +59,7 @@ def test_insufficient_file_permissions_is_not_hard_auth():
     """#445 guard. `insufficientFilePermissions` means a single file is owned
     by someone else and shared read-only — sync survives it file-by-file.
     Classifying it here would permanently light up the health endpoint for
-    Mattias-class patients whose Drive files are merely shared."""
+    patients whose Drive files are merely shared."""
     from oncofiles.server import _hard_auth_reason
 
     exc = Exception(

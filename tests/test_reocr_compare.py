@@ -298,7 +298,7 @@ def _as_caller(*, admin: bool, pid: str = PRIMARY_TEST_UUID):
             var.reset(tok)
 
 
-async def _erika_slug(db) -> str:
+async def _primary_slug(db) -> str:
     async with db.db.execute(
         "SELECT slug FROM patients WHERE patient_id = ?", (PRIMARY_TEST_UUID,)
     ) as cur:
@@ -307,7 +307,7 @@ async def _erika_slug(db) -> str:
 
 async def test_a_non_admin_is_refused_even_for_the_own_patient(db, env):
     await _seed(db)
-    slug = await _erika_slug(db)
+    slug = await _primary_slug(db)
     with _as_caller(admin=False):
         for kw in ({}, {"patient_slug": slug}, {"patient_slug": "synth-other"}):
             out = json.loads(await tool.curated_reocr_compare(_Ctx(db), [501], **kw))
@@ -326,7 +326,7 @@ async def test_an_admin_without_a_patient_slug_is_refused(db, env):
 
 async def test_an_admin_with_a_patient_slug_starts_a_job(db, env):
     await _seed(db)
-    slug = await _erika_slug(db)
+    slug = await _primary_slug(db)
     with _as_caller(admin=True, pid=""):
         out = json.loads(await tool.curated_reocr_compare(_Ctx(db), [501], patient_slug=slug))
     assert out["kind"] == "reocr_compare" and out["dry_run"] is True

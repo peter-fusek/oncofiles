@@ -17,7 +17,7 @@ import pytest
 from oncofiles.patient_consent import CONSENT_VERSION
 
 
-def _make_request(body: dict, dashboard_email: str = "peterfusek1980@gmail.com") -> MagicMock:
+def _make_request(body: dict, dashboard_email: str = "admin@example.com") -> MagicMock:
     """Build a minimal mock request that the api_create_patient handler will accept."""
     request = MagicMock()
     request.client = MagicMock()
@@ -190,7 +190,7 @@ async def test_api_create_patient_inserts_t0_event_and_fires_notifier(db, monkey
     # Bypass the dashboard auth + rate-limit gates (out of scope for this test).
     monkeypatch.setattr(server, "_check_dashboard_auth", lambda req: None)
     monkeypatch.setattr(server, "_check_rate_limit", lambda label: None)
-    monkeypatch.setattr(server, "_get_dashboard_email", lambda req: "peter.fusek@instarea.sk")
+    monkeypatch.setattr(server, "_get_dashboard_email", lambda req: "caregiver@example.com")
 
     request = _make_request(
         {
