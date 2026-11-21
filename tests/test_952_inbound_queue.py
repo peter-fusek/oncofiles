@@ -1093,3 +1093,81 @@ def test_candidate_query_orders_by_next_attempt_at():
     src = inspect.getsource(_inbound_jobs.InboundJobsMixin.next_inbound_job)
     assert "next_attempt_at <= ?" in src and "ORDER BY next_attempt_at" in src
     assert "ORDER BY id LIMIT" not in src
+
+
+# ── security review: untrusted flood never blocks the caregiver ─────────
+
+
+def _forged_item(addr, n, *, sender="stranger952@example.test", auth="pass"):
+    item = brevo_item(addr, sender=sender, auth=auth, files=[])
+    item["MessageId"] = f"<synthetic-flood-{n}-2027@example.test>"
+    return item
+
+
+async def test_untrusted_flood_does_not_block_the_caregiver(
+    idb, drive, mails, brevo, no_kick, monkeypatch
+):
+    store, _ = brevo
+    addr = await address_of(idb)
+    # a stranger, and the caregiver's From with a failed verdict, both untrusted
+    flood = [_forged_item(addr, n) for n in range(inbound_queue.MAX_OPEN_JOBS_PER_TOKEN + 5)]
+    flood += [_forged_item(addr, 900 + n, sender=CARER, auth="fail") for n in range(5)]
+    for item in flood:
+        resp = await server.inbound_brevo_webhook(brevo_request(idb, {"items": [item]}))
+        assert resp.status_code == 202  # never 503 for the address
+    jobs = await _jobs(idb)
+    assert len(jobs) == inbound_queue.MAX_UNTRUSTED_JOBS_PER_TOKEN
+    dropped = len(flood) - inbound_queue.MAX_UNTRUSTED_JOBS_PER_TOKEN
+    assert inbound_email._state.counters["jobs_untrusted_dropped"] == dropped
+    assert inbound_email._state.counters["jobs_queue_full"] == 0
+
+    real = _two_file_item(addr, store)
+    resp = await server.inbound_brevo_webhook(brevo_request(idb, {"items": [real]}))
+    assert resp.status_code == 202
+    async with idb.db.execute("SELECT trusted, COUNT(*) FROM inbound_jobs GROUP BY trusted") as cur:
+        by_class = {r[0]: r[1] for r in await cur.fetchall()}
+    assert by_class[False] == inbound_queue.MAX_UNTRUSTED_JOBS_PER_TOKEN
+    assert by_class[True] == len([real])
+
+    counts = await inbound_queue.run_pending(idb)
+    assert counts["done:filed"] == 1
+    assert [f[0] for f in drive.files] == list(FILENAMES[:2])
+    assert [m["to"] for m in mails] == [[CARER]]
+
+
+async def test_untrusted_total_cap_drops_and_trusted_still_queues(idb, brevo, no_kick, monkeypatch):
+    addr = await address_of(idb)
+    monkeypatch.setattr(inbound_queue, "MAX_UNTRUSTED_JOBS_TOTAL", 2)
+    out = await inbound_queue.enqueue(
+        idb, [inbound_email.parse_brevo_item(_forged_item(addr, n)) for n in range(4)]
+    )
+    assert out["queued"] == 2 and out["flood_dropped"] == 2
+    out = await inbound_queue.enqueue(
+        idb, [inbound_email.parse_brevo_item(_distinct_item(addr, 0))]
+    )
+    assert out["queued"] == 1 and out["flood_dropped"] == 0
+
+
+async def test_trusted_flag_uses_the_cores_sender_rule(idb, brevo, no_kick, monkeypatch):
+    addr = await address_of(idb)
+    calls = []
+    real = inbound_email.sender_refusal
+
+    async def spy(db, pid, msg):
+        calls.append(pid)
+        return await real(db, pid, msg)
+
+    monkeypatch.setattr(inbound_email, "sender_refusal", spy)
+    await inbound_queue.enqueue(
+        idb,
+        [
+            inbound_email.parse_brevo_item(_distinct_item(addr, 0)),
+            inbound_email.parse_brevo_item(_forged_item(addr, 1)),
+        ],
+    )
+    assert calls == [PID, PID]
+    async with idb.db.execute("SELECT trusted FROM inbound_jobs ORDER BY id") as cur:
+        flags = [bool(r[0]) for r in await cur.fetchall()]
+    assert flags == [True, False]
+    src = inspect.getsource(inbound_queue.enqueue)
+    assert "sender_refusal" in src and "_email_matches_caregiver" not in src

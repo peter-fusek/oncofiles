@@ -23,6 +23,11 @@
 --                  (token_hash, message_id_hash, sender_hash): a genuine
 --                  provider retry (same sender, verdict, Message-ID) is not
 --                  queued twice.
+-- trusted:         1 when, at enqueue, the From matched the patient's caregiver
+--                  AND the auth verdict passed (inbound_email.sender_refusal,
+--                  the same rule as the processing core). The enqueue caps
+--                  count trusted and untrusted jobs separately, so a flood of
+--                  forged mail to an address never blocks the caregiver's.
 -- payload_enc:     AES-GCM ciphertext (base64, "v1:" prefix) of the minimal
 --                  data the worker needs: the address token, the sender address
 --                  and its auth verdict, the loop-check header values, the
@@ -56,6 +61,7 @@ CREATE TABLE IF NOT EXISTS inbound_jobs (
     token_hash TEXT NOT NULL,
     message_id_hash TEXT NOT NULL,
     sender_hash TEXT NOT NULL,
+    trusted INTEGER NOT NULL DEFAULT 0,
     payload_enc TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -68,4 +74,5 @@ CREATE TABLE IF NOT EXISTS inbound_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_inbound_jobs_state ON inbound_jobs(state, updated_at);
 CREATE INDEX IF NOT EXISTS idx_inbound_jobs_due ON inbound_jobs(state, next_attempt_at);
-CREATE INDEX IF NOT EXISTS idx_inbound_jobs_token ON inbound_jobs(token_hash, state);
+CREATE INDEX IF NOT EXISTS idx_inbound_jobs_token ON inbound_jobs(token_hash, trusted, state);
+CREATE INDEX IF NOT EXISTS idx_inbound_jobs_trusted ON inbound_jobs(trusted, state);

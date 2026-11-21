@@ -30,10 +30,16 @@ Never a subject or a body. A mail without a Message-ID is deduplicated on a
 keyed hash of its payload digest instead (never NULL, which UNIQUE would treat
 as distinct).
 
-Caps: at most ``MAX_OPEN_JOBS_PER_TOKEN`` open (pending + processing) jobs per
-address and ``MAX_OPEN_JOBS_TOTAL`` in all. A batch that would pass either is
-refused whole (``InboundQueueFullError``): the route answers 503 +
-``Retry-After``, nothing is written, only the ``jobs_queue_full`` counter.
+Caps, counted per trust class over open (pending + processing) jobs; each
+row is marked ``trusted`` at enqueue with the core's sender rule
+(``inbound_email.sender_refusal``: caregiver From AND auth pass). Trusted:
+at most ``MAX_OPEN_JOBS_PER_TOKEN`` per address and ``MAX_OPEN_JOBS_TOTAL`` in
+all; a batch that would pass either is refused whole
+(``InboundQueueFullError``): the route answers 503 + ``Retry-After``, nothing
+is written, only the ``jobs_queue_full`` counter. Untrusted:
+``MAX_UNTRUSTED_JOBS_PER_TOKEN`` / ``MAX_UNTRUSTED_JOBS_TOTAL``; a mail over
+them is dropped (counter ``jobs_untrusted_dropped``, still 202), so a forged
+flood never blocks the caregiver's mail.
 
 The key material is the MANDATORY runtime env ``INBOUND_JOBS_SECRET``, never
 derived from ``MCP_BEARER_TOKEN`` (infra review). Unset = fail closed: the
@@ -122,11 +128,19 @@ MAX_JOBS_PER_RUN = 50
 # After a failed attempt: 2, 4, 8, 16 minutes before the next one, so a short
 # Drive or Brevo outage does not use up MAX_ATTEMPTS in one run.
 RETRY_BASE_MIN = 2
-# Enqueue caps (#952 infra review): open jobs (pending + processing) per
-# address token hash and in total. Over a cap the Brevo route answers 503 +
-# Retry-After and writes nothing (Brevo retries later); only a counter moves.
+# Enqueue caps (#952 infra + security review), over open jobs (pending +
+# processing), counted per trust class. Trusted = caregiver From + auth pass
+# (``inbound_email.sender_refusal``). Over a trusted cap the Brevo route
+# answers 503 + Retry-After and writes nothing (Brevo retries later); only a
+# counter moves.
 MAX_OPEN_JOBS_PER_TOKEN = 50
 MAX_OPEN_JOBS_TOTAL = 500
+# Untrusted mail (anyone else, or a failed verdict) has its own small caps and
+# is DROPPED over them (counted, nothing written, still 202): a stranger who
+# knows the address can never use up the caregiver's slots nor make the
+# address answer 503.
+MAX_UNTRUSTED_JOBS_PER_TOKEN = 10
+MAX_UNTRUSTED_JOBS_TOTAL = 100
 # How long Brevo keeps an inbound attachment downloadable is NOT documented
 # (checked 2026-11-21): neither the inbound parsing guide
 # https://developers.brevo.com/docs/inbound-parse-webhooks nor the download
@@ -357,10 +371,13 @@ async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
     """Queue every routable message in ONE transaction; raises on a DB error.
 
     Returns counts: ``queued``, ``duplicate`` (already queued, a provider
-    retry), ``dropped`` (unknown / inactive token, silent as before). Raises
+    retry), ``dropped`` (unknown / inactive token, silent as before),
+    ``flood_dropped`` (untrusted mail over its own cap, counter
+    ``jobs_untrusted_dropped``). Each job is marked ``trusted`` with the
+    core's own sender rule (``inbound_email.sender_refusal``). Raises
     ``InboundQueueFullError`` (nothing written, counter ``jobs_queue_full``)
-    when the batch would pass ``MAX_OPEN_JOBS_PER_TOKEN`` or
-    ``MAX_OPEN_JOBS_TOTAL``.
+    when trusted mail would pass ``MAX_OPEN_JOBS_PER_TOKEN`` or
+    ``MAX_OPEN_JOBS_TOTAL``; untrusted mail never causes it.
     """
     rows = []
     dropped = 0
@@ -374,6 +391,7 @@ async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
             dropped += 1
             continue
         pid = row["patient_id"]
+        trusted = await inbound_email.sender_refusal(db, pid, msg) is None
         job_uuid = str(uuid.uuid4())
         payload = to_payload(msg, token)
         rows.append(
@@ -383,21 +401,24 @@ async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
                 "token_hash": th,
                 "message_id_hash": message_id_hash(msg.message_id, payload),
                 "sender_hash": sender_hash(msg.sender, msg.auth_pass),
+                "trusted": trusted,
                 "payload_enc": encrypt_payload(
                     payload, patient_id=pid, token_hash=th, job_uuid=job_uuid
                 ),
             }
         )
     try:
-        queued, duplicate = (
+        queued, duplicate, flood_dropped = (
             await db.insert_inbound_jobs(
                 rows,
                 now=_iso(_now()),
-                max_open_per_token=MAX_OPEN_JOBS_PER_TOKEN,
-                max_open_total=MAX_OPEN_JOBS_TOTAL,
+                caps={
+                    True: (MAX_OPEN_JOBS_PER_TOKEN, MAX_OPEN_JOBS_TOTAL),
+                    False: (MAX_UNTRUSTED_JOBS_PER_TOKEN, MAX_UNTRUSTED_JOBS_TOTAL),
+                },
             )
             if rows
-            else (0, 0)
+            else (0, 0, 0)
         )
     except InboundQueueFullError as exc:
         inbound_email._state.counters["jobs_queue_full"] += 1
@@ -405,14 +426,21 @@ async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
         raise
     inbound_email._state.counters["jobs_queued"] += queued
     inbound_email._state.counters["jobs_duplicate"] += duplicate
+    inbound_email._state.counters["jobs_untrusted_dropped"] += flood_dropped
     logger.info(
-        "inbound: queued=%d duplicate=%d dropped=%d patients=%s",
+        "inbound: queued=%d duplicate=%d dropped=%d flood_dropped=%d patients=%s",
         queued,
         duplicate,
         dropped,
+        flood_dropped,
         ",".join(sorted({r["patient_id"][:4] for r in rows})) or "-",
     )
-    return {"queued": queued, "duplicate": duplicate, "dropped": dropped}
+    return {
+        "queued": queued,
+        "duplicate": duplicate,
+        "dropped": dropped,
+        "flood_dropped": flood_dropped,
+    }
 
 
 # ── worker ───────────────────────────────────────────────────────────────

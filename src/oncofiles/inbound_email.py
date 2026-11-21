@@ -1311,6 +1311,24 @@ class Result:
     temporary: str | None = None
 
 
+async def sender_refusal(db, patient_id: str, msg: InboundMessage) -> str | None:
+    """Why this mail is not filed for the patient, or None (a trusted mail).
+
+    The ONE sender rule: the From must match the patient's caregiver and the
+    auth verdict must pass. Used by the processing core and, at enqueue, by
+    the #952 queue to mark a job ``trusted`` (separate queue caps).
+    """
+    from oncofiles.persistent_oauth import _email_matches_caregiver
+
+    patient = await db.get_patient(patient_id)
+    caregiver = getattr(patient, "caregiver_email", None) if patient else None
+    if patient is None or not _email_matches_caregiver(msg.sender, caregiver):
+        return "unknown_sender"
+    if not msg.auth_pass:
+        return "auth_failed"
+    return None
+
+
 def _find_token(msg: InboundMessage) -> str | None:
     for addr in msg.recipients:
         token = token_from_address(addr)
@@ -1359,16 +1377,7 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
             return Result("duplicate_delivery", pp)
         now = time.time()
 
-        from oncofiles.persistent_oauth import _email_matches_caregiver
-
-        patient = await db.get_patient(patient_id)
-        caregiver = getattr(patient, "caregiver_email", None) if patient else None
-        if patient is None or not _email_matches_caregiver(msg.sender, caregiver):
-            reason = "unknown_sender"
-        elif not msg.auth_pass:
-            reason = "auth_failed"
-        else:
-            reason = None
+        reason = await sender_refusal(db, patient_id, msg)
         if reason:
             # Its own cap (security review): unmatched mail is counted and,
             # beyond the cap, dropped; it never uses the filing quota below.

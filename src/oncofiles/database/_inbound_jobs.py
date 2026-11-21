@@ -27,69 +27,91 @@ class InboundQueueFullError(RuntimeError):
 
 
 class InboundJobsMixin(DatabaseBase):
+    async def _open_jobs(self, *, trusted: bool, token_hash: str | None = None) -> int:
+        """Open (pending + processing) jobs of one trust class, for one token
+        hash or in total (indexed COUNT)."""
+        sql = f"SELECT COUNT(*) FROM inbound_jobs WHERE trusted = ? AND state IN {_OPEN_STATES}"
+        params: tuple = (1 if trusted else 0,)
+        if token_hash is not None:
+            sql += " AND token_hash = ?"
+            params += (token_hash,)
+        async with self.db.execute(sql, params) as cursor:
+            return int((await cursor.fetchone())[0])
+
     async def insert_inbound_jobs(
         self,
         rows: list[dict],
         *,
         now: str | None = None,
-        max_open_per_token: int | None = None,
-        max_open_total: int | None = None,
-    ) -> tuple[int, int]:
-        """Queue ``rows`` in ONE transaction; returns (inserted, duplicates).
+        caps: dict[bool, tuple[int, int]] | None = None,
+    ) -> tuple[int, int, int]:
+        """Queue ``rows`` in ONE transaction; returns (inserted, duplicates, dropped).
 
         Each row: ``job_uuid``, ``patient_id``, ``token_hash``,
-        ``message_id_hash``, ``sender_hash``, ``payload_enc``. A row whose
-        (token_hash, message_id_hash, sender_hash) is already queued is a
-        provider retry of the same mail and is ignored; the sender hash (From +
-        auth verdict) keeps a forged mail with a stolen Message-ID from
-        blocking the real one. ``now`` is the row's first ``next_attempt_at``.
+        ``message_id_hash``, ``sender_hash``, ``trusted``, ``payload_enc``. A
+        row whose (token_hash, message_id_hash, sender_hash) is already queued
+        is a provider retry of the same mail and is ignored (never counted
+        against a cap); the sender hash (From + auth verdict) keeps a forged
+        mail with a stolen Message-ID from blocking the real one. ``now`` is the
+        row's first ``next_attempt_at``.
 
-        Caps (#952 infra review): when the new (not yet queued) rows would
-        bring the open jobs (pending + processing) of one token hash above
-        ``max_open_per_token``, or of all patients above ``max_open_total``,
-        ``InboundQueueFullError`` is raised and NOTHING is written (the route
-        answers 503 + Retry-After). Any other error rolls everything back and
-        raises (the route then answers 500, so the provider retries).
+        Caps (#952 infra + security review), ``caps[trusted] = (per token hash,
+        total)`` over open (pending + processing) jobs, counted per trust class
+        so untrusted mail can never use up the caregiver's slots:
+
+        * trusted (caregiver From + auth pass): a batch that would pass a cap
+          raises ``InboundQueueFullError`` and NOTHING is written (the route
+          answers 503 + Retry-After: Brevo retries the real mail later);
+        * untrusted: a row over its cap is DROPPED (not written, counted in
+          ``dropped``); the rest of the batch is still queued and the route
+          still answers 202, since this is a flood, not a retry case.
+
+        Any other error rolls everything back and raises (the route then
+        answers 500, so the provider retries).
         """
         inserted = 0
+        keep: list[dict] = []
+        dropped = 0
         try:
-            if max_open_per_token is not None or max_open_total is not None:
-                new_per_token: dict[str, int] = {}
+            if caps:
+                added: dict[tuple[bool, str | None], int] = {}
                 for row in rows:
                     async with self.db.execute(
                         """SELECT 1 FROM inbound_jobs WHERE token_hash = ?
                            AND message_id_hash = ? AND sender_hash = ? LIMIT 1""",
                         (row["token_hash"], row["message_id_hash"], row["sender_hash"]),
                     ) as cursor:
-                        if await cursor.fetchone() is None:
-                            th = row["token_hash"]
-                            new_per_token[th] = new_per_token.get(th, 0) + 1
-                if new_per_token and max_open_total is not None:
-                    async with self.db.execute(
-                        f"SELECT COUNT(*) FROM inbound_jobs WHERE state IN {_OPEN_STATES}"
-                    ) as cursor:
-                        open_total = (await cursor.fetchone())[0]
-                    if open_total + sum(new_per_token.values()) > max_open_total:
-                        raise InboundQueueFullError("total")
-                if max_open_per_token is not None:
-                    for th, n in new_per_token.items():
-                        async with self.db.execute(
-                            f"""SELECT COUNT(*) FROM inbound_jobs
-                                WHERE token_hash = ? AND state IN {_OPEN_STATES}""",
-                            (th,),
-                        ) as cursor:
-                            open_token = (await cursor.fetchone())[0]
-                        if open_token + n > max_open_per_token:
-                            raise InboundQueueFullError("token")
-            for row in rows:
+                        if await cursor.fetchone() is not None:
+                            keep.append(row)  # a retry: a no-op insert, never capped
+                            continue
+                    trusted = bool(row["trusted"])
+                    per_token, total = caps[trusted]
+                    th = row["token_hash"]
+                    open_token = await self._open_jobs(trusted=trusted, token_hash=th)
+                    open_total = await self._open_jobs(trusted=trusted)
+                    over = (
+                        open_token + added.get((trusted, th), 0) >= per_token
+                        or open_total + added.get((trusted, None), 0) >= total
+                    )
+                    if over:
+                        if trusted:
+                            raise InboundQueueFullError("trusted")
+                        dropped += 1
+                        continue
+                    added[(trusted, th)] = added.get((trusted, th), 0) + 1
+                    added[(trusted, None)] = added.get((trusted, None), 0) + 1
+                    keep.append(row)
+            else:
+                keep = list(rows)
+            for row in keep:
                 pid = require_patient_id(row["patient_id"])
                 cursor = await self.db.execute(
                     # ON CONFLICT on the dedupe key only: OR IGNORE would also
                     # swallow a NOT NULL failure and lose the mail silently.
                     """INSERT INTO inbound_jobs
                        (job_uuid, patient_id, token_hash, message_id_hash, sender_hash,
-                        payload_enc, state, attempts, next_attempt_at)
-                       VALUES (?, ?, ?, ?, ?, ?, 'pending', 0,
+                        trusted, payload_enc, state, attempts, next_attempt_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0,
                                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ','now')))
                        ON CONFLICT (token_hash, message_id_hash, sender_hash) DO NOTHING""",
                     (
@@ -98,6 +120,7 @@ class InboundJobsMixin(DatabaseBase):
                         row["token_hash"],
                         row["message_id_hash"],
                         row["sender_hash"],
+                        1 if row.get("trusted") else 0,
                         row["payload_enc"],
                         now,
                     ),
@@ -107,7 +130,7 @@ class InboundJobsMixin(DatabaseBase):
         except Exception:
             await self.db.rollback()
             raise
-        return inserted, len(rows) - inserted
+        return inserted, len(keep) - inserted, dropped
 
     async def next_inbound_job(self, *, now: str, stale_before: str) -> dict | None:
         """The next claimable job, or None: a ``pending`` job whose
