@@ -47,7 +47,7 @@
     // Actions that write or need an account: in the demo they only explain themselves.
     var DEMO_BLOCKED_ACTIONS = {
       showOnboarding: 1, showGdriveSetup: 1, showGdriveSetupAndToggle: 1, triggerManualSync: 1,
-      generateShareCode: 1, togglePatientArchive: 1, logout: 1
+      generateShareCode: 1, togglePatientArchive: 1, logout: 1, rotateInboundAddress: 1
     };
 
     window._dispatch = function (spec, target) {
@@ -615,6 +615,7 @@
       if (path === '/status') return d.status;
       if (path === '/api/documents') return withDemoUploads(d.documents);
       if (path === '/api/activity') return d.activity;
+      if (path === '/api/inbound-address') return d.inbound_address;
       if (path === '/api/patients') return d.patients;
       if (path === '/api/patient-budget') return { show_pill: false };
       if (path === '/api/manifest') return { generated_at: new Date().toISOString(), invented: true, documents: (d.documents || {}).documents || [] };
@@ -926,6 +927,185 @@
     }
     initUploadDrop();
 
+    // ── Document e-mail address (#950) ──────────────────────────────────
+    // The caregiver's private address for documents: copy, vCard, rotate (an
+    // armed second click, no browser dialog). Hidden for an admin's read-only
+    // view (the server refuses too) and while the server has it switched off.
+    // In /demo the address is invented and rotating only explains itself.
+
+    var inboundData = null;
+    var inboundFor = null;
+    var inboundArmed = null;
+
+    function inboundStatus(sk, en) {
+      var el = document.getElementById('inbound-status');
+      if (!el) return;
+      if (!sk) { el.hidden = true; el.textContent = ''; return; }
+      setI18n(el, sk, en);
+      el.hidden = false;
+    }
+
+    function hideInboundCard() {
+      var card = document.getElementById('inbound-card');
+      if (card) card.hidden = true;
+      inboundData = null;
+    }
+
+    function showInboundAddress(data) {
+      var card = document.getElementById('inbound-card');
+      var addr = document.getElementById('inbound-address');
+      if (!card || !addr) return;
+      inboundData = data;
+      addr.textContent = data.address;
+      card.hidden = false;
+    }
+
+    async function loadInboundAddress(force) {
+      if (!document.getElementById('inbound-card')) return;
+      if (isAdminMode || (!DEMO && !currentPatientId)) { hideInboundCard(); inboundFor = null; return; }
+      if (!force && inboundFor === currentPatientId) return;
+      inboundFor = currentPatientId;
+      inboundStatus('', '');
+      try {
+        var data = await apiFetch('/api/inbound-address');
+        if (!data || !data.enabled || !data.address) { hideInboundCard(); return; }
+        showInboundAddress(data);
+      } catch (e) {
+        hideInboundCard();
+      }
+    }
+
+    function copyInboundAddress() {
+      if (!inboundData) return;
+      var text = inboundData.address;
+      var done = function () { inboundStatus('Adresa je skopírovaná.', 'The address is copied.'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () {
+          inboundStatus('Kopírovanie sa nepodarilo; označte adresu a skopírujte ju ručne.',
+            'Copying failed; select the address and copy it by hand.');
+        });
+        return;
+      }
+      var el = document.getElementById('inbound-address');
+      if (el && window.getSelection) {
+        var range = document.createRange();
+        range.selectNodeContents(el);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    }
+
+    function downloadInboundVcard() {
+      if (!inboundData) return;
+      var name = dashLang === 'sk' ? 'Oncofiles dokumenty' : 'Oncofiles documents';
+      var card = ['BEGIN:VCARD', 'VERSION:3.0', 'FN:' + name, 'N:;' + name + ';;;',
+        'EMAIL;TYPE=INTERNET:' + inboundData.address, 'END:VCARD', ''].join('\r\n');
+      var url = URL.createObjectURL(new Blob([card], { type: 'text/vcard' }));
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'oncofiles-documents.vcf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
+
+    async function rotateInboundAddress() {
+      if (!inboundData || isAdminMode || !currentPatientId) return;
+      var btn = document.getElementById('inbound-rotate-btn');
+      if (inboundArmed !== currentPatientId) {
+        inboundArmed = currentPatientId;
+        if (btn) {
+          btn.classList.add('armed');
+          setI18n(btn, 'Stará adresa prestane fungovať. Kliknite znova', 'The old address stops working. Click again');
+        }
+        setTimeout(function () {
+          if (inboundArmed === null) return;
+          inboundArmed = null;
+          if (btn) { btn.classList.remove('armed'); setI18n(btn, 'Vytvoriť novú adresu', 'Create a new address'); }
+        }, 6000);
+        return;
+      }
+      inboundArmed = null;
+      if (btn) { btn.classList.remove('armed'); setI18n(btn, 'Vytvoriť novú adresu', 'Create a new address'); }
+      try {
+        var resp = await fetch('/api/inbound-address/rotate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
+          body: JSON.stringify({ patient_id: currentPatientId })
+        });
+        if (resp.status === 401) { logout(); return; }
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+        if (!data || !data.address) throw new Error('no address');
+        showInboundAddress(data);
+        inboundStatus('Nová adresa je aktívna; stará už dokumenty neprijíma.',
+          'The new address is active; the old one no longer takes documents.');
+      } catch (e) {
+        inboundStatus('Novú adresu sa nepodarilo vytvoriť. Skúste to znova neskôr.',
+          'A new address could not be created. Try again later.');
+      }
+    }
+
+    // Admin zone: mail to patient addresses that was not filed (counts only).
+    var INBOUND_REASON_TEXT = {
+      unknown_sender: ['odosielateľ nie je opatrovateľ', 'sender is not the caregiver'],
+      auth_failed: ['overenie odosielateľa neprešlo', 'sender check failed']
+    };
+
+    function renderInboundUnmatched(data) {
+      var totalsEl = document.getElementById('inbound-admin-totals');
+      var body = document.getElementById('inbound-admin-body');
+      if (!totalsEl || !body) return;
+      var t = (data && data.totals) || {};
+      var unmatched = (t.unmatched_unknown_sender || 0) + (t.unmatched_auth_failed || 0);
+      setI18n(totalsEl,
+        (data && data.enabled ? 'Príjem pošty je zapnutý. ' : 'Príjem pošty je vypnutý (chýba tajomstvo webhooku). ') +
+          'Zaradené správy: ' + (t.mails_filed || 0) + ', prijaté súbory: ' + (t.files_accepted || 0) +
+          ', nezaradené: ' + unmatched + ', neznáma adresa: ' + ((t.unknown_token || 0) + (t.inactive_token || 0)) + '.',
+        (data && data.enabled ? 'Receiving mail is on. ' : 'Receiving mail is off (no webhook secret). ') +
+          'Filed mails: ' + (t.mails_filed || 0) + ', files accepted: ' + (t.files_accepted || 0) +
+          ', unmatched: ' + unmatched + ', unknown address: ' + ((t.unknown_token || 0) + (t.inactive_token || 0)) + '.');
+      clearEl(body);
+      var senders = (data && data.senders) || [];
+      if (!senders.length) {
+        var empty = document.createElement('p');
+        empty.className = 'curated-ops-meta';
+        setI18n(empty, 'Žiadni nepriradení odosielatelia.', 'No unmatched senders.');
+        body.appendChild(empty);
+        return;
+      }
+      var table = document.createElement('table');
+      table.className = 'inbound-admin-table';
+      var head = document.createElement('tr');
+      [['Odosielateľ (odtlačok)', 'Sender (hash)'], ['Pacient', 'Patient'], ['Správy', 'Mails'],
+        ['Súbory', 'Files'], ['Dôvod', 'Reason'], ['Naposledy', 'Last']].forEach(function (h) {
+        var th = document.createElement('th');
+        setI18n(th, h[0], h[1]);
+        head.appendChild(th);
+      });
+      table.appendChild(head);
+      senders.forEach(function (s) {
+        var tr = document.createElement('tr');
+        var reasons = Object.keys(s.reasons || {}).map(function (code) {
+          var r = INBOUND_REASON_TEXT[code] || [code, code];
+          return [r[0] + ' ' + s.reasons[code], r[1] + ' ' + s.reasons[code]];
+        });
+        var when = schedTimeBoth(s.last_at);
+        [[s.sender_hash, s.sender_hash], [s.patient, s.patient], [String(s.mails), String(s.mails)],
+          [String(s.files), String(s.files)],
+          [reasons.map(function (r) { return r[0]; }).join(', '), reasons.map(function (r) { return r[1]; }).join(', ')],
+          when].forEach(function (cell) {
+          var td = document.createElement('td');
+          setI18n(td, String(cell[0] || ''), String(cell[1] || ''));
+          tr.appendChild(td);
+        });
+        table.appendChild(tr);
+      });
+      body.appendChild(table);
+    }
+
     // ── Patient selector ────────────────────────────────────────────────
 
     var adminPatientIds = new Set();
@@ -1039,6 +1219,8 @@
       var uploadBtn = document.getElementById('upload-btn');
       if (uploadBtn) uploadBtn.hidden = isAdminMode;
       if (isAdminMode) closeUploadPanel();
+      // #950: the document e-mail address is the caregiver's (a write credential).
+      if (isAdminMode) { hideInboundCard(); inboundFor = null; }
     }
 
     function switchPatient(patientId) {
@@ -1165,6 +1347,8 @@
       docsSignature = '';
       openDoc = { id: null, data: null };
       activityData = null;
+      hideInboundCard();
+      inboundFor = null;
       tableMessage('Načítavam…', 'Loading…');
       var countEl = document.getElementById('docs-count');
       if (countEl) countEl.textContent = '';
@@ -1440,7 +1624,7 @@
 
     // #857: version of the privacy + terms text the consent checkbox refers to.
     // Must equal oncofiles.patient_consent.CONSENT_VERSION (a test keeps them equal).
-    var CONSENT_VERSION = '2026-11-17';
+    var CONSENT_VERSION = '2026-11-21';
 
     async function wizardStep1Submit() {
       var btn = document.getElementById('wiz-create-btn');
@@ -2726,6 +2910,8 @@
       } catch (e) {
         if (!trackBreaker(e)) { console.warn('Activity fetch failed:', e); renderActivity(null); }
       }
+      // #950: the document e-mail address (once per patient; hides itself on any error).
+      await loadInboundAddress(false);
       // Budget pill (#442) — fire-and-forget, hides itself when tier is admin/paid_*.
       updateBudgetPill();
       // Admin panels load only when an admin has opened them.
@@ -3626,6 +3812,11 @@
       try {
         if (key === 'curated') { await loadCuratedOps(); return; }
         if (key === 'reread') { await loadRereadConsole(); return; }
+        if (key === 'inbound') {
+          var unmatched = await apiFetch('/api/inbound-unmatched');
+          if (unmatched) renderInboundUnmatched(unmatched);
+          return;
+        }
         if (key === 'schedules') {
           var sched = await apiFetch('/api/schedules');
           if (sched) renderSchedules(sched);

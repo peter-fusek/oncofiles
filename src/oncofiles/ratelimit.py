@@ -11,8 +11,9 @@ Every HTTP request is put into one *route class*:
 ``mcp``     ``/mcp`` (MCP streamable-http — tool calls, uploads)
 ``auth``    OAuth / login endpoints (``/authorize``, ``/token``, ``/register``,
             ``/revoke``, ``/oauth/*``, ``/dashboard/verify``) — stricter, IP-keyed
-``api``     dashboard JSON API (``/api/*``, ``/dashboard/config``) and the operator
-            MCP endpoint ``/ops/mcp`` (#887)
+``api``     dashboard JSON API (``/api/*``, ``/dashboard/config``), the operator
+            MCP endpoint ``/ops/mcp`` (#887) and the inbound mail webhook
+            ``/inbound/email`` (#950)
 ``public``  everything else (landing pages, static assets, ``/readiness``)
 ``exempt``  ``/health`` — never limited, never size-checked (Coolify's
             healthcheck and CI's smoke test poll it)
@@ -69,6 +70,9 @@ a chunked body as soon as the running total crosses the limit.
 The dashboard upload (``/api/upload``, #921) keeps the ``api`` buckets but has
 its own body limit ``RATE_LIMIT_UPLOAD_MAX_BODY_BYTES`` (default 26 MiB: one
 25 MiB file plus the multipart framing); the route checks each file again.
+The inbound mail webhook (``/inbound/email``, #950) likewise has its own body
+limit ``RATE_LIMIT_INBOUND_MAX_BODY_BYTES`` (default 36 MiB: 25 MB of
+attachments in base64 plus the message); the route caps the body again.
 
 Kill switch: ``RATE_LIMIT_ENABLED=false`` turns the middleware into a
 pass-through.
@@ -102,11 +106,13 @@ _EXEMPT_PATHS = frozenset({"/health"})
 _AUTH_PATHS = frozenset({"/authorize", "/token", "/register", "/revoke", "/dashboard/verify"})
 _AUTH_PREFIXES = ("/oauth/",)
 _API_PATHS = frozenset({"/dashboard/config"})
-_API_PREFIXES = ("/api/", "/ops/")
+_API_PREFIXES = ("/api/", "/ops/", "/inbound/")
 _JSON_CLASSES = frozenset({MCP, API, AUTH})
 # Paths with their own body limit (bytes); the class buckets still apply.
 UPLOAD_PATHS = frozenset({"/api/upload"})
 DEFAULT_UPLOAD_MAX_BODY_BYTES = 26 * 1024 * 1024
+INBOUND_PATHS = frozenset({"/inbound/email", "/inbound/brevo"})
+DEFAULT_INBOUND_MAX_BODY_BYTES = 36 * 1024 * 1024
 
 
 def classify(path: str) -> str:
@@ -208,6 +214,7 @@ class RateLimitConfig:
     max_principals: int = DEFAULT_MAX_PRINCIPALS
     static_bearer: str = ""
     upload_max_body_bytes: int = DEFAULT_UPLOAD_MAX_BODY_BYTES
+    inbound_max_body_bytes: int = DEFAULT_INBOUND_MAX_BODY_BYTES
 
     @classmethod
     def from_env(cls, static_bearer: str = "") -> RateLimitConfig:
@@ -248,6 +255,9 @@ class RateLimitConfig:
             static_bearer=static_bearer,
             upload_max_body_bytes=int(
                 _env_num("RATE_LIMIT_UPLOAD_MAX_BODY_BYTES", DEFAULT_UPLOAD_MAX_BODY_BYTES)
+            ),
+            inbound_max_body_bytes=int(
+                _env_num("RATE_LIMIT_INBOUND_MAX_BODY_BYTES", DEFAULT_INBOUND_MAX_BODY_BYTES)
             ),
         )
 
@@ -577,6 +587,8 @@ class RateLimitMiddleware:
         max_body = self.limits[route_class].max_body_bytes
         if path in UPLOAD_PATHS:
             max_body = self.config.upload_max_body_bytes
+        elif path in INBOUND_PATHS:
+            max_body = self.config.inbound_max_body_bytes
 
         # 1. Body size from Content-Length — before reading anything.
         if max_body > 0:

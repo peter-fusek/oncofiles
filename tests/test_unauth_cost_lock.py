@@ -171,6 +171,18 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
         "oauth_callback",
     ): "auth flow: v2 state (10 min, single use) bound to principal + patient + service; "
     "overwrite guard and audit row (tests/test_oauth_link_guard.py)",
+    (
+        "/inbound/brevo",
+        "inbound_brevo_webhook",
+    ): "Brevo inbound webhook (#950): 404 while INBOUND_WEBHOOK_SECRET is unset; body capped "
+    "before reading; the custom X-Inbound-Token header compared in constant time before the "
+    "JSON is parsed (Brevo does not sign; tests/test_950_inbound_address.py)",
+    (
+        "/inbound/email",
+        "inbound_email_webhook",
+    ): "inbound mail webhook (#950): 404 while INBOUND_WEBHOOK_SECRET is unset; body capped "
+    "before reading; HMAC-SHA256 signature checked in constant time before any parsing "
+    "(tests/test_950_inbound_address.py)",
 }
 
 # MCP OAuth (FastMCP / mcp SDK) routes: open by the OAuth / DCR specs.
@@ -192,6 +204,118 @@ REACHABLE_ALLOWLIST: dict[tuple[str, str], str] = {
         "/api/newsletter/subscribe",
         "to_thread",
     ): "mailer.send_mail runs the blocking SMTP exchange in a worker (#834), same two mails",
+    (
+        "/inbound/email",
+        "_create_patient_clients",
+    ): "#950, only after the signature and sender checks: "
+    "the patient's Drive client, only for a known active token and a caregiver From "
+    "with a passing auth verdict",
+    (
+        "/inbound/email",
+        "GDriveClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients for that one patient (see above)",
+    (
+        "/inbound/email",
+        "GmailClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients alongside the Drive client, unused here",
+    (
+        "/inbound/email",
+        "CalendarClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients alongside the Drive client, unused here",
+    (
+        "/inbound/email",
+        "dedicated_copy",
+    ): "#950, only after the signature and sender checks: "
+    "curated.inbox_upload.upload_to_inbox, the #935 inbox write",
+    (
+        "/inbound/email",
+        "module:oncofiles.curated.drive_ops",
+    ): "#950, only after the signature and sender checks: "
+    "the #935 create-only, read-back inbox upload",
+    (
+        "/inbound/email",
+        "module:oncofiles.curated_folder",
+    ): "#950, only after the signature and sender checks: "
+    "the #935 curated-root check before the first file",
+    (
+        "/inbound/email",
+        "module:oncofiles.files_api",
+    ): "#950, only after the signature and sender checks: "
+    "sanitize_filename / name_len and the #777 Drive-only store",
+    (
+        "/inbound/email",
+        "module:oncofiles.gdrive_folders",
+    ): "#950, only after the signature and sender checks: "
+    "the #777 Drive-only upload of a non-curated patient",
+    (
+        "/inbound/email",
+        "module:oncofiles.sync",
+    ): "#950, only after the signature and sender checks: "
+    "reached through the #777 Drive-only upload helpers",
+    (
+        "/inbound/email",
+        "to_thread",
+    ): "#950, only after the signature and sender checks: "
+    "Drive calls of the #935 upload and the SMTP receipt run in workers",
+    (
+        "/inbound/brevo",
+        "_create_patient_clients",
+    ): "#950, only after the signature and sender checks: "
+    "the patient's Drive client, only for a known active token and a caregiver From "
+    "with a passing auth verdict",
+    (
+        "/inbound/brevo",
+        "GDriveClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients for that one patient (see above)",
+    (
+        "/inbound/brevo",
+        "GmailClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients alongside the Drive client, unused here",
+    (
+        "/inbound/brevo",
+        "CalendarClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients alongside the Drive client, unused here",
+    (
+        "/inbound/brevo",
+        "dedicated_copy",
+    ): "#950, only after the signature and sender checks: "
+    "curated.inbox_upload.upload_to_inbox, the #935 inbox write",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.curated.drive_ops",
+    ): "#950, only after the signature and sender checks: "
+    "the #935 create-only, read-back inbox upload",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.curated_folder",
+    ): "#950, only after the signature and sender checks: "
+    "the #935 curated-root check before the first file",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.files_api",
+    ): "#950, only after the signature and sender checks: "
+    "sanitize_filename / name_len and the #777 Drive-only store",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.gdrive_folders",
+    ): "#950, only after the signature and sender checks: "
+    "the #777 Drive-only upload of a non-curated patient",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.sync",
+    ): "#950, only after the signature and sender checks: "
+    "reached through the #777 Drive-only upload helpers",
+    (
+        "/inbound/brevo",
+        "to_thread",
+    ): "#950, only after the signature and sender checks: "
+    "Drive calls of the #935 upload and the SMTP receipt run in workers",
 }
 
 # Public handlers that touch the DB: (path, handler) -> what they do.
@@ -208,6 +332,15 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "one dashboard_access_log sign_in row (#868), only after Google verified the token",
     ("/api/newsletter/subscribe", "api_newsletter_subscribe"): "INSERT OR IGNORE one row",
     ("/oauth/authorize/{service}", "oauth_authorize"): "slug + patient lookup after the session",
+    (
+        "/inbound/brevo",
+        "inbound_brevo_webhook",
+    ): "#950 after a valid token: the same work as /inbound/email",
+    (
+        "/inbound/email",
+        "inbound_email_webhook",
+    ): "#950 after a valid signature: token-hash lookup, patient, md5 duplicate check, "
+    "first address row; the #935 upload's document count and Drive-only row",
     (
         "/oauth/callback",
         "oauth_callback",

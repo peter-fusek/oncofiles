@@ -106,3 +106,20 @@ def caller_email_hash(email: str, bearer: str | None = None) -> str | None:
     except RuntimeError:
         return None
     return hmac.new(key, normalised.encode(), hashlib.sha256).hexdigest()
+
+
+_INBOUND_ADDRESS_PURPOSE = b"oncofiles.inbound_address.v1"
+
+
+def inbound_address_key(bearer: str | None = None) -> bytes:
+    """Key for the patient document e-mail address token (#950).
+
+    ``token = base32(HMAC(key, f"{patient_id}:{version}"))[:10]``; the DB keeps
+    only ``sha256(token)``. Override with ``INBOUND_ADDRESS_SECRET`` so the
+    addresses survive a rotation of ``MCP_BEARER_TOKEN`` (the derived key
+    changes with it, and with it every patient's address).
+    """
+    override = os.environ.get("INBOUND_ADDRESS_SECRET", "")
+    if override:
+        return override.encode()
+    return _derive(_INBOUND_ADDRESS_PURPOSE, bearer)

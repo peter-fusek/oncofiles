@@ -158,6 +158,24 @@
  <p id="pending-note" class="pending-note" hidden></p>
  </section>
 
+ <!-- #950: the patient's private document e-mail address (caregiver only; hidden until the server enables it) -->
+ <section class="panel inbound-card" id="inbound-card" hidden aria-labelledby="inbound-title">
+ <div class="section-head">
+ <h2 id="inbound-title" data-sk="Posielajte dokumenty na túto adresu" data-en="Send documents to this address">Posielajte dokumenty na túto adresu</h2>
+ </div>
+ <p class="section-lead" data-sk="Prepošlite sem e-mail s výsledkami alebo pošlite fotku z mobilu, zo svojej adresy, ktorou sa prihlasujete. Prílohy pôjdu bez zmeny do priečinka pacienta a spracujú sa automaticky; dostanete krátke potvrdenie. Pošta z iných adries sa zatiaľ nepridáva." data-en="Forward an e-mail with results here or send a photo from your phone, from the address you sign in with. The attachments go unchanged into the patient folder and are processed automatically; you get a short receipt. Mail from other addresses is not added yet.">Prepošlite sem e-mail s výsledkami alebo pošlite fotku z mobilu, zo svojej adresy, ktorou sa prihlasujete. Prílohy pôjdu bez zmeny do priečinka pacienta a spracujú sa automaticky; dostanete krátke potvrdenie. Pošta z iných adries sa zatiaľ nepridáva.</p>
+ <div class="inbound-row">
+ <code id="inbound-address" class="inbound-address"></code>
+ <div class="inbound-actions">
+ <button type="button" class="copy-btn" id="inbound-copy-btn" data-action="copyInboundAddress" data-sk="Kopírovať" data-en="Copy">Kopírovať</button>
+ <button type="button" class="copy-btn" id="inbound-vcard-btn" data-action="downloadInboundVcard" data-sk="Pridať do kontaktov (vCard)" data-en="Add to contacts (vCard)">Pridať do kontaktov (vCard)</button>
+ <button type="button" class="copy-btn" id="inbound-rotate-btn" data-action="rotateInboundAddress" data-sk="Vytvoriť novú adresu" data-en="Create a new address">Vytvoriť novú adresu</button>
+ </div>
+ </div>
+ <p class="inbound-terms"><span data-sk="Poslaním dokumentov na túto adresu súhlasíte s" data-en="By sending documents to this address you agree to the">Poslaním dokumentov na túto adresu súhlasíte s</span> <a href="/terms" target="_blank" rel="noopener" data-sk="podmienkami používania" data-en="terms of service">podmienkami používania</a>. <span data-sk="Adresou sa dokumenty dajú len poslať, nikdy nie čítať." data-en="The address can only send documents, never read them.">Adresou sa dokumenty dajú len poslať, nikdy nie čítať.</span></p>
+ <p id="inbound-status" class="inbound-status" role="status" hidden></p>
+ </section>
+
  <!-- Documents -->
  <section class="docs-section" aria-labelledby="docs-title">
  <div class="section-head">
@@ -288,6 +306,15 @@
  <div id="sched-prompt-stats" style="font-size:0.8125rem"></div>
  </div>
  </div>
+ </div>
+ </div>
+
+ <div class="admin-panel">
+ <button type="button" class="admin-head" data-action="toggleAdminPanel|inbound|@this" aria-expanded="false" aria-controls="admin-body-inbound"><span class="chevron" aria-hidden="true"></span><span data-sk="Nepriradení odosielatelia (dokumenty e-mailom)" data-en="Unmatched senders (documents by e-mail)">Nepriradení odosielatelia (dokumenty e-mailom)</span></button>
+ <div class="admin-body" id="admin-body-inbound" hidden>
+ <p class="section-lead" data-sk="Pošta na adresy pacientov, ktorá sa nezaradila: odosielateľ nie je opatrovateľ alebo neprešlo overenie odosielateľa. Len počty a kľúčovaný odtlačok odosielateľa, nikdy adresa. Údaje sú v pamäti servera a po reštarte sa začínajú od nuly." data-en="Mail to patient addresses that was not filed: the sender is not the caregiver or the sender check failed. Counts and a keyed sender hash only, never an address. Kept in server memory; a restart starts from zero.">Pošta na adresy pacientov, ktorá sa nezaradila: odosielateľ nie je opatrovateľ alebo neprešlo overenie odosielateľa. Len počty a kľúčovaný odtlačok odosielateľa, nikdy adresa. Údaje sú v pamäti servera a po reštarte sa začínajú od nuly.</p>
+ <p class="curated-ops-note" id="inbound-admin-totals"></p>
+ <div id="inbound-admin-body" class="curated-ops-report"></div>
  </div>
  </div>
 

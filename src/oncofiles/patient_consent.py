@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-CONSENT_VERSION = "2026-11-17"
+CONSENT_VERSION = "2026-11-21"
 
 CONSENT_REQUIRED = "consent_required"
 CONSENT_VERSION_MISMATCH = "consent_version_mismatch"

@@ -1,0 +1,1177 @@
+"""Documents by e-mail, phase 1 (#950): a private document address per patient.
+
+Address
+-------
+``<gmail local part>-<token>@INBOUND_DOMAIN`` (maintainer decision, changed
+2026-11-21): the prefix is the local part of the patient's caregiver address
+when that address is ``@gmail.com`` (lowercase, dots kept, ``+tag`` dropped);
+for a non-Gmail caregiver, a list whose first address is not Gmail, or no
+caregiver, there is no prefix (token only), nothing is guessed. The prefix is
+part of an e-mail address and is never logged. The token is 10
+characters of lowercase Crockford base32 (no ``i l o u``, so nothing is
+ambiguous), about 50 bits, derived and never stored::
+
+    token = base32(HMAC(inbound_address_key(), f"{patient_id}:{version}"))[:10]
+
+``inbound_address_key`` is the #502 purpose-bound key
+(``oncofiles.inbound_address.v1``, override ``INBOUND_ADDRESS_SECRET``). The
+table ``inbound_addresses`` (migration 095) keeps only ``sha256(token)``;
+the dashboard recomputes the address for display. Rotation = version + 1, the
+old row inactive. The prefix is informational and never checked: only the
+token routes, and the patient is determined ONLY by that token, never by From.
+
+Webhook (``POST /inbound/email``, ``server.inbound_email_webhook``)
+-------------------------------------------------------------------
+Inert until the runtime env ``INBOUND_WEBHOOK_SECRET`` is set: before that,
+and for any request whose signature does not verify, the answer is the app's
+ordinary 404 (the same as an unknown path). Contract of the raw-MIME adapter:
+
+* body: the raw RFC 5322 message, at most ``MAX_BODY_BYTES`` (checked from
+  ``Content-Length`` and again while reading, before any parsing; 413);
+* ``X-Original-To`` (optional): the envelope recipient as the provider saw it;
+  without it the recipient is taken from the message's ``Delivered-To``, then
+  ``To`` / ``Cc``;
+* ``X-Inbound-Auth`` (optional): the provider's verdict on the sender, ``pass``
+  when SPF or DKIM passed aligned with the ``From`` domain (DMARC pass);
+  anything else, or absent, is a fail;
+* ``X-Inbound-Signature: sha256=<hex>``: HMAC-SHA256 with the secret over
+  ``X-Original-To + "\\n" + X-Inbound-Auth + "\\n" + body`` (absent headers are
+  empty strings). The two trusted headers are inside the signature so a
+  replayed body cannot be re-addressed or have its verdict flipped. Compared
+  in constant time before the body is parsed.
+
+After a valid signature the answer is always ``202 {"status": "accepted"}``,
+whatever happened to the mail (unknown token, ignored loop, unmatched sender,
+filed): the provider learns nothing it could leak, and nobody gets a reply
+except the patient's caregiver. An unexpected server error is a 500 (the
+provider retries; files already filed are recognised as duplicates).
+
+Provider adapters
+-----------------
+The core (:func:`process_message`) takes a provider-neutral
+:class:`InboundMessage` (recipients, From, auth verdict, the headers the loop
+checks need, attachments as name + bytes). :func:`parse_raw_mime` is the raw
+MIME adapter (``POST /inbound/email``). :func:`parse_brevo_payload` is the
+Brevo inbound-parsing adapter (``POST /inbound/brevo``; D3 = Brevo): JSON
+items, attachments by download token fetched only after the sender check,
+the request authenticated by a custom header holding the shared secret
+(Brevo does not sign its calls). What was verified in Brevo's documentation
+and what still needs a live payload is listed above the adapter.
+
+Rules (maintainer decisions 2026-11-21 + infra review)
+-------------------------------------------------------
+* Files are filed only when the From address is one of the patient's
+  caregiver addresses AND the auth verdict passes. Mail from anyone else is
+  not filed and gets no reply; it is counted and listed for the admin zone
+  (keyed sender hash, counts, time), never the address.
+* Filing goes through the dashboard upload backend (#935,
+  ``dashboard_upload.handle_upload``), one file per call: the same type
+  allowlist (``dashboard_upload.check_file``), caps, curated inbox / Drive-only
+  choice and Drive write path. No new Drive write path. Before that each file
+  also passes the #815 ``llm_input.extraction_exclusion`` rule with its
+  declared content type (raw genotype exports never enter).
+* Skipped: signature images (images under ``LOGO_MAX_BYTES`` or at most
+  ``LOGO_MAX_PX`` px on both sides), archives, types outside the allowlist
+  (checked by magic bytes), duplicates (sha256 within the mail and of recent
+  mail filings, md5 against the patient's documents). At most
+  ``MAX_FILES_PER_MAIL`` files and ``MAX_BYTES_PER_MAIL`` per mail; per address
+  ``MAX_MAILS_PER_HOUR`` / ``MAX_MAILS_PER_DAY`` and ``MAX_FILES_PER_DAY``.
+* Message bodies are never stored and never go to any model.
+* Loop safety: mail with ``Auto-Submitted`` (other than ``no``),
+  ``Precedence: bulk/list/junk``, a ``List-Id``, an empty ``Return-Path``, a
+  delivery report (``multipart/report`` / ``message/delivery-status``), a
+  ``MAILER-DAEMON`` / ``postmaster`` sender, or a From / Message-ID of our own
+  domains is ignored (not filed, no reply). At most one receipt per address
+  per ``REPLY_INTERVAL_S``.
+* The receipt (``mailer.send_mail``, caregiver only) carries counts and reason
+  codes and the consent-by-sending sentence with the link to /terms; no
+  names, no file names (#834).
+* Logs: counts, reason codes and ``patient_id[:4]`` only; never an address, a
+  subject or a file name.
+
+Counters and the unmatched-sender list live in memory (lost on restart,
+bounded); phase 1 adds no other table.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import logging
+import os
+import re
+import time
+from collections import Counter, OrderedDict
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email import policy
+from email.parser import BytesParser
+from email.utils import getaddresses, parseaddr
+
+logger = logging.getLogger(__name__)
+
+# D2 (the domain) is still open: the ONE place it is named.
+INBOUND_DOMAIN = "docs.oncofiles.com"
+OWN_DOMAINS = frozenset({"oncofiles.com", INBOUND_DOMAIN})
+TERMS_URL = "https://oncofiles.com/terms"
+
+TOKEN_LEN = 10
+TOKEN_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"  # Crockford base32, lowercase
+_TOKEN_RE = re.compile(rf"^[{TOKEN_ALPHABET}]{{{TOKEN_LEN}}}$")
+GMAIL_DOMAIN = "gmail.com"
+# Gmail local parts: letters, digits and single dots, not at either end.
+_GMAIL_LOCAL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.]{0,62}[a-z0-9])?$")
+
+WEBHOOK_SECRET_ENV = "INBOUND_WEBHOOK_SECRET"
+SIGNATURE_HEADER = "x-inbound-signature"
+RECIPIENT_HEADER = "x-original-to"
+AUTH_HEADER = "x-inbound-auth"
+
+# 25 MB of attachments grow by a third in base64, plus headers and bodies.
+MAX_BODY_BYTES = 36 * 1024 * 1024
+MAX_FILES_PER_MAIL = 20
+MAX_BYTES_PER_MAIL = 25 * 1024 * 1024
+MAX_PARTS = 500
+MAX_EML_DEPTH = 3
+MAX_MAILS_PER_HOUR = 20
+MAX_MAILS_PER_DAY = 60
+MAX_FILES_PER_DAY = 200
+REPLY_INTERVAL_S = 600
+LOGO_MAX_BYTES = 10 * 1024
+LOGO_MAX_PX = 200
+UNMATCHED_MAX = 200
+RECENT_MAX = 500
+
+# ── address ──────────────────────────────────────────────────────────────
+
+
+def _b32(data: bytes, length: int) -> str:
+    bits = int.from_bytes(data, "big")
+    total = len(data) * 8
+    out = []
+    for i in range(length):
+        shift = total - 5 * (i + 1)
+        out.append(TOKEN_ALPHABET[(bits >> shift) & 31])
+    return "".join(out)
+
+
+def derive_token(patient_id: str, version: int) -> str:
+    """The 10-character token of ``patient_id`` at ``version`` (deterministic)."""
+    from oncofiles.secrets_keys import inbound_address_key
+
+    digest = hmac.new(
+        inbound_address_key(), f"{patient_id}:{int(version)}".encode(), hashlib.sha256
+    ).digest()
+    return _b32(digest, TOKEN_LEN)
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def gmail_prefix(caregiver_email: str | None) -> str:
+    """The informational prefix: the Gmail local part of the caregiver, or ''.
+
+    Only the FIRST address of a comma-separated caregiver list counts, and only
+    when it is ``@gmail.com``: lowercase, dots kept as they are, a ``+tag``
+    dropped. Anything else (another domain, characters Gmail does not allow in
+    a local part, no caregiver) gives no prefix; nothing is guessed.
+    """
+    first = (caregiver_email or "").split(",", 1)[0]
+    addr = parseaddr(first.strip())[1].strip().lower()
+    local, at, domain = addr.rpartition("@")
+    if not at or domain != GMAIL_DOMAIN:
+        return ""
+    local = local.split("+", 1)[0]
+    if not _GMAIL_LOCAL_RE.match(local):
+        return ""
+    return local
+
+
+def format_address(token: str, caregiver_email: str | None = None) -> str:
+    prefix = gmail_prefix(caregiver_email)
+    local = f"{prefix}-{token}" if prefix else token
+    return f"{local}@{INBOUND_DOMAIN}"
+
+
+def token_from_address(address: str) -> str | None:
+    """The token of a document address, or None when it is not one of ours.
+
+    Only the part after the last ``-`` of the local part counts (a ``+tag`` is
+    dropped); the prefix is never checked. Crockford's reading rules
+    map ``o`` → ``0`` and ``i`` / ``l`` → ``1``.
+    """
+    _name, addr = parseaddr(address or "")
+    local, at, domain = addr.strip().rpartition("@")
+    if not at or domain.lower().rstrip(".") != INBOUND_DOMAIN:
+        return None
+    local = local.split("+", 1)[0].lower()
+    candidate = local.rsplit("-", 1)[-1]
+    candidate = candidate.translate(str.maketrans({"o": "0", "i": "1", "l": "1"}))
+    return candidate if _TOKEN_RE.match(candidate) else None
+
+
+async def ensure_address(db, patient_id: str) -> dict:
+    """The patient's active address, created (version 1, or next) when missing."""
+    row = await db.get_active_inbound_address(patient_id=patient_id)
+    if row is None:
+        version = await db.max_inbound_address_version(patient_id=patient_id) + 1
+        await db.activate_inbound_address(
+            patient_id=patient_id,
+            version=version,
+            token_hash=token_hash(derive_token(patient_id, version)),
+        )
+        row = await db.get_active_inbound_address(patient_id=patient_id)
+        logger.info("inbound: address created patient %s version=%d", patient_id[:4], version)
+    return await _address_payload(db, patient_id, row)
+
+
+async def rotate_address(db, patient_id: str) -> dict:
+    """A new address (version + 1); the old one stops routing at once."""
+    version = await db.max_inbound_address_version(patient_id=patient_id) + 1
+    await db.activate_inbound_address(
+        patient_id=patient_id,
+        version=version,
+        token_hash=token_hash(derive_token(patient_id, version)),
+    )
+    logger.info("inbound: address rotated patient %s version=%d", patient_id[:4], version)
+    row = await db.get_active_inbound_address(patient_id=patient_id)
+    return await _address_payload(db, patient_id, row)
+
+
+async def _address_payload(db, patient_id: str, row: dict) -> dict:
+    patient = await db.get_patient(patient_id)
+    token = derive_token(patient_id, row["version"])
+    return {
+        "enabled": True,
+        "address": format_address(token, getattr(patient, "caregiver_email", None)),
+        "domain": INBOUND_DOMAIN,
+        "version": row["version"],
+        "created_at": row["created_at"],
+        "terms_url": TERMS_URL,
+    }
+
+
+def webhook_secret() -> str:
+    """The runtime webhook secret ('' = the webhook is inert)."""
+    return os.environ.get(WEBHOOK_SECRET_ENV, "")
+
+
+def is_enabled() -> bool:
+    return bool(webhook_secret())
+
+
+# ── webhook signature ────────────────────────────────────────────────────
+
+
+def signed_payload(original_to: str, auth: str, body: bytes) -> bytes:
+    return original_to.encode() + b"\n" + auth.encode() + b"\n" + body
+
+
+def sign(secret: str, original_to: str, auth: str, body: bytes) -> str:
+    mac = hmac.new(secret.encode(), signed_payload(original_to, auth, body), hashlib.sha256)
+    return "sha256=" + mac.hexdigest()
+
+
+def signature_ok(secret: str, header: str, original_to: str, auth: str, body: bytes) -> bool:
+    """Constant-time check of ``X-Inbound-Signature``; False when anything is missing."""
+    if not secret or not header:
+        return False
+    expected = sign(secret, original_to, auth, body)
+    return hmac.compare_digest(expected.encode(), header.strip().lower().encode())
+
+
+# ── provider-neutral message ─────────────────────────────────────────────
+
+
+@dataclass
+class InboundAttachment:
+    name: str  # as sent (may be empty); never logged
+    data: bytes
+    content_type: str = "application/octet-stream"
+    inline: bool = False
+    # Adapters whose provider delivers attachments by reference (Brevo) set
+    # ``fetch`` (an async callable returning the bytes or None) and leave
+    # ``data`` empty: the core downloads only after the sender check passed.
+    fetch: Callable[[], Awaitable[bytes | None]] | None = None
+    declared_size: int | None = None
+
+
+@dataclass
+class InboundMessage:
+    recipients: list[str]  # candidates, most trusted first
+    sender: str  # the From address
+    auth_pass: bool  # provider verdict: SPF/DKIM aligned with From
+    message_id: str = ""
+    auto_submitted: str = ""
+    precedence: str = ""
+    list_id: str = ""
+    return_path: str | None = None  # None = header absent; "<>" = bounce
+    is_report: bool = False  # multipart/report or message/delivery-status inside
+    attachments: list[InboundAttachment] = field(default_factory=list)
+    parse_skips: Counter = field(default_factory=Counter)
+
+
+class UnparseableMessageError(ValueError):
+    """The body is not a readable e-mail."""
+
+
+def _header(msg, name: str) -> str:
+    try:
+        value = msg.get(name)
+    except Exception:  # malformed header: treat as absent
+        return ""
+    return str(value or "").strip()
+
+
+def _collect(msg, out: list[InboundAttachment], skips: Counter, state: dict, depth: int) -> None:
+    for part in msg.walk():
+        state["parts"] += 1
+        if state["parts"] > MAX_PARTS:
+            skips["too_many_parts"] += 1
+            return
+        ctype = part.get_content_type()
+        if ctype == "message/delivery-status" or ctype == "multipart/report":
+            state["report"] = True
+        if part.is_multipart():
+            continue
+        try:
+            disp = part.get_content_disposition()
+            filename = part.get_filename() or ""
+        except Exception:
+            disp, filename = None, ""
+        main = part.get_content_maintype()
+        if not filename and disp != "attachment" and main not in ("image", "application"):
+            continue  # a message body (text/plain, text/html …): never stored
+        try:
+            data = part.get_payload(decode=True)
+        except Exception:
+            data = None
+        if not isinstance(data, bytes):
+            continue
+        if filename.lower().endswith(".eml") or ctype == "message/rfc822":
+            if depth >= MAX_EML_DEPTH:
+                skips["nested_too_deep"] += 1
+                continue
+            try:
+                inner = BytesParser(policy=policy.default).parsebytes(data)
+            except Exception:
+                skips["unparseable"] += 1
+                continue
+            _collect(inner, out, skips, state, depth + 1)
+            continue
+        out.append(
+            InboundAttachment(
+                name=filename,
+                data=data,
+                content_type=ctype,
+                inline=disp == "inline" or (not filename and main == "image"),
+            )
+        )
+
+
+def parse_raw_mime(raw: bytes, *, original_to: str = "", auth: str = "") -> InboundMessage:
+    """Raw-MIME adapter: an :class:`InboundMessage` from the signed request."""
+    try:
+        msg = BytesParser(policy=policy.default).parsebytes(raw)
+    except Exception as exc:
+        raise UnparseableMessageError(type(exc).__name__) from exc
+    recipients: list[str] = []
+    if original_to.strip():
+        recipients.append(original_to.strip())
+    for name in ("Delivered-To", "To", "Cc"):
+        try:
+            values = [str(v) for v in (msg.get_all(name) or [])]
+        except Exception:
+            values = []
+        recipients.extend(addr for _n, addr in getaddresses(values) if addr)
+    sender = parseaddr(_header(msg, "From"))[1]
+    attachments: list[InboundAttachment] = []
+    skips: Counter = Counter()
+    state = {"parts": 0, "report": False}
+    _collect(msg, attachments, skips, state, 0)
+    return_path = _header(msg, "Return-Path") if msg.get("Return-Path") is not None else None
+    return InboundMessage(
+        recipients=recipients,
+        sender=sender,
+        auth_pass=auth.strip().lower() == "pass",
+        message_id=_header(msg, "Message-ID"),
+        auto_submitted=_header(msg, "Auto-Submitted"),
+        precedence=_header(msg, "Precedence"),
+        list_id=_header(msg, "List-Id"),
+        return_path=return_path,
+        is_report=state["report"] or msg.get_content_type() == "multipart/report",
+        attachments=attachments,
+        parse_skips=skips,
+    )
+
+
+async def _load_referenced(msg: InboundMessage, skipped: Counter) -> None:
+    """Download attachments delivered by reference, only for a filed sender.
+
+    At most ``MAX_FILES_PER_MAIL`` downloads; a declared size above the #935
+    cap or a running total above ``MAX_BYTES_PER_MAIL`` is not downloaded.
+    """
+    from oncofiles.dashboard_upload import MAX_FILE_BYTES
+
+    fetched = 0
+    total = 0
+    for att in msg.attachments:
+        if att.fetch is None or att.data:
+            continue
+        if att.declared_size is not None and att.declared_size > MAX_FILE_BYTES:
+            att.fetch = None
+            skipped["file_too_large"] += 1
+            continue
+        if fetched >= MAX_FILES_PER_MAIL:
+            att.fetch = None
+            skipped["too_many_files"] += 1
+            continue
+        if total + (att.declared_size or 0) > MAX_BYTES_PER_MAIL:
+            att.fetch = None
+            skipped["mail_too_large"] += 1
+            continue
+        try:
+            data = await att.fetch()
+        except Exception as exc:
+            logger.info("inbound: attachment fetch failed (%s)", type(exc).__name__)
+            data = None
+        att.fetch = None
+        fetched += 1
+        if not data:
+            skipped["fetch_failed"] += 1
+            continue
+        att.data = data
+        total += len(data)
+    # anything still without bytes is dropped before screening
+    msg.attachments = [a for a in msg.attachments if a.data]
+
+
+# ── Brevo inbound parsing adapter (D3 = Brevo, maintainer 2026-11-21) ────
+#
+# Verified from Brevo's public documentation (developers.brevo.com, read
+# 2026-11-21):
+# * the inbound webhook POSTs JSON ``{"items": [...]}``; an item has ``Uuid``,
+#   ``MessageId``, ``InReplyTo``, ``From`` {Name, Address}, ``To`` / ``Cc``
+#   [{Name, Address}], ``Recipients`` [RCPT TO addresses], ``ReplyTo``,
+#   ``SentAtDate``, ``Subject``, ``RawHtmlBody``, ``RawTextBody``,
+#   ``ExtractedMarkdownMessage``, ``ExtractedMarkdownSignature``,
+#   ``SpamScore``, ``Attachments`` and ``Headers`` (the docs show an object of
+#   header name -> value in the sample and call it an array in the table);
+# * attachments are NOT in the payload: each has ``Name``, ``ContentType``,
+#   ``ContentLength``, ``ContentID`` and ``DownloadToken``, fetched with
+#   ``GET https://api.brevo.com/v3/inbound/attachments/{downloadToken}`` and
+#   the ``api-key`` header (``BREVO_API_KEY``);
+# * Brevo does NOT sign webhook calls. ``createWebhook`` takes an optional
+#   ``auth`` {token, type} (allowed types and the header it produces are not
+#   documented) and a list of custom ``headers`` {key, value} sent with every
+#   call. We use the documented custom header: the webhook is created with
+#   ``headers: [{"key": "X-Inbound-Token", "value": <INBOUND_WEBHOOK_SECRET>}]``
+#   and the route compares it in constant time (``hmac.compare_digest``).
+#   This is a shared secret over TLS, not a body signature: it does not
+#   protect against a replay by someone who saw a request, so the route stays
+#   behind Traefik/TLS and the token must be rotated like a password.
+# * There is no SPF/DKIM/DMARC field. The original headers are in
+#   ``Headers``, but any sender can put an ``Authentication-Results`` line in
+#   their own mail, and whether Brevo's MX adds (and strips foreign copies of)
+#   its own line is NOT documented. So ``auth_pass`` is True only for an
+#   ``Authentication-Results`` header whose authserv-id equals the runtime env
+#   ``INBOUND_BREVO_AUTHSERV_ID`` and that says ``dmarc=pass``. Unset (the
+#   default) = every sender fails the check = nothing is filed, everything is
+#   listed as unmatched. Infra sets it only after reading a live payload.
+# Not verified (needs a live payload): the exact ``Headers`` shape, which
+# Authentication-Results line Brevo's MX writes, the ``auth`` header format.
+
+BREVO_ATTACHMENT_URL = "https://api.brevo.com/v3/inbound/attachments/{token}"
+BREVO_TOKEN_HEADER = "x-inbound-token"
+BREVO_API_KEY_ENV = "BREVO_API_KEY"
+BREVO_AUTHSERV_ENV = "INBOUND_BREVO_AUTHSERV_ID"
+BREVO_MAX_BODY_BYTES = 8 * 1024 * 1024  # JSON only: bodies and headers, no files
+BREVO_MAX_ITEMS = 20
+_DOWNLOAD_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~-]{1,512}$")
+
+
+def brevo_token_ok(secret: str, header: str) -> bool:
+    """Constant-time check of the custom ``X-Inbound-Token`` header."""
+    if not secret or not header:
+        return False
+    return hmac.compare_digest(secret.encode(), header.strip().encode())
+
+
+def _brevo_headers(raw) -> dict[str, list[str]]:
+    """``Headers`` as {lower name: [values]}, for both documented shapes."""
+    out: dict[str, list[str]] = {}
+
+    def add(name, value):
+        if not isinstance(name, str):
+            return
+        values = value if isinstance(value, list) else [value]
+        for v in values:
+            if isinstance(v, (str, int, float)):
+                out.setdefault(name.strip().lower(), []).append(str(v))
+
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            add(k, v)
+    elif isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, dict):
+                if "Name" in entry or "name" in entry:
+                    add(
+                        entry.get("Name", entry.get("name")), entry.get("Value", entry.get("value"))
+                    )
+                else:
+                    for k, v in entry.items():
+                        add(k, v)
+    return out
+
+
+def _brevo_auth_pass(headers: dict[str, list[str]]) -> bool:
+    authserv = os.environ.get(BREVO_AUTHSERV_ENV, "").strip().lower()
+    if not authserv:
+        return False
+    for line in headers.get("authentication-results", []):
+        head, _, rest = line.partition(";")
+        if head.strip().lower() != authserv:
+            continue
+        if re.search(r"(?:^|[\s;])dmarc=pass\b", rest.lower()):
+            return True
+    return False
+
+
+def _mailbox(value) -> str:
+    if isinstance(value, dict):
+        return str(value.get("Address") or "").strip()
+    return ""
+
+
+def _brevo_fetcher(token: str, api_key: str, limit: int):
+    async def fetch() -> bytes | None:
+        import httpx
+
+        url = BREVO_ATTACHMENT_URL.format(token=token)
+        async with (
+            httpx.AsyncClient(timeout=30.0) as client,
+            client.stream("GET", url, headers={"api-key": api_key}) as resp,
+        ):
+            if resp.status_code != 200:
+                logger.info("inbound: brevo attachment fetch status=%d", resp.status_code)
+                return None
+            chunks, size = [], 0
+            async for chunk in resp.aiter_bytes():
+                size += len(chunk)
+                if size > limit:
+                    return None
+                chunks.append(chunk)
+            return b"".join(chunks)
+
+    return fetch
+
+
+def parse_brevo_item(item: dict) -> InboundMessage:
+    """Brevo adapter: one ``items[]`` entry → :class:`InboundMessage`.
+
+    Bodies (``RawHtmlBody`` / ``RawTextBody`` / ``ExtractedMarkdown*``) are
+    never read. Attachments are references, downloaded by the core only after
+    the sender check passed (``BREVO_API_KEY``; without it nothing is fetched).
+    """
+    from oncofiles.dashboard_upload import MAX_FILE_BYTES
+
+    if not isinstance(item, dict):
+        raise UnparseableMessageError("item")
+    headers = _brevo_headers(item.get("Headers"))
+    recipients = [str(r) for r in item.get("Recipients") or [] if isinstance(r, str)]
+    for key in ("To", "Cc"):
+        recipients.extend(a for a in (_mailbox(m) for m in item.get(key) or []) if a)
+    api_key = os.environ.get(BREVO_API_KEY_ENV, "")
+    attachments: list[InboundAttachment] = []
+    skips: Counter = Counter()
+    for att in item.get("Attachments") or []:
+        if not isinstance(att, dict):
+            continue
+        token = str(att.get("DownloadToken") or "")
+        if not api_key or not _DOWNLOAD_TOKEN_RE.match(token):
+            skips["fetch_failed"] += 1
+            continue
+        try:
+            size = int(att.get("ContentLength")) if att.get("ContentLength") is not None else None
+        except (TypeError, ValueError):
+            size = None
+        attachments.append(
+            InboundAttachment(
+                name=str(att.get("Name") or ""),
+                data=b"",
+                content_type=str(att.get("ContentType") or "application/octet-stream").lower(),
+                inline=bool(att.get("ContentID")) and not att.get("Name"),
+                fetch=_brevo_fetcher(token, api_key, MAX_FILE_BYTES + 1),
+                declared_size=size,
+            )
+        )
+    return_path = headers.get("return-path")
+    first = lambda name: (headers.get(name) or [""])[0].strip()  # noqa: E731
+    ctype = first("content-type").lower()
+    return InboundMessage(
+        recipients=recipients,
+        sender=_mailbox(item.get("From")),
+        auth_pass=_brevo_auth_pass(headers),
+        message_id=str(item.get("MessageId") or "").strip(),
+        auto_submitted=first("auto-submitted"),
+        precedence=first("precedence"),
+        list_id=first("list-id"),
+        return_path=return_path[0].strip() if return_path else None,
+        is_report=ctype.startswith("multipart/report"),
+        attachments=attachments,
+        parse_skips=skips,
+    )
+
+
+def parse_brevo_payload(payload) -> list[InboundMessage]:
+    """All messages of one Brevo webhook call (at most ``BREVO_MAX_ITEMS``)."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        raise UnparseableMessageError("payload")
+    out = []
+    for item in payload["items"][:BREVO_MAX_ITEMS]:
+        try:
+            out.append(parse_brevo_item(item))
+        except UnparseableMessageError:
+            continue
+    return out
+
+
+# ── attachment screening ─────────────────────────────────────────────────
+
+_ARCHIVE_EXTS = (".zip", ".rar", ".7z", ".gz", ".tgz", ".tar", ".bz2", ".xz", ".zipx", ".cab")
+_HEIF_BRANDS = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1", b"heif"}
+
+
+def _is_archive(data: bytes, name: str) -> bool:
+    if name.lower().endswith(_ARCHIVE_EXTS):
+        return True
+    return (
+        data[:4] in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+        or data.startswith((b"Rar!\x1a\x07", b"7z\xbc\xaf\x27\x1c", b"\x1f\x8b", b"BZh"))
+        or data.startswith(b"\xfd7zXZ\x00")
+        or data[257:262] == b"ustar"
+    )
+
+
+def sniff(data: bytes, name: str) -> str | None:
+    """The canonical extension the content proves (magic bytes), or None."""
+    if b"%PDF-" in data[:1024]:
+        return ".pdf"
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data[:4] in (b"II*\x00", b"MM\x00*"):
+        return ".tif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    if data[4:8] == b"ftyp" and data[8:12] in _HEIF_BRANDS:
+        return ".heic"
+    low = name.lower()
+    if low.endswith((".txt", ".md")) and b"\x00" not in data:
+        try:
+            data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return None
+        return ".md" if low.endswith(".md") else ".txt"
+    return None
+
+
+def image_size(data: bytes) -> tuple[int, int] | None:
+    """(width, height) of a PNG / GIF / JPEG from its header, else None."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+        return int.from_bytes(data[6:8], "little"), int.from_bytes(data[8:10], "little")
+    if data.startswith(b"\xff\xd8"):
+        i = 2
+        while i + 9 < len(data):
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            marker = data[i + 1]
+            if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                i += 2
+                continue
+            seg = int.from_bytes(data[i + 2 : i + 4], "big")
+            if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                return int.from_bytes(data[i + 7 : i + 9], "big"), int.from_bytes(
+                    data[i + 5 : i + 7], "big"
+                )
+            i += 2 + seg
+    return None
+
+
+def is_signature_image(att: InboundAttachment) -> bool:
+    is_image = att.content_type.startswith("image/") or att.data[:6] in (b"GIF87a", b"GIF89a")
+    is_image = is_image or att.data.startswith((b"\xff\xd8\xff", b"\x89PNG"))
+    if not is_image:
+        return False
+    if len(att.data) < LOGO_MAX_BYTES:
+        return True
+    size = image_size(att.data)
+    return bool(size) and size[0] <= LOGO_MAX_PX and size[1] <= LOGO_MAX_PX
+
+
+def _same_type(ext_a: str, ext_b: str) -> bool:
+    from oncofiles.dashboard_upload import ALLOWED_TYPES
+
+    alias = {"image/heif": "image/heic"}
+    a, b = ALLOWED_TYPES.get(ext_a), ALLOWED_TYPES.get(ext_b)
+    return a is not None and alias.get(a, a) == alias.get(b, b)
+
+
+def screen(att: InboundAttachment, index: int) -> tuple[str, str] | str:
+    """``(name, mime)`` for a file that may be filed, else a skip reason code.
+
+    The final word is the #935 dashboard check (``dashboard_upload.check_file``:
+    the same type allowlist, size cap and raw-genotype rule), preceded by the
+    archive / signature-image skips and the #815 exclusion with the declared
+    content type.
+    """
+    from oncofiles.curated.llm_input import extraction_exclusion
+    from oncofiles.dashboard_upload import _ext, check_file
+    from oncofiles.files_api import sanitize_filename
+
+    if not att.data:
+        return "empty_file"
+    raw_name = sanitize_filename(att.name) if (att.name or "").strip() else ""
+    if _is_archive(att.data, raw_name):
+        return "archive_refused"
+    if is_signature_image(att):
+        return "signature_image"
+    sniffed = sniff(att.data, raw_name)
+    if sniffed is None:
+        if raw_name.lower().endswith((".vcf", ".vcf.gz", ".csv", ".tsv")):
+            return "raw_genotype_excluded"
+        return "type_not_allowed"
+    ext = _ext(raw_name)
+    stem = raw_name[: -len(ext)] if ext else raw_name
+    if not stem:
+        stem = f"email-{'image' if att.inline else 'attachment'}-{index + 1}"
+    if not ext:
+        name = stem + sniffed
+    elif _same_type(ext, sniffed):
+        name = raw_name
+    else:
+        return "content_mismatch"
+    pages = []
+    if sniffed in (".txt", ".md"):
+        pages = [(1, att.data.decode("utf-8-sig", "replace"))]
+    doc = {"filename": raw_name or name, "mime_type": att.content_type}
+    if extraction_exclusion(doc, pages):
+        return "raw_genotype_excluded"
+    checked = check_file(name, att.data)
+    return checked
+
+
+# ── in-memory state ──────────────────────────────────────────────────────
+
+
+class _State:
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self.counters: Counter = Counter()  # mail outcomes and file reasons
+        self.unmatched: OrderedDict[tuple[str, str], dict] = OrderedDict()
+        self.mails: dict[str, list[float]] = {}  # token hash -> receive times (24 h)
+        self.files_day: dict[str, list[tuple[float, int]]] = {}
+        self.last_reply: dict[str, float] = {}
+        self.done_ids: OrderedDict[str, None] = OrderedDict()
+        self.recent: dict[str, OrderedDict[str, None]] = {}  # patient -> sha256 filed
+        self.locks: dict[str, asyncio.Lock] = {}
+
+    def lock(self, key: str) -> asyncio.Lock:
+        lk = self.locks.get(key)
+        if lk is None:
+            lk = self.locks[key] = asyncio.Lock()
+        return lk
+
+
+_state = _State()
+
+
+def reset_state() -> None:
+    """Tests only."""
+    _state.reset()
+
+
+def _remember(od: OrderedDict, key: str, limit: int) -> None:
+    od[key] = None
+    od.move_to_end(key)
+    while len(od) > limit:
+        od.popitem(last=False)
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _record_unmatched(sender: str, patient_id: str, reason: str, files: int) -> None:
+    from oncofiles.secrets_keys import caller_email_hash
+
+    h = (caller_email_hash(sender) or "unknown")[:16]
+    key = (h, patient_id[:4])
+    entry = _state.unmatched.get(key)
+    now = _now_iso()
+    if entry is None:
+        entry = {
+            "sender_hash": h,
+            "patient": patient_id[:4],
+            "mails": 0,
+            "files": 0,
+            "reasons": Counter(),
+            "first_at": now,
+            "last_at": now,
+        }
+        _state.unmatched[key] = entry
+    entry["mails"] += 1
+    entry["files"] += files
+    entry["reasons"][reason] += 1
+    entry["last_at"] = now
+    _state.unmatched.move_to_end(key)
+    while len(_state.unmatched) > UNMATCHED_MAX:
+        _state.unmatched.popitem(last=False)
+
+
+def unmatched_overview() -> dict:
+    """Admin zone: unmatched senders (keyed hash, counts, times) and totals."""
+    senders = [
+        {**e, "reasons": dict(e["reasons"])}
+        for e in sorted(_state.unmatched.values(), key=lambda e: e["last_at"], reverse=True)
+    ]
+    return {
+        "enabled": is_enabled(),
+        "senders": senders,
+        "totals": dict(_state.counters),
+    }
+
+
+def _within(times: list[float], seconds: float, now: float) -> int:
+    return sum(1 for t in times if now - t < seconds)
+
+
+def _rate_limited(th: str, now: float) -> bool:
+    times = [t for t in _state.mails.get(th, []) if now - t < 86400]
+    _state.mails[th] = times
+    if _within(times, 3600, now) >= MAX_MAILS_PER_HOUR or len(times) >= MAX_MAILS_PER_DAY:
+        return True
+    times.append(now)
+    return False
+
+
+def _files_today(th: str, now: float) -> int:
+    entries = [(t, n) for t, n in _state.files_day.get(th, []) if now - t < 86400]
+    _state.files_day[th] = entries
+    return sum(n for _t, n in entries)
+
+
+# ── loop safety ──────────────────────────────────────────────────────────
+
+
+def own_domains() -> set[str]:
+    domains = set(OWN_DOMAINS)
+    mail_from = parseaddr(os.environ.get("MAIL_FROM", ""))[1]
+    if "@" in mail_from:
+        domains.add(mail_from.rpartition("@")[2].lower())
+    return domains
+
+
+def _domain(addr: str) -> str:
+    return addr.rpartition("@")[2].strip().strip(">").lower().rstrip(".")
+
+
+def _is_own(domain: str, own: set[str]) -> bool:
+    return bool(domain) and any(domain == d or domain.endswith("." + d) for d in own)
+
+
+def loop_reason(msg: InboundMessage) -> str | None:
+    """Why a mail must be ignored to avoid loops and backscatter, or None."""
+    auto = msg.auto_submitted.strip().lower()
+    if auto and auto != "no":
+        return "auto_submitted"
+    if msg.precedence.strip().lower() in ("bulk", "list", "junk"):
+        return "bulk"
+    if msg.list_id:
+        return "bulk"
+    if msg.return_path is not None and msg.return_path.replace(" ", "") in ("<>", ""):
+        return "bounce"
+    if msg.is_report:
+        return "bounce"
+    local = msg.sender.rpartition("@")[0].lower()
+    if local in ("mailer-daemon", "postmaster") or not msg.sender:
+        return "bounce"
+    own = own_domains()
+    if _is_own(_domain(msg.sender), own):
+        return "own_domain"
+    if _is_own(_domain(msg.message_id), own):
+        return "own_message"
+    return None
+
+
+# ── filing through the #935 backend ──────────────────────────────────────
+
+
+class _BytesUpload:
+    """The one ``UploadFile`` surface ``handle_upload`` uses: filename, read, close."""
+
+    def __init__(self, filename: str, data: bytes) -> None:
+        self.filename = filename
+        self._data = data
+
+    async def read(self, size: int = -1) -> bytes:
+        return self._data if size is None or size < 0 else self._data[:size]
+
+    async def close(self) -> None:
+        self._data = b""
+
+
+# Request-level refusals of handle_upload: they stop the mail's filing.
+_STOPPING = {"no_drive", "folder_not_writable", "inbox_unavailable", "document_cap"}
+
+
+async def _file_one(db, patient_id: str, name: str, data: bytes) -> str:
+    """File ONE file; returns ``uploaded`` or a reason code."""
+    from oncofiles.dashboard_upload import handle_upload
+
+    outcome = await handle_upload(
+        db, patient_id, [_BytesUpload(name, data)], log_pid=patient_id[:4]
+    )
+    if outcome.status != 200:
+        return str(outcome.payload.get("error") or "store_failed")
+    entry = (outcome.payload.get("files") or [{}])[0]
+    if entry.get("status") == "uploaded":
+        return "uploaded"
+    if entry.get("status") == "refused" and entry.get("code"):
+        return str(entry["code"])
+    return "store_failed"
+
+
+# ── receipt ──────────────────────────────────────────────────────────────
+
+REASON_TEXT: dict[str, tuple[str, str]] = {
+    "duplicate": ("už je medzi dokumentmi", "already among the documents"),
+    "type_not_allowed": ("nepodporovaný typ súboru", "file type not accepted"),
+    "content_mismatch": ("obsah nezodpovedá prípone", "content does not match its extension"),
+    "archive_refused": ("archív (zip a pod.) sa neprijíma", "archives (zip etc.) are not accepted"),
+    "signature_image": ("malý obrázok z podpisu", "small signature image"),
+    "file_too_large": ("súbor nad 25 MB", "file over 25 MB"),
+    "empty_file": ("prázdny súbor", "empty file"),
+    "raw_genotype_excluded": ("surové genetické dáta", "raw genetic data"),
+    "too_many_files": ("viac ako 20 súborov v správe", "more than 20 files in one message"),
+    "mail_too_large": ("prílohy spolu nad 25 MB", "attachments over 25 MB in total"),
+    "daily_file_cap": ("denný limit súborov", "daily file limit"),
+    "no_drive": (
+        "pacient nemá pripojený Google Drive",
+        "the patient has no Google Drive connected",
+    ),
+    "folder_not_writable": (
+        "do priečinka sa teraz nedá zapisovať",
+        "the folder cannot take files now",
+    ),
+    "inbox_unavailable": ("priečinok nemá použiteľný inbox", "the folder has no usable inbox"),
+    "document_cap": ("limit počtu dokumentov", "document limit reached"),
+    "store_failed": ("uloženie zlyhalo", "storing failed"),
+    "not_attempted": ("neodoslané po chybe", "not attempted after an error"),
+    "fetch_failed": ("prílohu sa nepodarilo stiahnuť", "the attachment could not be downloaded"),
+}
+
+TERMS_SENTENCE_SK = (
+    "Poslaním dokumentov na túto adresu súhlasíte s podmienkami používania "
+    "a so spracovaním týchto údajov: " + TERMS_URL
+)
+TERMS_SENTENCE_EN = (
+    "By sending documents to this address you agree to the terms of service "
+    "and to the processing of this data: " + TERMS_URL
+)
+
+
+def receipt_text(accepted: int, skipped: Counter) -> tuple[str, str]:
+    """(subject, body): counts and reason codes only, never a name or file name."""
+    subject = "Oncofiles: dokumenty prijaté / documents received"
+    lines_sk = [
+        "Dobrý deň,",
+        "",
+        f"prijali sme {accepted} súbor(ov) na spracovanie.",
+    ]
+    lines_en = ["Hello,", "", f"we received {accepted} file(s) for processing."]
+    if skipped:
+        lines_sk.append(f"Preskočené: {sum(skipped.values())}")
+        lines_en.append(f"Skipped: {sum(skipped.values())}")
+        for code, n in sorted(skipped.items()):
+            sk, en = REASON_TEXT.get(code, (code, code))
+            lines_sk.append(f"  - {sk} ({code}): {n}")
+            lines_en.append(f"  - {en} ({code}): {n}")
+    lines_sk += [
+        "",
+        "Prijaté súbory idú bez zmeny do priečinka pacienta a spracujú sa automaticky.",
+        TERMS_SENTENCE_SK,
+    ]
+    lines_en += [
+        "",
+        "Accepted files go unchanged into the patient folder and are processed automatically.",
+        TERMS_SENTENCE_EN,
+    ]
+    body = "\n".join(lines_sk) + "\n\n---\n\n" + "\n".join(lines_en) + "\n\nOncofiles\n"
+    return subject, body
+
+
+async def _send_receipt(th: str, to: str, accepted: int, skipped: Counter, now: float) -> bool:
+    from oncofiles import mailer
+
+    last = _state.last_reply.get(th)
+    if last is not None and now - last < REPLY_INTERVAL_S:
+        _state.counters["reply_throttled"] += 1
+        return False
+    _state.last_reply[th] = now
+    subject, body = receipt_text(accepted, skipped)
+    sent = await mailer.send_mail([to], subject, body, tags=["inbound_receipt"])
+    _state.counters["reply_sent" if sent else "reply_failed"] += 1
+    return sent
+
+
+# ── core ─────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Result:
+    outcome: str  # filed | unknown_token | ignored_loop | unmatched | rate_limited | …
+    patient_prefix: str = ""
+    accepted: int = 0
+    skipped: Counter = field(default_factory=Counter)
+    replied: bool = False
+
+
+def _find_token(msg: InboundMessage) -> str | None:
+    for addr in msg.recipients:
+        token = token_from_address(addr)
+        if token:
+            return token
+    return None
+
+
+async def process_message(db, msg: InboundMessage) -> Result:
+    """Route, check and file one parsed mail (provider-neutral core)."""
+    token = _find_token(msg)
+    row = await db.find_inbound_address(token_hash(token)) if token else None
+    if row is None or not row["active"]:
+        reason = "unknown_token" if row is None else "inactive_token"
+        _state.counters[reason] += 1
+        logger.info("inbound: dropped reason=%s", reason)
+        return Result(reason)
+    patient_id = row["patient_id"]
+    pp = patient_id[:4]
+    th = token_hash(token)
+    loop = loop_reason(msg)
+    if loop:
+        _state.counters[f"ignored_{loop}"] += 1
+        logger.info("inbound: patient %s ignored reason=%s", pp, loop)
+        return Result("ignored_loop", pp)
+
+    async with _state.lock(patient_id):
+        mid_key = th + ":" + hashlib.sha256(msg.message_id.encode()).hexdigest()
+        if msg.message_id and mid_key in _state.done_ids:
+            _state.counters["duplicate_delivery"] += 1
+            logger.info("inbound: patient %s duplicate delivery ignored", pp)
+            return Result("duplicate_delivery", pp)
+        now = time.time()
+        if _rate_limited(th, now):
+            _state.counters["rate_limited"] += 1
+            logger.info("inbound: patient %s dropped reason=rate_limited", pp)
+            return Result("rate_limited", pp)
+
+        from oncofiles.persistent_oauth import _email_matches_caregiver
+
+        patient = await db.get_patient(patient_id)
+        caregiver = getattr(patient, "caregiver_email", None) if patient else None
+        if patient is None or not _email_matches_caregiver(msg.sender, caregiver):
+            reason = "unknown_sender"
+        elif not msg.auth_pass:
+            reason = "auth_failed"
+        else:
+            reason = None
+        if reason:
+            _record_unmatched(msg.sender, patient_id, reason, len(msg.attachments))
+            _state.counters[f"unmatched_{reason}"] += 1
+            logger.info(
+                "inbound: patient %s not filed reason=%s files=%d",
+                pp,
+                reason,
+                len(msg.attachments),
+            )
+            if msg.message_id:
+                _remember(_state.done_ids, mid_key, RECENT_MAX)
+            return Result("unmatched", pp)
+
+        skipped: Counter = Counter(msg.parse_skips)
+        await _load_referenced(msg, skipped)
+        recent = _state.recent.setdefault(patient_id, OrderedDict())
+        seen: set[str] = set()
+        candidates: list[tuple[str, bytes, str]] = []
+        total = 0
+        for i, att in enumerate(msg.attachments):
+            checked = screen(att, i)
+            if isinstance(checked, str):
+                skipped[checked] += 1
+                continue
+            name, _mime = checked
+            sha = hashlib.sha256(att.data).hexdigest()
+            md5 = hashlib.md5(att.data, usedforsecurity=False).hexdigest()
+            if (
+                sha in seen
+                or sha in recent
+                or await db.document_md5_exists(md5, patient_id=patient_id)
+            ):
+                skipped["duplicate"] += 1
+                continue
+            seen.add(sha)
+            if len(candidates) >= MAX_FILES_PER_MAIL:
+                skipped["too_many_files"] += 1
+                continue
+            if total + len(att.data) > MAX_BYTES_PER_MAIL:
+                skipped["mail_too_large"] += 1
+                continue
+            total += len(att.data)
+            candidates.append((name, att.data, sha))
+
+        accepted = 0
+        stop_code: str | None = None
+        today = _files_today(th, now)
+        for name, data, sha in candidates:
+            if stop_code:
+                skipped[stop_code if stop_code in _STOPPING else "not_attempted"] += 1
+                continue
+            if today + accepted >= MAX_FILES_PER_DAY:
+                skipped["daily_file_cap"] += 1
+                continue
+            code = await _file_one(db, patient_id, name, data)
+            if code == "uploaded":
+                accepted += 1
+                _remember(recent, sha, RECENT_MAX)
+                continue
+            skipped[code] += 1
+            if code in _STOPPING or code == "store_failed":
+                stop_code = code
+        if accepted:
+            _state.files_day.setdefault(th, []).append((now, accepted))
+        _state.counters["mails_filed"] += 1
+        _state.counters["files_accepted"] += accepted
+        for code, n in skipped.items():
+            _state.counters[f"skipped_{code}"] += n
+        if msg.message_id:
+            _remember(_state.done_ids, mid_key, RECENT_MAX)
+        logger.info(
+            "inbound: patient %s filed accepted=%d skipped=%s",
+            pp,
+            accepted,
+            dict(sorted(skipped.items())),
+        )
+        replied = False
+        if accepted or skipped:
+            replied = await _send_receipt(th, msg.sender, accepted, skipped, now)
+        return Result("filed", pp, accepted, skipped, replied)

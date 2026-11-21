@@ -2479,8 +2479,8 @@ async def privacy_policy(request: Request) -> HTMLResponse:
         _PRIVACY_HTML = _legal_page(
             "Privacy Policy",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 17, 2026 ·
-Consent version 2026-11-17</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 21, 2026 ·
+Consent version 2026-11-21</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2542,6 +2542,23 @@ Oncofiles for your question (document text, values, summaries) as part of your c
 This happens only when you ask, and it is governed by your own agreement with that
 assistant's provider, including their retention and training settings.</li>
 </ul>
+<h3 id="by-email">Documents sent by e-mail</h3>
+<p>Each patient can have a private document e-mail address. Whoever sends documents to that
+address agrees to the <a href="/terms">terms of service</a> and to the processing of these
+documents as described in this policy; the sender receives an e-mail saying so, with the link to
+the terms. Only attachments sent from the patient's caregiver address (with the sender
+confirmed by the mail system) are added to the patient's folder, where they are processed like
+any other document. The text of the e-mail is not stored and is not read by any AI model. Mail
+from other senders is not added; we only count it, with a keyed hash of the sender, never the
+sender's address itself.</p>
+<p lang="sk"><strong>Dokumenty poslané e-mailom.</strong> Každý pacient môže mať súkromnú
+e-mailovú adresu pre dokumenty. Kto pošle dokumenty na túto adresu, súhlasí s
+<a href="/terms">podmienkami používania</a> a so spracovaním týchto dokumentov podľa týchto
+zásad; odosielateľ dostane e-mail, ktorý to uvádza, s odkazom na podmienky. Do priečinka
+pacienta sa pridajú len prílohy poslané z adresy opatrovateľa pacienta (s odosielateľom
+potvrdeným poštovým systémom) a spracujú sa ako každý iný dokument. Text e-mailu sa neukladá a
+nečíta ho žiadny AI model. Pošta od iných odosielateľov sa nepridáva; iba ju započítame, s
+kľúčovaným odtlačkom odosielateľa, nikdy nie so samotnou adresou.</p>
 <p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
 unrelated to managing your medical documents.</p>
 
@@ -2642,8 +2659,8 @@ async def terms_of_service(request: Request) -> HTMLResponse:
         _TERMS_HTML = _legal_page(
             "Terms of Service",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 17, 2026 ·
-Consent version 2026-11-17</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 21, 2026 ·
+Consent version 2026-11-21</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
@@ -2669,6 +2686,22 @@ See our <a href="/privacy">Privacy Policy</a> for details.</p>
 <p>When you create a patient, you confirm that you are this person, or that you have their
 consent or another right (for example as a parent or legal guardian) to manage their health
 data in Oncofiles. Do not create a patient for someone without that consent or right.</p>
+
+<h3 id="by-email">Documents sent by e-mail</h3>
+<p>Whoever sends documents to a patient's document e-mail address agrees to these terms and to
+the processing of these documents as described in the <a href="/privacy">Privacy Policy</a>.
+The documents are read right away, without a separate consent screen; the sender receives an
+e-mail saying so, with the link to these terms. Only attachments from the patient's caregiver
+address are added to the patient's folder. The address lets anyone who knows it send documents
+to the patient, never read them: keep it private, and create a new one on the dashboard if it
+gets into the wrong hands.</p>
+<p lang="sk"><strong>Dokumenty poslané e-mailom.</strong> Kto pošle dokumenty na e-mailovú
+adresu pacienta pre dokumenty, súhlasí s týmito podmienkami a so spracovaním týchto dokumentov
+podľa <a href="/privacy">zásad ochrany súkromia</a>. Dokumenty sa čítajú hneď, bez osobitnej
+obrazovky so súhlasom; odosielateľ dostane e-mail, ktorý to uvádza, s odkazom na tieto
+podmienky. Do priečinka pacienta sa pridajú len prílohy z adresy opatrovateľa pacienta. Adresa
+umožňuje každému, kto ju pozná, dokumenty pacientovi poslať, nikdy nie čítať: nezverejňujte ju,
+a ak sa dostane do nesprávnych rúk, vytvorte si na prehľade novú.</p>
 
 <h2 id="account">4. Account and Access</h2>
 <ul>
@@ -7121,6 +7154,204 @@ async def api_upload(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
     finally:
         await form.close()
+
+
+# ── Documents by e-mail (#950 phase 1) ───────────────────────────────────────
+
+
+@mcp.custom_route("/api/inbound-address", methods=["GET"])
+async def api_inbound_address(request: Request) -> JSONResponse:
+    """The patient's private document e-mail address (#950).
+
+    The #867 ACL (``_dashboard_patient_or_refusal``: unknown and foreign are
+    the same 404), then the #921 write refusal: the address is a credential to
+    write into the patient's inbox, so only the caregiver sees it (an admin's
+    read-only view and the operator bearer get 403 ``read_only``). The row is
+    created on first view. While the webhook is not configured
+    (``INBOUND_WEBHOOK_SECRET`` unset) nothing is created and the answer is
+    ``{"enabled": false}``: no address is shown that could not receive mail.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    patient_id, refusal = await _dashboard_patient_or_refusal(request)
+    if refusal is not None:
+        return refusal
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    ro_err = await _dashboard_write_refusal(request, db_inst, patient_id)
+    if ro_err is not None:
+        return ro_err
+    from oncofiles import inbound_email
+
+    if not inbound_email.is_enabled():
+        return JSONResponse({"enabled": False})
+    try:
+        return JSONResponse(await inbound_email.ensure_address(db_inst, patient_id))
+    except Exception:
+        logger.exception("API inbound-address error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/inbound-address/rotate", methods=["POST"])
+async def api_inbound_address_rotate(request: Request) -> JSONResponse:
+    """A new document address for the patient; the old one stops routing (#950).
+
+    Body ``{"patient_id": …}``: ``_dashboard_body_patient`` (#867) then the
+    #921 write refusal, as for the upload. The dashboard asks for a second,
+    armed click first (no browser dialog).
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    patient_id, acl_err = await _dashboard_body_patient(
+        request, db_inst, str(body.get("patient_id") or "")
+    )
+    if acl_err is not None:
+        return acl_err
+    ro_err = await _dashboard_write_refusal(request, db_inst, patient_id)
+    if ro_err is not None:
+        return ro_err
+    from oncofiles import inbound_email
+
+    if not inbound_email.is_enabled():
+        return JSONResponse({"enabled": False}, status_code=409)
+    try:
+        return JSONResponse(await inbound_email.rotate_address(db_inst, patient_id))
+    except Exception:
+        logger.exception("API inbound-address rotate error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/inbound-unmatched", methods=["GET"])
+async def api_inbound_unmatched(request: Request) -> JSONResponse:
+    """Admin zone: mail to patient addresses that was not filed (#950).
+
+    In-memory, counts only: a keyed hash of the sender (never the address),
+    the patient id prefix, mails, files, reason codes and times, plus totals.
+    """
+    err = _require_admin(request)
+    if err:
+        return err
+    from oncofiles import inbound_email
+
+    return JSONResponse(inbound_email.unmatched_overview())
+
+
+async def _read_capped_body(request: Request, limit: int) -> bytes | None:
+    """The request body, or None as soon as it exceeds ``limit`` bytes."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@mcp.custom_route("/inbound/email", methods=["POST"])
+async def inbound_email_webhook(request: Request) -> Response:
+    """Inbound mail webhook, provider-agnostic raw MIME (#950 phase 1).
+
+    Not a dashboard route: it is authenticated by the HMAC signature of the
+    provider (contract in ``oncofiles.inbound_email``). Inert while
+    ``INBOUND_WEBHOOK_SECRET`` is unset: the app's ordinary 404. Body capped
+    before anything is parsed (413); a missing or wrong signature is the same
+    404. After a valid signature always 202, whatever happened to the mail.
+    Nothing from the request content is logged.
+    """
+    from starlette.exceptions import HTTPException
+
+    from oncofiles import inbound_email
+
+    secret = inbound_email.webhook_secret()
+    if not secret:
+        raise HTTPException(status_code=404)
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > inbound_email.MAX_BODY_BYTES:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    raw = await _read_capped_body(request, inbound_email.MAX_BODY_BYTES)
+    if raw is None:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    original_to = request.headers.get(inbound_email.RECIPIENT_HEADER, "")
+    auth = request.headers.get(inbound_email.AUTH_HEADER, "")
+    signature = request.headers.get(inbound_email.SIGNATURE_HEADER, "")
+    if not inbound_email.signature_ok(secret, signature, original_to, auth, raw):
+        logger.info("inbound: refused request (signature)")
+        raise HTTPException(status_code=404)
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        message = inbound_email.parse_raw_mime(raw, original_to=original_to, auth=auth)
+    except inbound_email.UnparseableMessageError:
+        logger.info("inbound: dropped reason=unparseable")
+        return JSONResponse({"status": "accepted"}, status_code=202)
+    finally:
+        raw = b""
+    try:
+        await inbound_email.process_message(db_inst, message)
+    except Exception as exc:
+        logger.error("inbound: processing failed (%s)", type(exc).__name__)
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    return JSONResponse({"status": "accepted"}, status_code=202)
+
+
+@mcp.custom_route("/inbound/brevo", methods=["POST"])
+async def inbound_brevo_webhook(request: Request) -> Response:
+    """Brevo inbound-parsing webhook (#950, D3 = Brevo).
+
+    Brevo does not sign its calls: the webhook is created with the custom
+    header ``X-Inbound-Token: <INBOUND_WEBHOOK_SECRET>``, compared here in
+    constant time before the JSON is parsed. Inert (the app's 404) while the
+    secret is unset; a missing or wrong token is the same 404. Body capped
+    before parsing (413). After a valid token always 202. Attachments are
+    fetched from Brevo (``BREVO_API_KEY``) only for a caregiver sender.
+    Nothing from the request content is logged.
+    """
+    from starlette.exceptions import HTTPException
+
+    from oncofiles import inbound_email
+
+    secret = inbound_email.webhook_secret()
+    if not secret:
+        raise HTTPException(status_code=404)
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > inbound_email.BREVO_MAX_BODY_BYTES:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    raw = await _read_capped_body(request, inbound_email.BREVO_MAX_BODY_BYTES)
+    if raw is None:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    token = request.headers.get(inbound_email.BREVO_TOKEN_HEADER, "")
+    if not inbound_email.brevo_token_ok(secret, token):
+        logger.info("inbound: refused request (token)")
+        raise HTTPException(status_code=404)
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        messages = inbound_email.parse_brevo_payload(json.loads(raw))
+    except (ValueError, inbound_email.UnparseableMessageError):
+        logger.info("inbound: dropped reason=unparseable")
+        return JSONResponse({"status": "accepted"}, status_code=202)
+    finally:
+        raw = b""
+    try:
+        for message in messages:
+            await inbound_email.process_message(db_inst, message)
+    except Exception as exc:
+        logger.error("inbound: processing failed (%s)", type(exc).__name__)
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    return JSONResponse({"status": "accepted"}, status_code=202)
 
 
 def _require_admin(request: Request) -> JSONResponse | None:
