@@ -325,6 +325,13 @@ def render_first_page(data: bytes, mime: str, width_px: int) -> bytes | None:
         rect = doc[0].rect
         if rect.width <= 0 or rect.height <= 0:
             return None
+        # decompression-bomb guard: an embedded image on page 1 bigger than
+        # FALLBACK_MAX_PIXELS is never decoded (its size is read from the
+        # image dictionary, without decoding the stream)
+        if is_pdf and any(
+            int(img[2]) * int(img[3]) > FALLBACK_MAX_PIXELS for img in doc[0].get_images(full=True)
+        ):
+            return None
         zoom = min(width_px / rect.width, width_px * 1.5 / rect.height)
         pix = doc[0].get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
         return pix.tobytes("jpeg", jpg_quality=FALLBACK_JPEG_QUALITY)

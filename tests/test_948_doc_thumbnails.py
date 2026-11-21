@@ -870,3 +870,25 @@ def test_route_and_module_use_the_scoped_lookup_and_the_acl_helper():
     batch = inspect.getsource(doc_thumbnails.thumbnails_for)
     assert "get_document(doc_id, patient_id=patient_id)" in batch
     assert "gather" in batch and batch.index("get_document") < batch.index("gather")
+
+
+def _pdf_with_image(side: int) -> bytes:
+    import pymupdf
+
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, side, side), False)
+    pix.clear_with(200)
+    doc = pymupdf.open()
+    page = doc.new_page(width=200, height=280)
+    page.insert_image(pymupdf.Rect(10, 10, 190, 190), stream=pix.tobytes("png"))
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def test_pdf_with_an_oversized_embedded_image_is_never_rendered(monkeypatch):
+    """Decompression-bomb guard: page 1 image dimensions are checked from the
+    image dictionary before anything is rasterised."""
+    pdf = _pdf_with_image(40)  # 1600 px
+    assert doc_thumbnails.render_first_page(pdf, "application/pdf", 220) is not None
+    monkeypatch.setattr(doc_thumbnails, "FALLBACK_MAX_PIXELS", 1000)
+    assert doc_thumbnails.render_first_page(pdf, "application/pdf", 220) is None
