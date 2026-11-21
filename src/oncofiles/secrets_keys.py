@@ -138,3 +138,46 @@ def inbound_token_hash_key(bearer: str | None = None) -> bytes:
     return hmac.new(
         inbound_address_key(bearer), _INBOUND_TOKEN_HASH_PURPOSE, hashlib.sha256
     ).digest()
+
+
+_INBOUND_JOBS_PURPOSE = b"oncofiles.inbound_jobs.v1"
+_INBOUND_JOBS_MESSAGE_ID_PURPOSE = b"oncofiles.inbound_jobs.message_id.v1"
+_INBOUND_JOBS_SENDER_PURPOSE = b"oncofiles.inbound_jobs.sender.v1"
+INBOUND_JOBS_SECRET_ENV = "INBOUND_JOBS_SECRET"
+
+
+class InboundJobsSecretMissingError(RuntimeError):
+    """``INBOUND_JOBS_SECRET`` is unset: the inbound queue fails closed."""
+
+
+def inbound_jobs_secret_set() -> bool:
+    return bool(os.environ.get(INBOUND_JOBS_SECRET_ENV, ""))
+
+
+def inbound_jobs_key() -> bytes:
+    """32-byte AES-GCM key for the encrypted ``inbound_jobs.payload_enc`` (#952).
+
+    From the MANDATORY runtime env ``INBOUND_JOBS_SECRET`` only (raw string,
+    any length, stretched to 32 bytes with the purpose string). Never derived
+    from ``MCP_BEARER_TOKEN`` (infra review): a bearer rotation must not touch
+    queued mail, and the queue must not depend on a secret reused for HTTP
+    auth. Unset → ``InboundJobsSecretMissingError`` (fail closed: the Brevo
+    route answers 503 and queues nothing, the worker leaves jobs untouched).
+    Rotating it makes jobs still queued at that moment ``undecryptable``.
+    """
+    secret = os.environ.get(INBOUND_JOBS_SECRET_ENV, "")
+    if not secret:
+        raise InboundJobsSecretMissingError(INBOUND_JOBS_SECRET_ENV)
+    return hmac.new(secret.encode(), _INBOUND_JOBS_PURPOSE, hashlib.sha256).digest()
+
+
+def inbound_message_id_hash_key() -> bytes:
+    """Key for ``inbound_jobs.message_id_hash`` (#952): derived from the same
+    mandatory secret with its own purpose string, never the AES key itself."""
+    return hmac.new(inbound_jobs_key(), _INBOUND_JOBS_MESSAGE_ID_PURPOSE, hashlib.sha256).digest()
+
+
+def inbound_sender_hash_key() -> bytes:
+    """Key for ``inbound_jobs.sender_hash`` (#952 security review): same
+    derivation pattern, its own purpose string."""
+    return hmac.new(inbound_jobs_key(), _INBOUND_JOBS_SENDER_PURPOSE, hashlib.sha256).digest()

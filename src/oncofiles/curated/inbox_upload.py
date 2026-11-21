@@ -104,6 +104,25 @@ def unique_name(name: str, taken: set[str]) -> str:
     raise ValueError("no free name in the inbox")
 
 
+def inbox_md5s(gdrive, root_id: str) -> set[str]:
+    """md5 of the files in the inbox (read-only: one README read + listings).
+
+    For the #952 inbound queue's duplicate check before a retried write. A
+    folder without a usable inbox gives an empty set (the upload refuses it
+    anyway); any other error propagates. Blocking, own connection
+    (``dedicated_copy`` made here, inside the worker thread).
+    """
+    own = gdrive.dedicated_copy()
+    try:
+        try:
+            inbox_id = resolve_inbox(own, root_id)
+        except InboxUnavailableError:
+            return set()
+        return {i.md5 for i in drive_ops.list_children(own, inbox_id) if i.md5 and not i.is_folder}
+    finally:
+        own.close()
+
+
 def upload_to_inbox(gdrive, root_id: str, files: list[InboxFile]) -> list[dict]:
     """Write ``files`` into the inbox; one result per file, in order.
 

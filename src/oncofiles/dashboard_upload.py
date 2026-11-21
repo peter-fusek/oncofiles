@@ -209,6 +209,22 @@ async def _resolve_target(db, patient_id: str, log_pid: str | None = None) -> _T
     return refusal("folder_not_writable", 409)
 
 
+async def stored_inbox_md5s(db, patient_id: str, *, log_pid: str | None = None) -> set[str]:
+    """md5 of every file in the patient's curated inbox (read-only), else empty.
+
+    Used by the #952 inbound queue before it re-files a file of a retried job.
+    Empty for a patient without Drive, a non-curated (Drive-only) folder, or
+    a folder without a usable inbox (the upload itself refuses those). Any
+    other listing error propagates (fail closed: no upload this attempt).
+    """
+    resolved = await _resolve_target(db, patient_id, log_pid)
+    if isinstance(resolved, Outcome) or resolved.path != "curated_inbox":
+        return set()
+    from oncofiles.curated import inbox_upload
+
+    return await asyncio.to_thread(inbox_upload.inbox_md5s, resolved.gdrive, resolved.folder_id)
+
+
 async def _store_one(db, patient_id: str, target: _Target, name: str, data: bytes, mime: str):
     """Store ONE file. Returns a result dict, or raises ``InboxUnavailableError``."""
     if target.path == "curated_inbox":
