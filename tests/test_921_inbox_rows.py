@@ -150,6 +150,7 @@ async def test_probe_patient_records_the_snapshot(monkeypatch):
         server, "_create_patient_clients", AsyncMock(return_value=(gdrive, None, None, "root1"))
     )
     monkeypatch.setattr(curated_tool, "reviewed_text_sources", AsyncMock(return_value=frozenset()))
+    monkeypatch.setattr(curated_tool, "backfill_failures", AsyncMock(return_value={}))  # #936
     monkeypatch.setattr(runner_mod, "probe", lambda *a, **k: _probe("sig-9", [_entry(3)]))
     await curated_tool.probe_patient(None, A_UUID, None)
     assert [e["id"] for e in curated_tool.inbox_snapshot(A_UUID)] == ["synthInbox0003"]
