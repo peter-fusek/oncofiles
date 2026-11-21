@@ -357,3 +357,25 @@ def test_demo_upload_rows_have_the_inbox_shape():
     assert "id: 'inbox:demo-upload-' + demoUploadSeq, inbox: true" in sim
     assert "stage: 'in_inbox'" in sim
     assert "demoUploadDetail" not in JS
+
+
+def test_inbox_rows_never_ask_for_a_preview_and_open_the_quick_look():
+    """#948 + #921: an inbox id never reaches /api/doc-thumbnails; the quick look
+    shows its file-type mark and the inbox explanation, without a detail fetch."""
+    assert "/^\\d+$/.test(String(d.id))" in _fn("hasPreview")
+    assert "!d.inbox" in _fn("hasPreview")
+    assert "hasPreview(d) ? thumbCache.get(thumbKey(d.id, 's')) : null" in _fn("buildThumb")
+    assert "if (!/^\\d+$/.test(id)) return;" in _fn("wantThumb")
+    large = _fn("showLargePreview")
+    assert "var preview = hasPreview(d);" in large
+    assert "preview ? thumbCache.get(thumbKey(d.id, 'l')) : null" in large
+    ql = _fn("renderQuickLookDetail")
+    assert ql.index("if (d.inbox) { renderInboxDetail(d, host, { overlay: true }); return; }") < (
+        ql.index("apiFetch('/api/doc-detail/'")
+    )
+    # no id is ever put into a selector (inbox ids are not numbers)
+    assert "Number(lastId)" not in JS and "Number(id) + '\"]'" not in JS
+    # the category cell, the grid card and the quick look show '–' without a category
+    assert "d.category ? categoryBadge(d.category) : noCategoryMark()" in _fn("buildDocCard")
+    assert "d.category ? categoryBadge(d.category) : noCategoryMark()" in _fn("renderQuickLookNav")
+    assert "else tdCat.textContent = '–';" in _fn("buildDocRow")
