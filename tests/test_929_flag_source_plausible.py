@@ -19,7 +19,7 @@ from oncofiles.fhir import terminology as term
 from oncofiles.fhir.ids import derived_id
 from oncofiles.tools import clinical_facts as cf
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PATIENT_A_UUID
 from tests.test_clinical_facts import BORY_SIDECAR, OKB_TEXT, _Ctx
 from tests.test_dashboard_feed import curated_env  # noqa: F401
 from tests.test_fhir_read import _index, world  # noqa: F401
@@ -201,13 +201,13 @@ async def _make_hgb_generic(db) -> None:
         "UPDATE clinical_records SET ref_range_low = NULL, ref_range_high = NULL, "
         "metadata_json = json_set(COALESCE(metadata_json, '{}'), '$.flag_source', 'generic') "
         "WHERE patient_id = ? AND code = 'HGB'",
-        (ERIKA_UUID,),
+        (PATIENT_A_UUID,),
     )
     await db.db.commit()
 
 
 async def test_every_read_tool_serves_flag_source(db, curated_env):  # noqa: F811
-    await tool.index_patient(db, ERIKA_UUID)
+    await tool.index_patient(db, PATIENT_A_UUID)
     ctx = _Ctx(db)
     feed = json.loads(await cf.dashboard_feed(ctx))["facts"]
     assert next(f for f in feed if f["code"] == "HGB")["flag_source"] == "printed"
