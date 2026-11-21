@@ -64,7 +64,17 @@ Worker
   nothing (``lease_lost``).
 * Each claim counts an attempt. A job that reaches ``MAX_ATTEMPTS`` claims
   without finishing ends ``failed`` / ``max_attempts``.
-* Temporary failures never end ``done``: ``rate_limited``, ``fetch_failed``
+* ``rate_limited`` (the caregiver's hourly / daily filing quota, #952
+  follow-up) is a wait, not an attempt: the claim's attempt is given back
+  and ``next_attempt_at`` is the moment the quota frees up
+  (``inbound_email.quota_frees_at``: the end of the per-address window when
+  the counters know it, else the next full hour; logged as ``basis``). Upper
+  bound: a job still waiting ``RATE_LIMIT_MAX_WAIT_S`` (48 h) after its
+  ``created_at`` (its first attempt: ``kick`` runs right after the enqueue)
+  ends ``failed`` / ``rate_limited``; a job with attachments ends so already
+  when the quota would free up only after ``BREVO_ATTACHMENT_RETENTION_S``,
+  since it could not be downloaded any more.
+* Other temporary failures never end ``done``: ``fetch_failed``
   (Brevo 5xx / 429 / auth / timeout), ``store_failed`` (Drive) and
   ``no_api_key`` (``BREVO_API_KEY`` unset) put the job back to ``pending``
   with ``next_attempt_at`` = now + ``RETRY_BASE_MIN * 2**(attempts-1)``
@@ -110,6 +120,7 @@ import hmac
 import json
 import logging
 import os
+import time
 import uuid
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -151,6 +162,10 @@ MAX_UNTRUSTED_JOBS_TOTAL = 100
 # its query window to 30 days. Conservative constant: a job whose attachments
 # have waited longer than 24 hours is not attempted (``download_expired``).
 BREVO_ATTACHMENT_RETENTION_S = 24 * 3600
+# A job deferred by the filing quota (``rate_limited``) waits for the quota
+# window without using attempts; after this long from its ``created_at`` it
+# ends ``failed`` / ``rate_limited`` so it can never loop forever.
+RATE_LIMIT_MAX_WAIT_S = 48 * 3600
 
 PAYLOAD_VERSION = 1
 _ENC_PREFIX = "v1:"
@@ -543,7 +558,9 @@ async def _run_one(db) -> str | None:
         logger.warning("inbound: job patient %s lease lost, left to its new owner", pp)
         return "lease_lost"
 
-    async def finish(state: str, reason: str, *, retry_in: timedelta | None = None) -> str:
+    async def finish(
+        state: str, reason: str, *, retry_in: timedelta | None = None, refund: bool = False
+    ) -> str:
         at = _now()
         ok = await db.finish_inbound_job(
             jid,
@@ -553,6 +570,7 @@ async def _run_one(db) -> str | None:
             now=_iso(at),
             lease=lease["value"],
             next_attempt_at=_iso(at + retry_in) if retry_in is not None else None,
+            refund_attempt=refund,
         )
         if not ok:
             return lease_lost()
@@ -568,6 +586,27 @@ async def _run_one(db) -> str | None:
         if attempts >= MAX_ATTEMPTS:
             return await finish("failed", code)
         return await finish("pending", code, retry_in=_backoff(attempts))
+
+    async def wait_for_quota(retry_at: float | None, basis: str) -> str:
+        """``rate_limited``: back to ``pending`` until the quota frees up, the
+        attempt given back; ``failed:rate_limited`` past the upper bound."""
+        if retry_at is None:  # the core always sets it; next full hour otherwise
+            retry_at, basis = float((int(time.time()) // 3600 + 1) * 3600), "next_hour"
+        # the core's quota clock is ``time.time``; the queue's is ``_now``
+        wait = timedelta(seconds=max(retry_at - time.time(), 0.0))
+        created = _parse_iso(job["created_at"])
+        bound = RATE_LIMIT_MAX_WAIT_S
+        if payload.get("attachments"):
+            bound = min(bound, BREVO_ATTACHMENT_RETENTION_S)
+        if _now() + wait > created + timedelta(seconds=bound):
+            return await finish("failed", "rate_limited")
+        logger.info(
+            "inbound: job patient %s waits for the filing quota basis=%s minutes=%d",
+            pp,
+            basis,
+            int(wait.total_seconds() // 60),
+        )
+        return await finish("pending", "rate_limited", retry_in=wait, refund=True)
 
     if job["attempts"] >= MAX_ATTEMPTS:
         return await finish("failed", "max_attempts")
@@ -632,9 +671,13 @@ async def _run_one(db) -> str | None:
             return await finish("failed", "max_attempts")
         reason = f"error:{type(exc).__name__}"[:64]
         return await finish("pending", reason, retry_in=_backoff(attempts))
+    if result.temporary == "rate_limited":
+        # #952 follow-up: nothing was filed or admitted (the quota check runs
+        # before any download), so there is no progress to save.
+        return await wait_for_quota(result.retry_at, result.retry_basis)
     if result.temporary:
-        # #952 infra review: rate_limited / fetch_failed / store_failed /
-        # no_api_key never end ``done``. The progress (incl. ``admitted``, so
+        # #952 infra review: fetch_failed / store_failed / no_api_key never
+        # end ``done``. The progress (incl. ``admitted``, so
         # the retry does not count against the filing quota again) is saved
         # first, under the lease.
         if attempts < MAX_ATTEMPTS:
