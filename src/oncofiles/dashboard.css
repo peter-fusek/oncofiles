@@ -1253,8 +1253,8 @@
     .quicklook[hidden] { display: none; }
     .ql-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 64, 0.72); }
     .ql-panel { --ql-h: calc(min(54rem, 100vh - 3rem) - 11.5rem); position: relative; display: flex; flex-direction: column; width: min(74rem, 100%); height: min(54rem, 100%); background: var(--card); border-radius: 14px; overflow: hidden; box-shadow: 0 30px 60px -30px rgba(0, 0, 40, 0.7); }
-    .ql-panel:focus { outline: none; }
-    .ql-panel:focus-visible { outline: 3px solid var(--turq); outline-offset: 2px; }
+    /* the panel only takes programmatic focus on open; its buttons keep their own ring */
+    .ql-panel:focus, .ql-panel:focus-visible { outline: none; }
     .ql-head { display: flex; align-items: center; gap: 1rem; flex: none; padding: 0.75rem 0.875rem 0.75rem 1.25rem; border-bottom: 1px solid var(--rule); }
     .ql-heading { flex: 1; min-width: 0; }
     .ql-title { font: 700 1.0625rem/1.3 var(--display); letter-spacing: -0.01em; color: var(--ink); overflow-wrap: anywhere; }
