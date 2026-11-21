@@ -538,7 +538,7 @@ async def thumbnails_for(
         logging.INFO if drive_calls else logging.DEBUG,
         "doc-thumbnails: patient=%s size=%s ids=%d shown=%d drive=%d reasons=%s ms=%d "
         "cache_entries=%d cache_bytes=%d",
-        patient_id if patient_id != NO_PATIENT_ACCESS_SENTINEL else "-",
+        patient_id[:4] if patient_id != NO_PATIENT_ACCESS_SENTINEL else "-",  # prefix only
         size,
         len(ids),
         shown,
