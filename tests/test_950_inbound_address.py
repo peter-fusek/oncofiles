@@ -36,7 +36,8 @@ OTHER_PID = "00000000-0000-4000-8000-000000000950"
 CARER = "synthetic.carer950@gmail.com"
 OTHER_CARER = "other.carer950@example.test"
 STRANGER = "stranger950@example.test"
-SECRET = "synthetic-webhook-secret-950"
+SECRET = "synthetic-mime-hmac-secret-950"  # INBOUND_MIME_HMAC_SECRET
+BREVO_SECRET = "synthetic-brevo-token-950"  # INBOUND_BREVO_TOKEN
 SUBJECT = "Vysledky Synteticke 2027"
 FILENAMES = ("SynthLabReport2027.pdf", "SynthScanPhoto.jpg", "SynthNote.txt")
 
@@ -49,7 +50,8 @@ def _env(monkeypatch):
     monkeypatch.setattr("oncofiles.config.MCP_BEARER_TOKEN", "synthetic-bearer-950")
     monkeypatch.delenv("INBOUND_ADDRESS_SECRET", raising=False)
     monkeypatch.delenv("AUDIT_EMAIL_HASH_SECRET", raising=False)
-    monkeypatch.setenv(inbound_email.WEBHOOK_SECRET_ENV, SECRET)
+    monkeypatch.setenv(inbound_email.MIME_SECRET_ENV, SECRET)
+    monkeypatch.setenv(inbound_email.BREVO_TOKEN_ENV, BREVO_SECRET)
     monkeypatch.delenv("MAIL_FROM", raising=False)
     inbound_email.reset_state()
     yield
@@ -309,7 +311,7 @@ def test_migration_only_adds_the_table():
 
 
 async def test_webhook_is_404_while_the_secret_is_unset(idb, monkeypatch):
-    monkeypatch.delenv(inbound_email.WEBHOOK_SECRET_ENV)
+    monkeypatch.delenv(inbound_email.MIME_SECRET_ENV)  # the Brevo token stays set
     body = b"From: x\r\n\r\nhello"
     with pytest.raises(HTTPException) as exc:
         await server.inbound_email_webhook(_request(idb, body, signed_headers(body)))
@@ -829,7 +831,8 @@ async def test_get_address_read_only_for_admin_and_off_when_disabled(idb, monkey
         server.api_inbound_address, _dash_request(idb, "synth950-b"), CARER, admin=True
     )
     assert resp.status_code == 403 and json.loads(resp.body)["error"] == "read_only"
-    monkeypatch.delenv(inbound_email.WEBHOOK_SECRET_ENV)
+    monkeypatch.delenv(inbound_email.MIME_SECRET_ENV)
+    monkeypatch.delenv(inbound_email.BREVO_TOKEN_ENV)
     resp = await _call(server.api_inbound_address, _dash_request(idb, "synth950-a"), CARER)
     assert json.loads(resp.body) == {"enabled": False}
     async with idb.db.execute("SELECT COUNT(*) FROM inbound_addresses") as cur:
@@ -933,7 +936,8 @@ def test_demo_twin_has_an_invented_address():
 
 def test_claude_md_mentions_the_feature():
     text = (ROOT / "CLAUDE.md").read_text()
-    assert "#950" in text and "INBOUND_WEBHOOK_SECRET" in text
+    assert "#950" in text and "INBOUND_MIME_HMAC_SECRET" in text
+    assert "INBOUND_BREVO_TOKEN" in text and "INBOUND_WEBHOOK_SECRET" not in text
 
 
 # ── Brevo adapter (D3 = Brevo) ───────────────────────────────────────────
@@ -961,8 +965,13 @@ def brevo(monkeypatch):
     return store, fetched
 
 
+def ar_line(sender: str = CARER, dmarc: str = "pass", authserv: str = AUTHSERV) -> str:
+    domain = sender.rpartition("@")[2]
+    return f"{authserv}; spf=pass; dkim=pass; dmarc={dmarc} header.from={domain}"
+
+
 def brevo_item(to: str, *, sender: str = CARER, files=(), auth: str = "pass", headers=None):
-    hdrs = {"Authentication-Results": f"{AUTHSERV}; spf=pass; dkim=pass; dmarc={auth}"}
+    hdrs = {"Authentication-Results": ar_line(sender, auth)}
     hdrs.update(headers or {})
     return {
         "Uuid": ["00000000-0000-4000-8000-00000000b950"],
@@ -994,7 +1003,7 @@ def brevo_item(to: str, *, sender: str = CARER, files=(), auth: str = "pass", he
     }
 
 
-def brevo_request(db, payload, token=SECRET):
+def brevo_request(db, payload, token=BREVO_SECRET):
     body = json.dumps(payload).encode()
     headers = {"content-length": str(len(body)), "content-type": "application/json"}
     if token is not None:
@@ -1004,7 +1013,7 @@ def brevo_request(db, payload, token=SECRET):
     return req
 
 
-@pytest.mark.parametrize("token", [None, "", "wrong", SECRET + "x"])
+@pytest.mark.parametrize("token", [None, "", "wrong", BREVO_SECRET + "x", SECRET])
 async def test_brevo_bad_token_is_404(idb, drive, brevo, token):
     addr = await address_of(idb)
     payload = {"items": [brevo_item(addr, files=[("S.pdf", "application/pdf", 10, "t1")])]}
@@ -1015,7 +1024,7 @@ async def test_brevo_bad_token_is_404(idb, drive, brevo, token):
 
 
 async def test_brevo_inert_without_secret(idb, monkeypatch):
-    monkeypatch.delenv(inbound_email.WEBHOOK_SECRET_ENV)
+    monkeypatch.delenv(inbound_email.BREVO_TOKEN_ENV)  # the MIME secret stays set
     with pytest.raises(HTTPException) as exc:
         await server.inbound_brevo_webhook(brevo_request(idb, {"items": []}))
     assert exc.value.status_code == 404
@@ -1075,7 +1084,7 @@ async def test_brevo_auth_verdict_is_conservative(idb, drive, mails, brevo, monk
 def test_brevo_headers_list_shape_and_loop_headers(brevo):
     item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}")
     item["Headers"] = [
-        {"Name": "Authentication-Results", "Value": f"{AUTHSERV}; dmarc=pass"},
+        {"Name": "Authentication-Results", "Value": ar_line()},
         {"Name": "Auto-Submitted", "Value": "auto-replied"},
     ]
     msg = inbound_email.parse_brevo_item(item)
@@ -1105,3 +1114,102 @@ def test_brevo_bodies_are_never_read():
     code = src.split('"""', 2)[2]
     for name in ("RawHtmlBody", "RawTextBody", "ExtractedMarkdownMessage"):
         assert f'"{name}"' not in code
+
+
+# ── security review: separate secrets, trusted A-R line, separate caps ───
+
+
+async def test_each_adapter_has_its_own_secret(idb, drive, mails, monkeypatch):
+    """The Brevo token is never an HMAC key of the MIME route, and vice versa."""
+    addr = await address_of(idb)
+    body = mail(addr, files=[(FILENAMES[0], pdf(), "application/pdf")]).as_bytes()
+    headers = signed_headers(body, addr)
+    headers[inbound_email.SIGNATURE_HEADER] = inbound_email.sign(BREVO_SECRET, addr, "pass", body)
+    with pytest.raises(HTTPException) as exc:
+        await server.inbound_email_webhook(_request(idb, body, headers))
+    assert exc.value.status_code == 404
+    with pytest.raises(HTTPException) as exc:
+        await server.inbound_brevo_webhook(brevo_request(idb, {"items": []}, SECRET))
+    assert exc.value.status_code == 404
+    # only the Brevo route configured: the MIME route is a 404, Brevo answers
+    monkeypatch.delenv(inbound_email.MIME_SECRET_ENV)
+    with pytest.raises(HTTPException):
+        await server.inbound_email_webhook(_request(idb, body, signed_headers(body, addr)))
+    resp = await server.inbound_brevo_webhook(brevo_request(idb, {"items": []}))
+    assert resp.status_code == 202
+    assert drive.files == []
+
+
+@pytest.mark.parametrize("keep", [inbound_email.MIME_SECRET_ENV, inbound_email.BREVO_TOKEN_ENV])
+async def test_card_is_enabled_by_either_adapter(idb, monkeypatch, keep):
+    for env in (inbound_email.MIME_SECRET_ENV, inbound_email.BREVO_TOKEN_ENV):
+        if env != keep:
+            monkeypatch.delenv(env)
+    assert inbound_email.is_enabled()
+    resp = await _call(server.api_inbound_address, _dash_request(idb, "synth950-a"), CARER)
+    assert json.loads(resp.body)["enabled"] is True
+
+
+@pytest.mark.parametrize(
+    ("lines", "ok"),
+    [
+        ([ar_line()], True),
+        # a forged lower line with the trusted id next to the real one: refused
+        ([ar_line(), ar_line(dmarc="pass")], False),
+        ([ar_line(dmarc="fail"), ar_line()], False),
+        # lines of other servers are ignored, the trusted one decides
+        (["other.example; dmarc=pass header.from=gmail.com", ar_line()], True),
+        (["other.example; dmarc=pass header.from=gmail.com"], False),
+        # header.from must be the From domain
+        ([f"{AUTHSERV}; dmarc=pass header.from=example.test"], False),
+        ([f"{AUTHSERV}; dmarc=pass"], False),
+        ([f"{AUTHSERV}; dmarc=pass header.from=GMAIL.COM"], True),
+        ([ar_line(dmarc="fail")], False),
+    ],
+)
+def test_trusted_authentication_results_line(brevo, lines, ok):
+    item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}")
+    item["Headers"] = {"Authentication-Results": lines}
+    assert inbound_email.parse_brevo_item(item).auth_pass is ok
+
+
+def test_trusted_line_list_shape_two_entries_refused(brevo):
+    item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}")
+    item["Headers"] = [
+        {"Name": "Authentication-Results", "Value": ar_line()},
+        {"Name": "Authentication-Results", "Value": ar_line()},
+    ]
+    assert inbound_email.parse_brevo_item(item).auth_pass is False
+
+
+def test_header_from_must_match_the_sender(brevo):
+    item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}", sender=STRANGER)
+    item["Headers"] = {"Authentication-Results": ar_line(CARER)}  # says gmail.com
+    assert inbound_email.parse_brevo_item(item).auth_pass is False
+
+
+async def test_unmatched_flood_never_blocks_the_caregiver(idb, drive, mails, monkeypatch):
+    monkeypatch.setattr(inbound_email, "MAX_MAILS_PER_HOUR", 2)
+    monkeypatch.setattr(inbound_email, "MAX_UNMATCHED_PER_HOUR", 5)
+    addr = await address_of(idb)
+    outcomes = []
+    for i in range(12):
+        msg = mail(addr, sender=STRANGER, files=[(f"F{i}.pdf", pdf(i), "application/pdf")])
+        outcomes.append((await inbound_email.process_message(idb, parsed(msg))).outcome)
+    for i in range(3):
+        msg = mail(addr, files=[(f"C{i}.pdf", pdf(50 + i), "application/pdf")])
+        outcomes.append(
+            (await inbound_email.process_message(idb, parsed(msg, auth="fail"))).outcome
+        )
+    assert outcomes.count("unmatched") == 5
+    assert outcomes.count("unmatched_capped") == 10
+    caregiver = mail(addr, files=[("Real.pdf", pdf(99), "application/pdf")])
+    result = await inbound_email.process_message(idb, parsed(caregiver))
+    assert result.outcome == "filed" and result.accepted == 1
+    totals = inbound_email.unmatched_overview()["totals"]
+    assert totals["unmatched_capped"] == 10 and "rate_limited" not in totals
+    # the filing quota still applies to the caregiver alone
+    for i in range(2):
+        msg = mail(addr, files=[(f"Q{i}.pdf", pdf(70 + i), "application/pdf")])
+        outcomes.append((await inbound_email.process_message(idb, parsed(msg))).outcome)
+    assert outcomes[-2:] == ["filed", "rate_limited"]

@@ -174,13 +174,13 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     (
         "/inbound/brevo",
         "inbound_brevo_webhook",
-    ): "Brevo inbound webhook (#950): 404 while INBOUND_WEBHOOK_SECRET is unset; body capped "
+    ): "Brevo inbound webhook (#950): 404 while INBOUND_BREVO_TOKEN is unset; body capped "
     "before reading; the custom X-Inbound-Token header compared in constant time before the "
     "JSON is parsed (Brevo does not sign; tests/test_950_inbound_address.py)",
     (
         "/inbound/email",
         "inbound_email_webhook",
-    ): "inbound mail webhook (#950): 404 while INBOUND_WEBHOOK_SECRET is unset; body capped "
+    ): "inbound mail webhook (#950): 404 while INBOUND_MIME_HMAC_SECRET is unset; body capped "
     "before reading; HMAC-SHA256 signature checked in constant time before any parsing "
     "(tests/test_950_inbound_address.py)",
 }

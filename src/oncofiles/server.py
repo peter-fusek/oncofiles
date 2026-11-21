@@ -7213,9 +7213,10 @@ async def api_inbound_address(request: Request) -> JSONResponse:
     the same 404), then the #921 write refusal: the address is a credential to
     write into the patient's inbox, so only the caregiver sees it (an admin's
     read-only view and the operator bearer get 403 ``read_only``). The row is
-    created on first view. While the webhook is not configured
-    (``INBOUND_WEBHOOK_SECRET`` unset) nothing is created and the answer is
-    ``{"enabled": false}``: no address is shown that could not receive mail.
+    created on first view. While neither adapter is configured
+    (``INBOUND_MIME_HMAC_SECRET`` and ``INBOUND_BREVO_TOKEN`` both unset)
+    nothing is created and the answer is ``{"enabled": false}``: no address is
+    shown that could not receive mail.
     """
     err = _check_dashboard_auth(request)
     if err:
@@ -7307,8 +7308,9 @@ async def inbound_email_webhook(request: Request) -> Response:
     """Inbound mail webhook, provider-agnostic raw MIME (#950 phase 1).
 
     Not a dashboard route: it is authenticated by the HMAC signature of the
-    provider (contract in ``oncofiles.inbound_email``). Inert while
-    ``INBOUND_WEBHOOK_SECRET`` is unset: the app's ordinary 404. Body capped
+    provider (contract in ``oncofiles.inbound_email``), keyed with its own
+    secret ``INBOUND_MIME_HMAC_SECRET``. Inert while that is unset: the app's
+    ordinary 404. Body capped
     before anything is parsed (413); a missing or wrong signature is the same
     404. After a valid signature always 202, whatever happened to the mail.
     Nothing from the request content is logged.
@@ -7317,7 +7319,7 @@ async def inbound_email_webhook(request: Request) -> Response:
 
     from oncofiles import inbound_email
 
-    secret = inbound_email.webhook_secret()
+    secret = inbound_email.mime_secret()
     if not secret:
         raise HTTPException(status_code=404)
     try:
@@ -7356,9 +7358,10 @@ async def inbound_brevo_webhook(request: Request) -> Response:
     """Brevo inbound-parsing webhook (#950, D3 = Brevo).
 
     Brevo does not sign its calls: the webhook is created with the custom
-    header ``X-Inbound-Token: <INBOUND_WEBHOOK_SECRET>``, compared here in
-    constant time before the JSON is parsed. Inert (the app's 404) while the
-    secret is unset; a missing or wrong token is the same 404. Body capped
+    header ``X-Inbound-Token: <INBOUND_BREVO_TOKEN>`` (its own secret, never
+    the raw-MIME HMAC key), compared here in constant time before the JSON is
+    parsed. Inert (the app's 404) while ``INBOUND_BREVO_TOKEN`` is unset; a
+    missing or wrong token is the same 404. Body capped
     before parsing (413). After a valid token always 202. Attachments are
     fetched from Brevo (``BREVO_API_KEY``) only for a caregiver sender.
     Nothing from the request content is logged.
@@ -7367,7 +7370,7 @@ async def inbound_brevo_webhook(request: Request) -> Response:
 
     from oncofiles import inbound_email
 
-    secret = inbound_email.webhook_secret()
+    secret = inbound_email.brevo_token()
     if not secret:
         raise HTTPException(status_code=404)
     try:

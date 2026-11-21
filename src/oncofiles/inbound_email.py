@@ -22,9 +22,13 @@ token routes, and the patient is determined ONLY by that token, never by From.
 
 Webhook (``POST /inbound/email``, ``server.inbound_email_webhook``)
 -------------------------------------------------------------------
-Inert until the runtime env ``INBOUND_WEBHOOK_SECRET`` is set: before that,
-and for any request whose signature does not verify, the answer is the app's
-ordinary 404 (the same as an unknown path). Contract of the raw-MIME adapter:
+Each adapter has its own secret and its own trust model (security review):
+``INBOUND_MIME_HMAC_SECRET`` is the HMAC key of the raw-MIME route and
+``INBOUND_BREVO_TOKEN`` the shared header token of the Brevo route. A route
+whose secret is unset is inert: it answers the app's ordinary 404 (the same
+as an unknown path), as it does for any request that fails its check. The
+dashboard card is enabled when either adapter is. Contract of the raw-MIME
+adapter:
 
 * body: the raw RFC 5322 message, at most ``MAX_BODY_BYTES`` (checked from
   ``Content-Length`` and again while reading, before any parsing; 413);
@@ -34,7 +38,8 @@ ordinary 404 (the same as an unknown path). Contract of the raw-MIME adapter:
 * ``X-Inbound-Auth`` (optional): the provider's verdict on the sender, ``pass``
   when SPF or DKIM passed aligned with the ``From`` domain (DMARC pass);
   anything else, or absent, is a fail;
-* ``X-Inbound-Signature: sha256=<hex>``: HMAC-SHA256 with the secret over
+* ``X-Inbound-Signature: sha256=<hex>``: HMAC-SHA256 with
+  ``INBOUND_MIME_HMAC_SECRET`` over
   ``X-Original-To + "\\n" + X-Inbound-Auth + "\\n" + body`` (absent headers are
   empty strings). The two trusted headers are inside the signature so a
   replayed body cannot be re-addressed or have its verdict flipped. Compared
@@ -75,7 +80,10 @@ Rules (maintainer decisions 2026-11-21 + infra review)
   (checked by magic bytes), duplicates (sha256 within the mail and of recent
   mail filings, md5 against the patient's documents). At most
   ``MAX_FILES_PER_MAIL`` files and ``MAX_BYTES_PER_MAIL`` per mail; per address
-  ``MAX_MAILS_PER_HOUR`` / ``MAX_MAILS_PER_DAY`` and ``MAX_FILES_PER_DAY``.
+  ``MAX_MAILS_PER_HOUR`` / ``MAX_MAILS_PER_DAY`` and ``MAX_FILES_PER_DAY`` for
+  authenticated caregiver mail only (checked after the sender check), and a
+  separate ``MAX_UNMATCHED_PER_HOUR`` / ``MAX_UNMATCHED_PER_DAY`` for mail that
+  is not filed, so a flood of it never blocks the caregiver.
 * Message bodies are never stored and never go to any model.
 * Loop safety: mail with ``Auto-Submitted`` (other than ``no``),
   ``Precedence: bulk/list/junk``, a ``List-Id``, an empty ``Return-Path``, a
@@ -124,7 +132,9 @@ GMAIL_DOMAIN = "gmail.com"
 # Gmail local parts: letters, digits and single dots, not at either end.
 _GMAIL_LOCAL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.]{0,62}[a-z0-9])?$")
 
-WEBHOOK_SECRET_ENV = "INBOUND_WEBHOOK_SECRET"
+# One secret per adapter (security review of #950): never share them.
+MIME_SECRET_ENV = "INBOUND_MIME_HMAC_SECRET"  # HMAC key, /inbound/email
+BREVO_TOKEN_ENV = "INBOUND_BREVO_TOKEN"  # shared header token, /inbound/brevo
 SIGNATURE_HEADER = "x-inbound-signature"
 RECIPIENT_HEADER = "x-original-to"
 AUTH_HEADER = "x-inbound-auth"
@@ -138,6 +148,10 @@ MAX_EML_DEPTH = 3
 MAX_MAILS_PER_HOUR = 20
 MAX_MAILS_PER_DAY = 60
 MAX_FILES_PER_DAY = 200
+# Mail that is not filed (unknown sender, failed auth) has its own per-address
+# cap, so a flood of it can never use up the caregiver's filing quota.
+MAX_UNMATCHED_PER_HOUR = 30
+MAX_UNMATCHED_PER_DAY = 100
 REPLY_INTERVAL_S = 600
 LOGO_MAX_BYTES = 10 * 1024
 LOGO_MAX_PX = 200
@@ -254,13 +268,19 @@ async def _address_payload(db, patient_id: str, row: dict) -> dict:
     }
 
 
-def webhook_secret() -> str:
-    """The runtime webhook secret ('' = the webhook is inert)."""
-    return os.environ.get(WEBHOOK_SECRET_ENV, "")
+def mime_secret() -> str:
+    """HMAC key of the raw-MIME route ('' = that route is inert)."""
+    return os.environ.get(MIME_SECRET_ENV, "")
+
+
+def brevo_token() -> str:
+    """Shared header token of the Brevo route ('' = that route is inert)."""
+    return os.environ.get(BREVO_TOKEN_ENV, "")
 
 
 def is_enabled() -> bool:
-    return bool(webhook_secret())
+    """True when at least one adapter can receive mail."""
+    return bool(mime_secret() or brevo_token())
 
 
 # ── webhook signature ────────────────────────────────────────────────────
@@ -468,7 +488,7 @@ async def _load_referenced(msg: InboundMessage, skipped: Counter) -> None:
 #   ``auth`` {token, type} (allowed types and the header it produces are not
 #   documented) and a list of custom ``headers`` {key, value} sent with every
 #   call. We use the documented custom header: the webhook is created with
-#   ``headers: [{"key": "X-Inbound-Token", "value": <INBOUND_WEBHOOK_SECRET>}]``
+#   ``headers: [{"key": "X-Inbound-Token", "value": <INBOUND_BREVO_TOKEN>}]``
 #   and the route compares it in constant time (``hmac.compare_digest``).
 #   This is a shared secret over TLS, not a body signature: it does not
 #   protect against a replay by someone who saw a request, so the route stays
@@ -476,9 +496,11 @@ async def _load_referenced(msg: InboundMessage, skipped: Counter) -> None:
 # * There is no SPF/DKIM/DMARC field. The original headers are in
 #   ``Headers``, but any sender can put an ``Authentication-Results`` line in
 #   their own mail, and whether Brevo's MX adds (and strips foreign copies of)
-#   its own line is NOT documented. So ``auth_pass`` is True only for an
-#   ``Authentication-Results`` header whose authserv-id equals the runtime env
-#   ``INBOUND_BREVO_AUTHSERV_ID`` and that says ``dmarc=pass``. Unset (the
+#   its own line is NOT documented. So ``auth_pass`` is True only when
+#   exactly one ``Authentication-Results`` header carries the authserv-id of
+#   the runtime env ``INBOUND_BREVO_AUTHSERV_ID`` (two or more = a forged copy
+#   may be among them = fail), the topmost such line is used, and it says
+#   ``dmarc=pass`` with ``header.from`` equal to the From domain. Unset (the
 #   default) = every sender fails the check = nothing is filed, everything is
 #   listed as unmatched. Infra sets it only after reading a live payload.
 # Not verified (needs a live payload): the exact ``Headers`` shape, which
@@ -528,17 +550,37 @@ def _brevo_headers(raw) -> dict[str, list[str]]:
     return out
 
 
-def _brevo_auth_pass(headers: dict[str, list[str]]) -> bool:
+_AR_HEADER_FROM = re.compile(r"(?:^|[\s;])header\.from=([^\s;]+)")
+_AR_DMARC_PASS = re.compile(r"(?:^|[\s;])dmarc=pass\b")
+
+
+def _brevo_auth_pass(headers: dict[str, list[str]], sender: str) -> bool:
+    """The trusted Authentication-Results verdict for ``sender`` (fail closed).
+
+    Only lines whose authserv-id equals ``INBOUND_BREVO_AUTHSERV_ID`` count.
+    More than one such line = refused (a sender may have planted a copy with
+    the trusted id below the real one). The topmost (= only) trusted line must
+    say ``dmarc=pass`` AND carry ``header.from`` equal to the From domain,
+    case-insensitive.
+    """
     authserv = os.environ.get(BREVO_AUTHSERV_ENV, "").strip().lower()
     if not authserv:
         return False
-    for line in headers.get("authentication-results", []):
-        head, _, rest = line.partition(";")
-        if head.strip().lower() != authserv:
-            continue
-        if re.search(r"(?:^|[\s;])dmarc=pass\b", rest.lower()):
-            return True
-    return False
+    trusted = [
+        line.partition(";")[2].lower()
+        for line in headers.get("authentication-results", [])
+        if line.partition(";")[0].strip().lower() == authserv
+    ]
+    if len(trusted) != 1:
+        return False
+    line = trusted[0]
+    if not _AR_DMARC_PASS.search(line):
+        return False
+    match = _AR_HEADER_FROM.search(line)
+    if not match:
+        return False
+    domain = match.group(1).strip().strip('"').rstrip(".").lower()
+    return bool(domain) and domain == _domain(sender)
 
 
 def _mailbox(value) -> str:
@@ -615,7 +657,7 @@ def parse_brevo_item(item: dict) -> InboundMessage:
     return InboundMessage(
         recipients=recipients,
         sender=_mailbox(item.get("From")),
-        auth_pass=_brevo_auth_pass(headers),
+        auth_pass=_brevo_auth_pass(headers, _mailbox(item.get("From"))),
         message_id=str(item.get("MessageId") or "").strip(),
         auto_submitted=first("auto-submitted"),
         precedence=first("precedence"),
@@ -779,7 +821,8 @@ class _State:
     def reset(self) -> None:
         self.counters: Counter = Counter()  # mail outcomes and file reasons
         self.unmatched: OrderedDict[tuple[str, str], dict] = OrderedDict()
-        self.mails: dict[str, list[float]] = {}  # token hash -> receive times (24 h)
+        self.mails: dict[str, list[float]] = {}  # token hash -> filed-mail times (24 h)
+        self.unmatched_mails: dict[str, list[float]] = {}  # token hash -> not-filed times
         self.files_day: dict[str, list[tuple[float, int]]] = {}
         self.last_reply: dict[str, float] = {}
         self.done_ids: OrderedDict[str, None] = OrderedDict()
@@ -856,13 +899,24 @@ def _within(times: list[float], seconds: float, now: float) -> int:
     return sum(1 for t in times if now - t < seconds)
 
 
-def _rate_limited(th: str, now: float) -> bool:
-    times = [t for t in _state.mails.get(th, []) if now - t < 86400]
-    _state.mails[th] = times
-    if _within(times, 3600, now) >= MAX_MAILS_PER_HOUR or len(times) >= MAX_MAILS_PER_DAY:
+def _over_cap(book: dict, th: str, now: float, per_hour: int, per_day: int) -> bool:
+    """Count one mail in ``book`` for ``th``; True when it is over the caps."""
+    times = [t for t in book.get(th, []) if now - t < 86400]
+    book[th] = times
+    if _within(times, 3600, now) >= per_hour or len(times) >= per_day:
         return True
     times.append(now)
     return False
+
+
+def _rate_limited(th: str, now: float) -> bool:
+    """Filing quota: authenticated caregiver mail only."""
+    return _over_cap(_state.mails, th, now, MAX_MAILS_PER_HOUR, MAX_MAILS_PER_DAY)
+
+
+def _unmatched_capped(th: str, now: float) -> bool:
+    """Separate cap for mail that is not filed; never touches the filing quota."""
+    return _over_cap(_state.unmatched_mails, th, now, MAX_UNMATCHED_PER_HOUR, MAX_UNMATCHED_PER_DAY)
 
 
 def _files_today(th: str, now: float) -> int:
@@ -1080,10 +1134,6 @@ async def process_message(db, msg: InboundMessage) -> Result:
             logger.info("inbound: patient %s duplicate delivery ignored", pp)
             return Result("duplicate_delivery", pp)
         now = time.time()
-        if _rate_limited(th, now):
-            _state.counters["rate_limited"] += 1
-            logger.info("inbound: patient %s dropped reason=rate_limited", pp)
-            return Result("rate_limited", pp)
 
         from oncofiles.persistent_oauth import _email_matches_caregiver
 
@@ -1096,6 +1146,12 @@ async def process_message(db, msg: InboundMessage) -> Result:
         else:
             reason = None
         if reason:
+            # Its own cap (security review): unmatched mail is counted and,
+            # beyond the cap, dropped; it never uses the filing quota below.
+            if _unmatched_capped(th, now):
+                _state.counters["unmatched_capped"] += 1
+                logger.info("inbound: patient %s dropped reason=unmatched_capped", pp)
+                return Result("unmatched_capped", pp)
             _record_unmatched(msg.sender, patient_id, reason, len(msg.attachments))
             _state.counters[f"unmatched_{reason}"] += 1
             logger.info(
@@ -1107,6 +1163,12 @@ async def process_message(db, msg: InboundMessage) -> Result:
             if msg.message_id:
                 _remember(_state.done_ids, mid_key, RECENT_MAX)
             return Result("unmatched", pp)
+
+        # Filing quota: only authenticated caregiver mail counts against it.
+        if _rate_limited(th, now):
+            _state.counters["rate_limited"] += 1
+            logger.info("inbound: patient %s dropped reason=rate_limited", pp)
+            return Result("rate_limited", pp)
 
         skipped: Counter = Counter(msg.parse_skips)
         await _load_referenced(msg, skipped)
