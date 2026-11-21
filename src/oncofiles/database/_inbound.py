@@ -70,10 +70,15 @@ class InboundAddressMixin(DatabaseBase):
         return dict(row) if row else None
 
     async def document_md5_exists(self, md5: str, *, patient_id: str) -> bool:
-        """True when an active document of the patient has this Drive md5."""
+        """True when an active document of the patient has this Drive md5, or
+        is a holding-store document (#950 phase 2) with this content md5."""
         async with self.db.execute(
             """SELECT 1 FROM documents
-               WHERE patient_id = ? AND gdrive_md5 = ? AND deleted_at IS NULL LIMIT 1""",
-            (patient_id, md5),
+               WHERE patient_id = ? AND deleted_at IS NULL
+                 AND (gdrive_md5 = ?
+                      OR (file_id LIKE 'holding:%' AND json_valid(structured_metadata)
+                          AND json_extract(structured_metadata, '$.holding.md5') = ?))
+               LIMIT 1""",
+            (patient_id, md5, md5),
         ) as cursor:
             return await cursor.fetchone() is not None

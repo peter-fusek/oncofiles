@@ -1,0 +1,562 @@
+# ruff: noqa: F811 - the #950 fixtures are imported and used as test arguments
+"""#950 phase 2: onboarding by e-mail via welcome@ (Flow B).
+
+Covers: the onboarding gate (closed / invite / open), non-Gmail and failed
+auth listed only, one trial patient per sender with its by_sending consent
+row, the encrypted holding store (mandatory key, owner-only files, no
+plaintext on disk), the local-only reading, previews of held documents, the
+welcome reply (no names or file names, the terms sentence, the sign-in link
+and the personal address) and its loop protection, the caps, the dashboard
+ACL and first-steps status, and that nothing is deleted.
+
+Synthetic only: invented Gmail local parts and example.test addresses,
+invented file names and bytes, dates in 2027. No network (attachment
+downloads are served from a dict, the model is a stub).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import stat
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+from starlette.responses import JSONResponse
+
+from oncofiles import (
+    holding_extract,
+    holding_store,
+    inbound_email,
+    inbound_queue,
+    inbound_welcome,
+    server,
+)
+from oncofiles.curated.extract import Extraction
+from tests.test_950_inbound_address import (  # noqa: F401 - fixtures
+    CARER,
+    PID,
+    SUBJECT,
+    _env,
+    brevo,
+    brevo_item,
+    brevo_request,
+    drain,
+    idb,
+    jpeg,
+    mails,
+    parsed,
+    pdf,
+)
+from tests.test_950_inbound_address import mail as raw_mail
+
+NEW = "synthetic.welcome950@gmail.com"
+NEW2 = "second.welcome950@gmail.com"
+NOT_GMAIL = "someone.welcome950@example.test"
+WELCOME = "welcome@oncofiles.com"
+FILE_A = "SynthWelcomeLab2027.pdf"
+FILE_B = "SynthWelcomePhoto2027.jpg"
+FILES = ("w-a", "w-b")
+HOLD_SECRET = "synthetic-holding-secret-950"
+PAGE_TEXT = "<!-- page 1 -->\nInvented result 2027-05-04\n<!-- page 2 -->\nSecond invented page"
+
+
+@pytest.fixture(autouse=True)
+def welcome_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOLDING_STORE_SECRET", HOLD_SECRET)
+    monkeypatch.setattr("oncofiles.config.DATA_DIR", tmp_path)
+    monkeypatch.setattr("oncofiles.config.ONBOARDING_MODE", "open")
+    monkeypatch.setattr("oncofiles.config.ONBOARDING_INVITE_EMAILS", frozenset())
+    monkeypatch.setattr("oncofiles.config.DASHBOARD_ADMIN_EMAILS", [])
+    monkeypatch.delenv("CURATED_DAILY_PAGE_BUDGET", raising=False)
+    inbound_welcome.reset_state()
+    holding_extract._drain_task = None
+    yield tmp_path
+    inbound_welcome.reset_state()
+    holding_extract._drain_task = None
+
+
+@pytest.fixture
+def model(monkeypatch):
+    """The local model: configured, and a stub extractor that records calls."""
+    calls: list[dict] = []
+
+    def _extract(name, content, mime_type="", **kw):
+        from oncofiles.cloud_guard import CloudForbiddenError, check_cloud_allowed, local_only_job
+
+        refused = False
+        try:
+            check_cloud_allowed("synthetic cloud call")
+        except CloudForbiddenError:
+            refused = True
+        calls.append(
+            {"name": name, "bytes": content, "mime": mime_type, "zone": local_only_job(),
+             "cloud_refused": refused}
+        )  # fmt: skip
+        return Extraction(PAGE_TEXT, "vision", 2, "synthetic-local")
+
+    monkeypatch.setattr("oncofiles.curated.llm.configured", lambda: True)
+    monkeypatch.setattr("oncofiles.curated.extract.extract", _extract)
+    return calls
+
+
+def welcome_item(sender=NEW, files=(), auth="pass", to=WELCOME, headers=None, mid=None):
+    item = brevo_item(to, sender=sender, files=files, auth=auth, headers=headers)
+    if mid:
+        item["MessageId"] = mid
+    return item
+
+
+def two_files(store):
+    store["w-a"] = pdf(950)
+    store["w-b"] = jpeg(30_000)
+    return [
+        (FILE_A, "application/pdf", len(store["w-a"]), "w-a"),
+        (FILE_B, "image/jpeg", len(store["w-b"]), "w-b"),
+    ]
+
+
+async def send(db, *items):
+    resp = await server.inbound_brevo_webhook(brevo_request(db, {"items": list(items)}))
+    assert resp.status_code == 202
+    await drain()
+    return resp
+
+
+async def trials(db):
+    async with db.db.execute("SELECT * FROM trial_accounts ORDER BY id") as cur:
+        return [dict(r) for r in await cur.fetchall()]
+
+
+async def held_docs(db, pid):
+    async with db.db.execute(
+        "SELECT * FROM documents WHERE patient_id = ? AND file_id LIKE 'holding:%' ORDER BY id",
+        (pid,),
+    ) as cur:
+        return [dict(r) for r in await cur.fetchall()]
+
+
+# ── gate ────────────────────────────────────────────────────────────────
+
+
+async def test_open_gate_creates_a_trial_and_holds_the_files(idb, mails, brevo, model):
+    store, fetched = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    [trial] = await trials(idb)
+    pid = trial["patient_id"]
+    patient = await idb.get_patient(pid)
+    assert patient.caregiver_email == NEW
+    assert patient.display_name == inbound_welcome.TRIAL_DISPLAY_NAME  # no name from the mail
+    assert trial["source"] == "welcome_email" and trial["sender_hash"] != NEW
+    assert fetched == ["w-a", "w-b"]
+    docs = await held_docs(idb, pid)
+    assert [d["filename"] for d in docs] == [FILE_A, FILE_B]
+    assert [d["mime_type"] for d in docs] == ["application/pdf", "image/jpeg"]
+    # read at once, locally
+    assert len(model) == 2 and all(c["zone"] == holding_extract.JOB for c in model)
+    pages = await idb.get_ocr_pages(docs[0]["id"], patient_id=pid)
+    assert [p["page_number"] for p in pages] == [1, 2]
+    assert pages[0]["model"] == holding_extract.HOLDING_MODEL
+    meta = json.loads(docs[0]["structured_metadata"])
+    assert meta["source"] == "holding" and meta["holding"]["extract"] == "done"
+
+
+async def test_consent_row_is_by_sending_with_a_keyed_hash(idb, mails, brevo, model):
+    from oncofiles.patient_consent import CONSENT_VERSION
+    from oncofiles.secrets_keys import caller_email_hash
+
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    [trial] = await trials(idb)
+    [consent] = await idb.get_patient_consents(patient_id=trial["patient_id"])
+    assert consent["kind"] == "by_sending" and consent["consent_version"] == CONSENT_VERSION
+    assert consent["caller_email_hash"] == caller_email_hash(NEW) == trial["sender_hash"]
+    assert NEW not in json.dumps(consent) and consent["is_admin"] == 0
+
+
+async def test_one_trial_per_sender(idb, mails, brevo, model):
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store), mid="<w-1@example.test>"))
+    store["w-c"] = pdf(951)
+    files = [("SynthSecond2027.pdf", "application/pdf", len(store["w-c"]), "w-c")]
+    await send(idb, welcome_item(files=files, mid="<w-2@example.test>"))
+    [trial] = await trials(idb)
+    assert len(await held_docs(idb, trial["patient_id"])) == 3
+    patients = [p for p in await idb.list_patients(active_only=False) if p.caregiver_email == NEW]
+    assert len(patients) == 1
+
+
+async def test_closed_gate_replies_once_with_the_waitlist_and_keeps_nothing(
+    idb, mails, brevo, model, monkeypatch
+):
+    monkeypatch.setattr("oncofiles.config.ONBOARDING_MODE", "closed")
+    store, fetched = brevo
+    await send(idb, welcome_item(files=two_files(store), mid="<c-1@example.test>"))
+    await send(idb, welcome_item(files=two_files(store), mid="<c-2@example.test>"))
+    assert await trials(idb) == [] and fetched == [] and model == []
+    assert len(mails) == 1 and mails[0]["to"] == [NEW]
+    assert inbound_welcome.WAITLIST_URL in mails[0]["text"]
+    assert mails[0]["headers"] == {"Auto-Submitted": "auto-replied"}
+    for name in (FILE_A, FILE_B, SUBJECT, NEW):
+        assert name not in mails[0]["text"]
+    async with idb.db.execute("SELECT COUNT(*) FROM inbound_jobs") as cur:
+        assert (await cur.fetchone())[0] == 0
+
+
+async def test_invite_mode_admits_only_invited_senders(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr("oncofiles.config.ONBOARDING_MODE", "invite")
+    monkeypatch.setattr("oncofiles.config.ONBOARDING_INVITE_EMAILS", frozenset({NEW2}))
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))  # NEW: not invited
+    assert await trials(idb) == []
+    assert len(mails) == 1 and inbound_welcome.WAITLIST_URL in mails[0]["text"]
+    await send(idb, welcome_item(sender=NEW2, files=two_files(store)))
+    [trial] = await trials(idb)
+    assert (await idb.get_patient(trial["patient_id"])).caregiver_email == NEW2
+
+
+@pytest.mark.parametrize(
+    ("sender", "auth", "reason"),
+    [(NOT_GMAIL, "pass", "welcome_not_gmail"), (NEW, "fail", "welcome_auth_failed")],
+)
+async def test_non_gmail_and_failed_auth_are_listed_only(
+    idb, mails, brevo, model, sender, auth, reason
+):
+    store, fetched = brevo
+    await send(idb, welcome_item(sender=sender, auth=auth, files=two_files(store)))
+    assert await trials(idb) == [] and fetched == [] and mails == [] and model == []
+    [entry] = inbound_email.unmatched_overview()["senders"]
+    assert entry["reasons"] == {reason: 1} and entry["files"] == 2
+    assert sender not in json.dumps(inbound_email.unmatched_overview())
+
+
+async def test_existing_caregiver_gets_no_second_account(idb, mails, brevo, model):
+    store, fetched = brevo
+    await send(idb, welcome_item(sender=CARER, files=two_files(store)))
+    assert await trials(idb) == [] and fetched == [] and mails == []
+    [entry] = inbound_email.unmatched_overview()["senders"]
+    assert entry["reasons"] == {"welcome_existing_caregiver": 1}
+
+
+async def test_loop_mail_to_welcome_is_ignored(idb, mails, brevo, model):
+    store, fetched = brevo
+    item = welcome_item(files=two_files(store), headers={"Auto-Submitted": "auto-replied"})
+    await send(idb, item)
+    assert await trials(idb) == [] and fetched == [] and mails == []
+
+
+async def test_raw_mime_route_admits_welcome_too(idb, mails, model):
+    msg = raw_mail(WELCOME, sender=NEW, files=[(FILE_A, pdf(952), "application/pdf")])
+    result = await inbound_email.process_message(idb, parsed(msg))
+    await drain()
+    assert result.outcome == "filed" and result.accepted == 1
+    [trial] = await trials(idb)
+    assert len(await held_docs(idb, trial["patient_id"])) == 1
+
+
+# ── the reply ───────────────────────────────────────────────────────────
+
+
+async def test_welcome_reply_has_counts_terms_sign_in_and_the_address(idb, mails, brevo, model):
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    [trial] = await trials(idb)
+    address = (await inbound_email.ensure_address(idb, trial["patient_id"]))["address"]
+    [reply] = mails
+    text = reply["text"]
+    assert reply["to"] == [NEW] and reply["headers"] == {"Auto-Submitted": "auto-replied"}
+    assert "prijali sme 2 dokument" in text and "we received 2 document" in text
+    assert "By sending them you agreed to the terms" in text
+    assert inbound_email.TERMS_URL in text
+    assert "https://oncofiles.com/dashboard" in text
+    assert address in text and address.endswith("@" + inbound_email.INBOUND_DOMAIN)
+    for leak in (FILE_A, FILE_B, SUBJECT, inbound_welcome.TRIAL_DISPLAY_NAME, "token="):
+        assert leak not in text
+
+
+async def test_reply_at_most_once_per_ten_minutes(idb, mails, brevo, model):
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store), mid="<r-1@example.test>"))
+    store["w-c"] = pdf(953)
+    files = [("SynthThird2027.pdf", "application/pdf", len(store["w-c"]), "w-c")]
+    await send(idb, welcome_item(files=files, mid="<r-2@example.test>"))
+    assert len(mails) == 1
+    assert inbound_email.unmatched_overview()["totals"]["reply_throttled"] == 1
+
+
+# ── caps ────────────────────────────────────────────────────────────────
+
+
+async def test_per_sender_mail_cap(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr(inbound_welcome, "MAX_MAILS_PER_SENDER_DAY", 1)
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store), mid="<m-1@example.test>"))
+    await send(idb, welcome_item(files=two_files(store), mid="<m-2@example.test>"))
+    [trial] = await trials(idb)
+    assert len(await held_docs(idb, trial["patient_id"])) == 2 and len(mails) == 1
+    assert inbound_email.unmatched_overview()["totals"]["welcome_sender_capped"] == 1
+
+
+async def test_per_sender_file_cap(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr(inbound_welcome, "MAX_FILES_PER_SENDER_DAY", 1)
+    store, fetched = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    assert await trials(idb) == [] and fetched == [] and mails == []
+    assert inbound_email.unmatched_overview()["totals"]["welcome_sender_capped"] == 1
+
+
+async def test_global_new_trial_cap(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr(inbound_welcome, "MAX_NEW_TRIALS_PER_DAY", 1)
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    await send(idb, welcome_item(sender=NEW2, files=two_files(store)))
+    assert len(await trials(idb)) == 1 and len(mails) == 1
+    assert inbound_email.unmatched_overview()["totals"]["welcome_trial_cap"] == 1
+
+
+# ── holding store ───────────────────────────────────────────────────────
+
+
+async def test_holding_files_are_encrypted_and_owner_only(idb, mails, brevo, model, welcome_env):
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    folder = welcome_env / "holding"
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+    files = sorted(folder.iterdir())
+    assert len(files) == 2 and all(f.suffix == ".bin" for f in files)
+    for f in files:
+        assert stat.S_IMODE(f.stat().st_mode) == 0o600
+        raw = f.read_bytes()
+        assert store["w-a"][:40] not in raw and store["w-b"][:40] not in raw
+        assert b"%PDF" not in raw and FILE_A.encode() not in raw
+    [trial] = await trials(idb)
+    docs = await held_docs(idb, trial["patient_id"])
+    assert holding_store.read(docs[0]["file_id"]) == store["w-a"]
+
+
+def test_holding_key_is_mandatory(monkeypatch, welcome_env):
+    from oncofiles.secrets_keys import HoldingStoreSecretMissingError
+
+    file_id = holding_store.write_encrypted(b"invented bytes 2027")
+    monkeypatch.delenv("HOLDING_STORE_SECRET")
+    assert holding_store.configured() is False
+    with pytest.raises(HoldingStoreSecretMissingError):
+        holding_store.write_encrypted(b"invented bytes 2027")
+    with pytest.raises(HoldingStoreSecretMissingError):
+        holding_store.read(file_id)
+    assert len(list((welcome_env / "holding").iterdir())) == 1  # nothing written without it
+
+
+def test_wrong_key_or_moved_file_does_not_decrypt(monkeypatch, welcome_env):
+    a = holding_store.write_encrypted(b"invented A 2027")
+    b = holding_store.write_encrypted(b"invented B 2027")
+    folder = welcome_env / "holding"
+    uid_a = a.removeprefix(holding_store.HOLDING_PREFIX)
+    uid_b = b.removeprefix(holding_store.HOLDING_PREFIX)
+    os.replace(folder / f"{uid_a}.bin", folder / f"{uid_b}.bin")  # a's bytes under b's id
+    with pytest.raises(holding_store.HoldingStoreError):
+        holding_store.read(b)
+    c = holding_store.write_encrypted(b"invented C 2027")
+    monkeypatch.setenv("HOLDING_STORE_SECRET", "another-synthetic-secret")
+    with pytest.raises(holding_store.HoldingStoreError):
+        holding_store.read(c)
+
+
+async def test_no_trial_without_the_holding_key(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.delenv("HOLDING_STORE_SECRET")
+    store, fetched = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    assert await trials(idb) == [] and fetched == [] and mails == []
+
+
+# ── local-only reading ──────────────────────────────────────────────────
+
+
+async def test_reading_is_local_only_and_never_sees_the_file_name(idb, mails, brevo, model):
+    from oncofiles.curated.indexer import CuratedCloudError, refuse_cloud
+
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    assert model and all(c["cloud_refused"] for c in model)
+    assert [c["name"] for c in model] == ["holding.pdf", "holding.jpg"]
+    [trial] = await trials(idb)
+    pid = trial["patient_id"]
+    docs = await held_docs(idb, pid)
+    with pytest.raises(CuratedCloudError):
+        refuse_cloud(docs[0]["id"], "synthetic cloud function")
+    assert await idb.get_documents_without_ai(patient_id=pid) == []
+    assert docs[0]["id"] in await idb.curated_document_ids()
+
+
+async def test_documents_wait_while_no_local_model(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr("oncofiles.curated.llm.configured", lambda: False)
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    [trial] = await trials(idb)
+    docs = await held_docs(idb, trial["patient_id"])
+    assert model == []
+    assert {json.loads(d["structured_metadata"])["holding"]["extract"] for d in docs} == {"pending"}
+    monkeypatch.setattr("oncofiles.curated.llm.configured", lambda: True)
+    counts = await holding_extract.run_pending(idb)
+    assert counts == {"done": 2}
+
+
+async def test_daily_page_budget_holds_the_patient(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setenv("CURATED_DAILY_PAGE_BUDGET", "2")
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    # the first document used the 2 pages of the day; the second waits
+    assert len(model) == 1
+    [trial] = await trials(idb)
+    states = [
+        json.loads(d["structured_metadata"])["holding"]["extract"]
+        for d in await held_docs(idb, trial["patient_id"])
+    ]
+    assert states == ["done", "pending"]
+
+
+# ── previews (#948) ─────────────────────────────────────────────────────
+
+
+def _tiny_pdf() -> bytes:
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=210, height=297)
+    page.insert_text((20, 40), "Invented held sheet 2027-06-01")
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def _thumb_request(db, ids):
+    request = MagicMock()
+    request.query_params = {"ids": ",".join(str(i) for i in ids)}
+    request.path_params = {}
+    request.headers = {"authorization": "Bearer session:synthetic"}
+    request.app.state.fastmcp_server._lifespan_result = {"db": db, "files": None}
+    return request
+
+
+@contextmanager
+def _caller(email):
+    unauthorized = JSONResponse({"error": "unauthorized"}, status_code=401)
+    with (
+        patch.object(server, "_get_dashboard_email", return_value=email),
+        patch.object(server, "_check_bearer", return_value=unauthorized),
+        patch.object(server, "_is_admin_email", return_value=False),
+    ):
+        yield
+
+
+async def _trial_with_pdf(db, monkeypatch, brevo):
+    store, _ = brevo
+    store["w-pdf"] = _tiny_pdf()
+    files = [(FILE_A, "application/pdf", len(store["w-pdf"]), "w-pdf")]
+    await send(db, welcome_item(files=files))
+    [trial] = await trials(db)
+    [doc] = await held_docs(db, trial["patient_id"])
+    return trial["patient_id"], doc["id"]
+
+
+async def test_holding_documents_get_previews_from_the_held_bytes(
+    idb, mails, brevo, model, monkeypatch
+):
+    from oncofiles import doc_thumbnails
+
+    doc_thumbnails._cache.clear()
+    monkeypatch.setattr("oncofiles.tools.curated.run_active", lambda: False)
+    monkeypatch.setattr(server, "GOOGLE_INTEGRATION_ENABLED", False)  # no Google needed
+    clients = MagicMock(side_effect=AssertionError("no Drive client for a held file"))
+    monkeypatch.setattr(server, "_create_patient_clients", clients)
+    _pid, doc_id = await _trial_with_pdf(idb, monkeypatch, brevo)
+    with _caller(NEW):
+        resp = await server.api_doc_thumbnails(_thumb_request(idb, [doc_id]))
+    body = json.loads(resp.body)["thumbnails"]
+    assert body[str(doc_id)]["src"].startswith("data:image/jpeg;base64,")
+    # another user never sees it (#590: the same null as an unknown id)
+    doc_thumbnails._cache.clear()
+    with _caller("other.person950@example.test"):
+        resp = await server.api_doc_thumbnails(_thumb_request(idb, [doc_id]))
+    assert json.loads(resp.body)["thumbnails"] == {str(doc_id): None}
+    doc_thumbnails._cache.clear()
+
+
+# ── dashboard: sign-in lands on the trial, first steps, ACL ─────────────
+
+
+def _dash_request(db, query=None):
+    request = MagicMock()
+    request.query_params = query or {}
+    request.path_params = {}
+    request.headers = {"authorization": "Bearer session:synthetic"}
+    request.app.state.fastmcp_server._lifespan_result = {"db": db, "files": None}
+    return request
+
+
+async def test_sign_in_lands_on_the_trial_and_others_never_see_it(idb, mails, brevo, model):
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    [trial] = await trials(idb)
+    pid = trial["patient_id"]
+    with _caller(NEW.upper()):  # Google may hand back another case
+        own = json.loads((await server.api_list_patients(_dash_request(idb))).body)["own"]
+    assert [p["patient_id"] for p in own] == [pid]  # consent exists by sending
+    with _caller(NEW):
+        status = json.loads((await server.api_trial_status(_dash_request(idb))).body)
+    assert status["trial"] is True and status["days_left"] == inbound_welcome.TRIAL_DAYS
+    assert (status["documents"], status["ready"], status["reading"]) == (len(FILES), len(FILES), 0)
+    assert status["drive_connected"] is False
+    assert NEW not in json.dumps(status) and FILE_A not in json.dumps(status)
+    with _caller("other.person950@example.test"):
+        own = json.loads((await server.api_list_patients(_dash_request(idb))).body)["own"]
+        named = await server.api_trial_status(_dash_request(idb, {"patient_id": pid}))
+    assert pid not in json.dumps(own)
+    assert json.loads(named.body) == {"trial": False}
+
+
+async def test_ordinary_patient_has_no_trial(idb):
+    with _caller(CARER):
+        resp = await server.api_trial_status(_dash_request(idb))
+    assert json.loads(resp.body) == {"trial": False}
+
+
+def test_dashboard_has_the_first_steps_card_and_the_demo_twin():
+    from oncofiles import demo_dashboard
+
+    html = (Path(server.__file__).parent / "dashboard.html").read_text()
+    js = (Path(server.__file__).parent / "dashboard.js").read_text()
+    assert 'id="trial-card"' in html and 'data-action="showShareModal"' in html
+    assert 'data-action="showGdriveSetup"' in html
+    assert "'/api/trial-status'" in js and "d.trial_status" in js
+    assert demo_dashboard.build([], "0.0.0-test")["trial_status"] == {"trial": False}
+
+
+# ── logs and deletion ───────────────────────────────────────────────────
+
+
+async def test_logs_carry_no_address_or_file_name(idb, mails, brevo, model, caplog):
+    caplog.set_level(logging.DEBUG, logger="oncofiles")
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    await send(idb, welcome_item(sender=NOT_GMAIL, files=two_files(store)))
+    text = caplog.text
+    for leak in (NEW, NOT_GMAIL, FILE_A, FILE_B, SUBJECT, "synthetic.welcome950"):
+        assert leak not in text
+
+
+async def test_nothing_is_deleted(idb, mails, brevo, model, welcome_env):
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    await holding_extract.run_pending(idb)
+    await inbound_queue.run_pending(idb)
+    [trial] = await trials(idb)
+    docs = await held_docs(idb, trial["patient_id"])
+    assert len(docs) == 2 and all(d["deleted_at"] is None for d in docs)
+    assert len(list((welcome_env / "holding").glob("*.bin"))) == 2
+    src = (Path(server.__file__).parent / "holding_store.py").read_text()
+    for call in ("unlink(", "os.remove(", "rmtree(", "DELETE FROM"):
+        assert call not in src

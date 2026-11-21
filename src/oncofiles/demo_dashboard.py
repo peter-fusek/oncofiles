@@ -11,6 +11,7 @@ for every API path the dashboard calls an answer of the same shape:
     details    ~ GET /api/doc-detail/{id}   (keyed by document id)
     activity   ~ GET /api/activity
     inbound_address ~ GET /api/inbound-address   (#950, invented address)
+    trial_status ~ GET /api/trial-status   (#950 phase 2, not a trial)
     thumbnails ~ GET /api/doc-thumbnails  (keyed by document id; the script
                  answers each request with the ids it asked for, #948)
 
@@ -502,6 +503,9 @@ def build(showcase_documents: list[dict], version: str) -> dict:
             "created_at": "2027-01-19T15:20:00Z",
             "terms_url": TERMS_URL,
         },
+        # #950 phase 2: the demo twin of GET /api/trial-status (the demo
+        # patient did not start through welcome@, so no first-steps card).
+        "trial_status": {"trial": False},
         "thumbnails": demo_thumbnails.build(pictures),
         "activity": {
             "events": [

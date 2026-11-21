@@ -176,6 +176,19 @@
  <p id="inbound-status" class="inbound-status" role="status" hidden></p>
  </section>
 
+ <!-- #950 phase 2: first steps of a welcome@ trial (hidden for every other patient) -->
+ <section class="panel trial-card" id="trial-card" hidden aria-labelledby="trial-title">
+ <div class="section-head">
+ <h2 id="trial-title" data-sk="Prvé kroky" data-en="First steps">Prvé kroky</h2>
+ </div>
+ <p class="section-lead" id="trial-days"></p>
+ <ol class="trial-steps">
+ <li><span class="step-mark" id="trial-step-docs-mark" aria-hidden="true"></span> <span id="trial-step-docs"></span></li>
+ <li><span class="step-mark" aria-hidden="true"></span> <span data-sk="Pripojte svoju AI (Claude alebo ChatGPT) a pýtajte sa na dokumenty." data-en="Connect your AI (Claude or ChatGPT) and ask about your documents.">Pripojte svoju AI (Claude alebo ChatGPT) a pýtajte sa na dokumenty.</span> <button type="button" class="copy-btn" data-action="showShareModal" data-sk="Pripojiť AI" data-en="Connect AI">Pripojiť AI</button></li>
+ <li><span class="step-mark" id="trial-step-drive-mark" aria-hidden="true"></span> <span data-sk="Neskôr pripojte vlastný Google Drive, kde dokumenty zostanú natrvalo." data-en="Later, connect your own Google Drive, where the documents stay for good.">Neskôr pripojte vlastný Google Drive, kde dokumenty zostanú natrvalo.</span> <button type="button" class="copy-btn" id="trial-drive-btn" data-action="showGdriveSetup" data-sk="Pripojiť Google Drive" data-en="Connect Google Drive">Pripojiť Google Drive</button></li>
+ </ol>
+ </section>
+
  <!-- Documents -->
  <section class="docs-section" aria-labelledby="docs-title">
  <div class="section-head">

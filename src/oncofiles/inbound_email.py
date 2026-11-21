@@ -349,6 +349,9 @@ class InboundMessage:
     is_report: bool = False  # multipart/report or message/delivery-status inside
     attachments: list[InboundAttachment] = field(default_factory=list)
     parse_skips: Counter = field(default_factory=Counter)
+    # #950 phase 2: admitted through welcome@ (``inbound_welcome.admit``): the
+    # reply is the welcome text instead of the receipt.
+    welcome: bool = False
 
 
 class UnparseableMessageError(ValueError):
@@ -1088,9 +1091,17 @@ _STOPPING = {"no_drive", "folder_not_writable", "inbox_unavailable", "document_c
 
 
 async def _file_one(db, patient_id: str, name: str, data: bytes) -> str:
-    """File ONE file; returns ``uploaded`` or a reason code."""
+    """File ONE file; returns ``uploaded`` or a reason code.
+
+    A welcome@ trial patient without Drive (#950 phase 2,
+    ``holding_store.holding_mode``) gets the file in the encrypted holding
+    store instead, and its local reading starts at once.
+    """
+    from oncofiles import holding_store
     from oncofiles.dashboard_upload import handle_upload
 
+    if await holding_store.holding_mode(db, patient_id):
+        return await _hold_one(db, patient_id, name, data)
     outcome = await handle_upload(
         db, patient_id, [_BytesUpload(name, data)], log_pid=patient_id[:4]
     )
@@ -1102,6 +1113,28 @@ async def _file_one(db, patient_id: str, name: str, data: bytes) -> str:
     if entry.get("status") == "refused" and entry.get("code"):
         return str(entry["code"])
     return "store_failed"
+
+
+async def _hold_one(db, patient_id: str, name: str, data: bytes) -> str:
+    """Store ONE file in the holding store (#950 phase 2); ``uploaded`` or a code.
+
+    ``name`` already passed ``screen`` (the #935 type check), so its extension
+    names an allowed type.
+    """
+    from oncofiles import holding_extract, holding_store
+    from oncofiles.dashboard_upload import ALLOWED_TYPES, _ext
+
+    mime = ALLOWED_TYPES.get(_ext(name), "application/octet-stream")
+
+    try:
+        await holding_store.store_document(db, patient_id, name, data, mime)
+    except ValueError:
+        return "document_cap"  # insert_document's limit
+    except Exception as exc:
+        logger.warning("inbound: holding store failed (%s)", type(exc).__name__)
+        return "store_failed"
+    holding_extract.kick(db)
+    return "uploaded"
 
 
 # ── receipt ──────────────────────────────────────────────────────────────
@@ -1173,7 +1206,17 @@ def receipt_text(accepted: int, skipped: Counter) -> tuple[str, str]:
     return subject, body
 
 
-async def _send_receipt(th: str, to: str, accepted: int, skipped: Counter, now: float) -> bool:
+async def _send_receipt(
+    th: str,
+    to: str,
+    accepted: int,
+    skipped: Counter,
+    now: float,
+    *,
+    welcome_address: str | None = None,
+) -> bool:
+    """The receipt, or with ``welcome_address`` the welcome@ reply (#950 phase
+    2, ``inbound_welcome.welcome_text``); one per address per 10 min."""
     from oncofiles import mailer
 
     last = _state.last_reply.get(th)
@@ -1181,12 +1224,17 @@ async def _send_receipt(th: str, to: str, accepted: int, skipped: Counter, now: 
         _state.counters["reply_throttled"] += 1
         return False
     _state.last_reply[th] = now
-    subject, body = receipt_text(accepted, skipped)
+    if welcome_address is not None:
+        from oncofiles.inbound_welcome import welcome_text
+
+        subject, body = welcome_text(accepted, skipped, welcome_address)
+    else:
+        subject, body = receipt_text(accepted, skipped)
     sent = await mailer.send_mail(
         [to],
         subject,
         body,
-        tags=["inbound_receipt"],
+        tags=["inbound_welcome" if welcome_address is not None else "inbound_receipt"],
         headers={"Auto-Submitted": "auto-replied"},  # RFC 3834: never answered by robots
     )
     _state.counters["reply_sent" if sent else "reply_failed"] += 1
@@ -1348,6 +1396,17 @@ async def process_message(db, msg: InboundMessage) -> Result:
 
 async def _process_message(db, msg: InboundMessage, progress: JobProgress | None = None) -> Result:
     token = _find_token(msg)
+    if token is None:
+        # #950 phase 2: welcome@ (raw-MIME route; the Brevo route admits at
+        # enqueue and queues the mail for the trial patient's own token).
+        from oncofiles import inbound_welcome
+
+        if inbound_welcome.is_welcome(msg):
+            admitted = await inbound_welcome.admit(db, msg)
+            if admitted is None:
+                return Result("welcome_refused")
+            token = admitted[1]
+            msg.welcome = True
     row = await db.find_inbound_address(token_hash(token)) if token else None
     if row is None or not row["active"]:
         reason = "unknown_token" if row is None else "inactive_token"
@@ -1524,7 +1583,12 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
         )
         replied = False
         if (accepted or skipped) and not (progress is not None and progress.receipt_sent):
-            replied = await _send_receipt(th, msg.sender, accepted, skipped, now)
+            welcome_address = None
+            if msg.welcome:
+                welcome_address = (await ensure_address(db, patient_id))["address"]
+            replied = await _send_receipt(
+                th, msg.sender, accepted, skipped, now, welcome_address=welcome_address
+            )
             if progress is not None:
                 await progress.mark_receipt_sent()
         # On the last attempt a temporary failure was reported in the receipt;

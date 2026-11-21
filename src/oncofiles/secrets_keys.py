@@ -181,3 +181,32 @@ def inbound_sender_hash_key() -> bytes:
     """Key for ``inbound_jobs.sender_hash`` (#952 security review): same
     derivation pattern, its own purpose string."""
     return hmac.new(inbound_jobs_key(), _INBOUND_JOBS_SENDER_PURPOSE, hashlib.sha256).digest()
+
+
+_HOLDING_STORE_PURPOSE = b"oncofiles.holding_store.v1"
+HOLDING_STORE_SECRET_ENV = "HOLDING_STORE_SECRET"
+
+
+class HoldingStoreSecretMissingError(RuntimeError):
+    """``HOLDING_STORE_SECRET`` is unset: the holding store fails closed (#950)."""
+
+
+def holding_store_secret_set() -> bool:
+    return bool(os.environ.get(HOLDING_STORE_SECRET_ENV, ""))
+
+
+def holding_store_key() -> bytes:
+    """32-byte AES-GCM key of the encrypted holding store (#950 phase 2).
+
+    From the MANDATORY runtime env ``HOLDING_STORE_SECRET`` only (raw string,
+    stretched with the purpose string), like ``INBOUND_JOBS_SECRET`` (#952):
+    never derived from ``MCP_BEARER_TOKEN``, so a bearer rotation never makes
+    held documents unreadable. Unset → ``HoldingStoreSecretMissingError``:
+    nothing is stored (welcome@ mail is not admitted) and nothing is read.
+    Rotating it makes every held file unreadable: rotate only with an empty
+    store.
+    """
+    secret = os.environ.get(HOLDING_STORE_SECRET_ENV, "")
+    if not secret:
+        raise HoldingStoreSecretMissingError(HOLDING_STORE_SECRET_ENV)
+    return hmac.new(secret.encode(), _HOLDING_STORE_PURPOSE, hashlib.sha256).digest()

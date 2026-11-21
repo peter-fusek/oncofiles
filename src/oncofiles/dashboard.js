@@ -619,6 +619,7 @@
       if (path === '/api/documents') return withDemoUploads(d.documents);
       if (path === '/api/activity') return d.activity;
       if (path === '/api/inbound-address') return d.inbound_address;
+      if (path === '/api/trial-status') return d.trial_status;
       if (path === '/api/patients') return d.patients;
       if (path === '/api/patient-budget') return { show_pill: false };
       if (path === '/api/manifest') return { generated_at: new Date().toISOString(), invented: true, documents: (d.documents || {}).documents || [] };
@@ -1062,8 +1063,58 @@
     // Admin zone: mail to patient addresses that was not filed (counts only).
     var INBOUND_REASON_TEXT = {
       unknown_sender: ['odosielateľ nie je opatrovateľ', 'sender is not the caregiver'],
-      auth_failed: ['overenie odosielateľa neprešlo', 'sender check failed']
+      auth_failed: ['overenie odosielateľa neprešlo', 'sender check failed'],
+      // #950 phase 2: welcome@ mail that did not start a trial
+      welcome_auth_failed: ['welcome@: overenie odosielateľa neprešlo', 'welcome@: sender check failed'],
+      welcome_not_gmail: ['welcome@: odosielateľ nie je z Gmailu', 'welcome@: sender is not on Gmail'],
+      welcome_existing_caregiver: ['welcome@: odosielateľ už má účet', 'welcome@: sender already has an account']
     };
+
+    // ── First steps of a welcome@ trial (#950 phase 2) ──────────────────
+    // Shown only for a patient that started by e-mail: trial days left, the
+    // documents being read, Connect AI (the existing share modal) and Connect
+    // Google Drive later (the existing wizard, step 2). Counts only.
+    var trialFor = null;
+
+    function hideTrialCard() {
+      var card = document.getElementById('trial-card');
+      if (card) card.hidden = true;
+    }
+
+    function showTrialCard(data) {
+      var card = document.getElementById('trial-card');
+      if (!card) return;
+      var days = Number(data.days_left || 0);
+      setI18n(document.getElementById('trial-days'),
+        'Skúšobný účet: dokumenty u nás počkajú ešte ' + days + ' dní, kým si pripojíte vlastný Google Drive.',
+        'Trial account: the documents wait with us for ' + days + ' more days, until you connect your own Google Drive.');
+      var total = Number(data.documents || 0);
+      var reading = Number(data.reading || 0);
+      setI18n(document.getElementById('trial-step-docs'),
+        'Dokumenty: ' + total + ' prijatých, ' + reading + ' sa ešte číta.',
+        'Documents: ' + total + ' received, ' + reading + ' still being read.');
+      var docsMark = document.getElementById('trial-step-docs-mark');
+      if (docsMark) docsMark.className = 'step-mark' + (total > 0 && reading === 0 ? ' done' : '');
+      var driveMark = document.getElementById('trial-step-drive-mark');
+      if (driveMark) driveMark.className = 'step-mark' + (data.drive_connected ? ' done' : '');
+      var driveBtn = document.getElementById('trial-drive-btn');
+      if (driveBtn) driveBtn.hidden = !!data.drive_connected || isAdminMode;
+      card.hidden = false;
+    }
+
+    async function loadTrialStatus(force) {
+      if (!document.getElementById('trial-card')) return;
+      if (!DEMO && !currentPatientId) { hideTrialCard(); trialFor = null; return; }
+      if (!force && trialFor === currentPatientId) return;
+      trialFor = currentPatientId;
+      try {
+        var data = await apiFetch('/api/trial-status');
+        if (!data || !data.trial) { hideTrialCard(); return; }
+        showTrialCard(data);
+      } catch (e) {
+        hideTrialCard();
+      }
+    }
 
     function renderInboundUnmatched(data) {
       var totalsEl = document.getElementById('inbound-admin-totals');
@@ -1380,6 +1431,8 @@
       activityData = null;
       hideInboundCard();
       inboundFor = null;
+      hideTrialCard();
+      trialFor = null;
       tableMessage('Načítavam…', 'Loading…');
       var countEl = document.getElementById('docs-count');
       if (countEl) countEl.textContent = '';
@@ -2943,6 +2996,8 @@
       }
       // #950: the document e-mail address (once per patient; hides itself on any error).
       await loadInboundAddress(false);
+      // #950 phase 2: first steps of a welcome@ trial (counts change while documents are read).
+      await loadTrialStatus(true);
       // Budget pill (#442) — fire-and-forget, hides itself when tier is admin/paid_*.
       updateBudgetPill();
       // Admin panels load only when an admin has opened them.

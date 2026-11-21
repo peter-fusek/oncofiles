@@ -2290,6 +2290,27 @@ def _start_sync_scheduler(
         next_run_time=datetime.now(),
     )
 
+    # #950 phase 2: local reading of welcome@ holding-store documents. The job
+    # only starts the background drain (``holding_extract.kick``), which reads
+    # one document at a time on the local model and never holds
+    # _sync_semaphore while the model works (minutes per scan).
+    async def _run_holding_extract():
+        from oncofiles import holding_extract
+
+        holding_extract.kick(db)
+
+    from oncofiles.holding_extract import WORKER_INTERVAL_MIN as HOLDING_INTERVAL_MIN
+
+    scheduler.add_job(
+        local_only_task("holding_extract", _run_holding_extract),
+        IntervalTrigger(minutes=HOLDING_INTERVAL_MIN),
+        id="holding_extract",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+        next_run_time=datetime.now(),
+    )
+
     # OF-1/OF-2: Periodic memory check — reclaim memory + graceful restart.
     # Start after 7 min to avoid false positives from startup sync spike (#366).
     scheduler.add_job(
@@ -7342,6 +7363,49 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
         logger.warning("API inbound-unmatched: job counts failed (%s)", type(exc).__name__)
         out["jobs"] = None
     return JSONResponse(out)
+
+
+@mcp.custom_route("/api/trial-status", methods=["GET"])
+async def api_trial_status(request: Request) -> JSONResponse:
+    """The welcome@ trial of the dashboard patient (#950 phase 2), counts only.
+
+    Same auth and patient resolution as ``/api/activity``
+    (``_get_dashboard_patient_id``; a caller without a patient gets the
+    sentinel, which has no trial). ``{"trial": false}`` for every patient that
+    did not start through welcome@. Otherwise ``trial_until`` (the 30-day end),
+    ``days_left`` and the holding documents per reading state (``documents``,
+    ``reading``, ``ready``, ``attention``) for the first-steps checklist, and
+    ``drive_connected``. No name, file name or address.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        patient_id = await _get_dashboard_patient_id(request)
+        trial = await db.get_trial(patient_id=patient_id)
+        if trial is None:
+            return JSONResponse({"trial": False})
+        from oncofiles import holding_store
+
+        counts = await db.holding_document_counts(patient_id=patient_id)
+        ends = datetime.strptime(trial["trial_ends_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        days_left = max(0, -(-int((ends - datetime.now(UTC)).total_seconds()) // 86400))
+        return JSONResponse(
+            {
+                "trial": True,
+                "trial_until": trial["trial_ends_at"],
+                "days_left": days_left,
+                "documents": sum(counts.values()),
+                "reading": counts.get("pending", 0),
+                "ready": counts.get("done", 0),
+                "attention": counts.get("failed", 0) + counts.get("excluded", 0),
+                "drive_connected": not await holding_store.holding_mode(db, patient_id),
+            }
+        )
+    except Exception:
+        logger.exception("API trial-status error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
 
 
 async def _read_capped_body(request: Request, limit: int) -> bytearray | None:

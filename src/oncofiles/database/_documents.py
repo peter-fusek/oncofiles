@@ -414,6 +414,7 @@ class DocumentMixin:
         async with self.db.execute(
             "SELECT * FROM documents WHERE ai_processed_at IS NOT NULL "
             "AND file_id NOT LIKE 'gdrive:%' "  # curated: local model only (#603)
+            "AND file_id NOT LIKE 'holding:%' "  # holding store: local only (#950)
             "AND (structured_metadata IS NULL OR structured_metadata = '' "
             '  OR (structured_metadata NOT LIKE \'%"findings": ["%%\' '
             "      AND structured_metadata NOT LIKE '%\"diagnoses\": [{%%')) "
@@ -431,6 +432,7 @@ class DocumentMixin:
         async with self.db.execute(
             "SELECT * FROM documents WHERE ai_processed_at IS NULL AND deleted_at IS NULL "
             "AND file_id NOT LIKE 'gdrive:%' "  # curated: local model only (#603)
+            "AND file_id NOT LIKE 'holding:%' "  # holding store: local only (#950)
             "AND patient_id = ? ORDER BY document_date DESC LIMIT ?",
             (patient_id, limit),
         ) as cursor:
@@ -693,9 +695,11 @@ class DocumentMixin:
         return out
 
     async def curated_document_ids(self) -> set[int]:
-        """Ids of every curated row (all patients) — loads the cloud guard at startup."""
+        """Ids of every curated row and every holding-store row (#950), all patients:
+        loads the cloud guard at startup."""
         async with self.db.execute(
-            "SELECT id FROM documents WHERE file_id LIKE 'gdrive:%'"
+            # #950 phase 2: holding-store rows are local-only like curated ones
+            "SELECT id FROM documents WHERE file_id LIKE 'gdrive:%' OR file_id LIKE 'holding:%'"
         ) as cursor:
             rows = await cursor.fetchall()
         return {(r["id"] if isinstance(r, dict) else r[0]) for r in rows}

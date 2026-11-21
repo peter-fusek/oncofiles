@@ -396,6 +396,8 @@ _SPECS: dict[str, _Spec] = {
     "device_kind": _here(("llm-extractor",), "curated.clinical_store.device_id_for"),
     "dashboard_access_event": _from("oncofiles.database._access_log", "DASHBOARD_ACCESS_EVENTS"),
     "inbound_job_state": _from("oncofiles.database._inbound_jobs", "INBOUND_JOB_STATES"),
+    "consent_kind": _from("oncofiles.patient_consent", "CONSENT_KINDS"),
+    "trial_source": _from("oncofiles.database._trials", "TRIAL_SOURCES"),
 }
 
 # (table, column) → domain. Every enum-like column is here, in
@@ -470,6 +472,8 @@ COLUMN_DOMAINS: dict[tuple[str, str], str] = {
     ("devices", "kind"): "device_kind",
     ("dashboard_access_log", "event"): "dashboard_access_event",
     ("inbound_jobs", "state"): "inbound_job_state",
+    ("patient_consents", "kind"): "consent_kind",
+    ("trial_accounts", "source"): "trial_source",
 }
 
 # Codes used as keys into a reference table or an external code system that this
@@ -909,6 +913,13 @@ _LABELS: dict[str, dict[str, tuple[str, str]]] = {
         "processing": ("Spracúva sa", "Processing"),
         "done": ("Spracované", "Done"),
         "failed": ("Zlyhalo", "Failed"),
+    },
+    "consent_kind": {
+        "wizard": ("Súhlas v sprievodcovi", "Consent in the wizard"),
+        "by_sending": ("Súhlas poslaním dokumentov", "Consent by sending documents"),
+    },
+    "trial_source": {
+        "welcome_email": ("E-mail na welcome@", "E-mail to welcome@"),
     },
 }
 
