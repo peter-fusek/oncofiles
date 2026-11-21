@@ -173,6 +173,21 @@
  <button type="button" class="view-btn" id="view-btn-grid" data-action="setDocView|grid" aria-pressed="false"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2.5" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="2.5" y="11" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="11" width="6.5" height="6.5" rx="1.2"/></svg><span class="view-btn-label" data-sk="Mriežka" data-en="Grid">Mriežka</span></button>
  </div>
  <button type="button" class="copy-btn" id="export-btn" data-action="downloadManifest" data-sk="Stiahnuť údaje (JSON)" data-en="Download data (JSON)">Stiahnuť údaje (JSON)</button>
+ <button type="button" class="btn-primary" id="upload-btn" data-action="toggleUploadPanel" aria-expanded="false" aria-controls="upload-panel" data-sk="Pridať dokumenty" data-en="Add documents">Pridať dokumenty</button>
+ </div>
+ <!-- #921: add documents (hidden in the admin read-only view; in /demo nothing is sent) -->
+ <div id="upload-panel" class="upload-panel" hidden>
+ <div id="drop-zone" class="drop-zone">
+ <p class="drop-title" data-sk="Presuňte sem súbory alebo celý priečinok" data-en="Drop files or a whole folder here">Presuňte sem súbory alebo celý priečinok</p>
+ <div class="upload-pickers">
+ <label class="copy-btn upload-pick"><span data-sk="Vybrať súbory" data-en="Choose files">Vybrať súbory</span><input type="file" id="upload-files" class="sr-only" multiple accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,.tif,.tiff,.webp,.md,.txt,application/pdf,image/*,text/plain,text/markdown" data-change="uploadFromInput|@this"></label>
+ <label class="copy-btn upload-pick"><span data-sk="Vybrať priečinok" data-en="Choose a folder">Vybrať priečinok</span><input type="file" id="upload-folder" class="sr-only" multiple webkitdirectory data-change="uploadFromInput|@this"></label>
+ <label class="copy-btn upload-pick"><span data-sk="Odfotiť (mobil)" data-en="Take a photo (phone)">Odfotiť (mobil)</span><input type="file" id="upload-camera" class="sr-only" accept="image/*" capture="environment" data-change="uploadFromInput|@this"></label>
+ </div>
+ <p class="upload-hint" data-sk="PDF, fotografie (JPEG, PNG, HEIC, TIFF, WebP) a poznámky .md alebo .txt; najviac 25 MB na súbor a 20 súborov naraz. Surové genetické dáta (.vcf, .csv, .tsv) sa nenahrávajú. Súbory idú bez zmeny do priečinka pacienta na Google Drive a spracujú sa automaticky." data-en="PDF, photos (JPEG, PNG, HEIC, TIFF, WebP) and .md or .txt notes; at most 25 MB per file and 20 files at a time. Raw genetic data (.vcf, .csv, .tsv) is not accepted. Files go unchanged into the patient folder on Google Drive and are processed automatically.">PDF, fotografie (JPEG, PNG, HEIC, TIFF, WebP) a poznámky .md alebo .txt; najviac 25 MB na súbor a 20 súborov naraz. Surové genetické dáta (.vcf, .csv, .tsv) sa nenahrávajú. Súbory idú bez zmeny do priečinka pacienta na Google Drive a spracujú sa automaticky.</p>
+ </div>
+ <p id="upload-note" class="upload-note" role="status" hidden></p>
+ <ul id="upload-list" class="upload-list" aria-live="polite"></ul>
  </div>
  <ol class="steps-legend" aria-label="Processing steps">
  <li><span class="legend-num">1</span><span><strong data-sk="Vyťažený" data-en="Extracted">Vyťažený</strong> <span data-sk="– text a údaje sú prečítané" data-en="– text and data have been read">– text a údaje sú prečítané</span></span></li>

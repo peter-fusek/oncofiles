@@ -854,9 +854,22 @@ def _calls(attr: str) -> dict[str, int]:
 
 
 def test_contract_writes_callers_are_the_pipeline_and_the_bootstrap_only():
-    """Only the curated pipeline (tools/curated.py) and the bootstrap lift the write block."""
-    assert set(_calls("contract_writes")) == {"tools/curated.py", "curated/bootstrap.py"}
+    """Only the curated pipeline (tools/curated.py), the bootstrap and the
+    dashboard inbox upload (#921) lift the write block.
+
+    #921 added ``curated/inbox_upload.py``: the dashboard's "Add documents"
+    puts a caregiver's file unchanged into the README §2 inbox, and its only
+    write is ``drive_ops.upload_original`` (create-only, read back, never
+    retried, refuses any folder but the inbox), locked in
+    ``tests/test_921_dashboard_upload.py``.
+    """
+    assert set(_calls("contract_writes")) == {
+        "tools/curated.py",
+        "curated/bootstrap.py",
+        "curated/inbox_upload.py",
+    }
     assert _calls("contract_writes")["curated/bootstrap.py"] == 1
+    assert _calls("contract_writes")["curated/inbox_upload.py"] == 1
 
 
 def test_only_the_bootstrap_creates_folders_through_drive_ops():

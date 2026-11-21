@@ -1,22 +1,50 @@
-"""EU preventive care screening schedules and compliance tracking.
+"""Preventive care: what the records show, next to EU guideline intervals (#928).
 
-Provides screening protocols by age/sex based on EU Council Recommendations,
-ESC, EAU, and WHO guidelines. Checks patient's treatment_events history
-to determine what is due/overdue.
+Two different things, never mixed:
+
+* **Evidence** (patient data with provenance): procedures from the facts model
+  (the #815 ``procedures`` rows of kind ``screening`` / ``vaccination``, and
+  any other procedure whose printed text names a screening, e.g. an
+  endoscopy), live documents of the ``vaccination`` / ``dental`` /
+  ``preventive`` categories, and manual ``treatment_events`` of type
+  ``screening`` / ``vaccination``. Every item carries its source (procedure
+  id, document id, page, date and whether the date was printed or is the
+  document date, verification).
+* **Guideline reference** (``SCREENING_PROTOCOLS``): a general EU/WHO
+  screening schedule by age and sex, each interval with its source named.
+  It is a reference interval only, never a fact about this patient nor a
+  recommendation for them; ``no_evidence`` means "nothing in Oncofiles", not
+  "never done". Intervals are calendar months (``add_months``), not 30 days.
+
+Evidence is matched to a guideline item by keywords on the printed text
+(folded: lower case, no diacritics, word start); unmatched evidence is listed
+separately so nothing the records hold is hidden.
 """
 
 from __future__ import annotations
 
+import calendar
 import json
 import logging
-from datetime import date, timedelta
+import re
+import unicodedata
+from datetime import date
 
 logger = logging.getLogger(__name__)
 
-# EU-recommended screening protocols by age and sex.
-# interval_months: how often (in months) the screening should be repeated.
-# start_age / end_age: age range for the screening.
-# sex: "male", "female", or "both".
+GUIDELINE_NOTE = (
+    "Guideline intervals are general EU/WHO screening references by age and sex "
+    "(source named per item). They are not a fact about this patient and not a "
+    "recommendation for them; the patient's doctor decides. 'no_evidence' means no "
+    "record in Oncofiles, not that the screening was never done."
+)
+DUE_SOON_MONTHS = 3
+
+# EU guideline reference by age and sex (NOT patient data).
+# interval_months: guideline repeat interval in calendar months.
+# start_age / end_age: guideline age range. sex: "male", "female" or "both".
+# match: folded keyword stems that link printed evidence to the item (word start).
+# document_categories: document categories that count as evidence on their own.
 SCREENING_PROTOCOLS: list[dict] = [
     {
         "id": "colonoscopy",
@@ -27,6 +55,7 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "both",
         "source": "EU Council Recommendation 2022/C 473/01",
         "event_type": "screening",
+        "match": ["kolonoskop", "colonoscop", "koloskop"],
     },
     {
         "id": "fobt_fit",
@@ -38,6 +67,7 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "both",
         "source": "EU Council Recommendation 2022/C 473/01",
         "event_type": "screening",
+        "match": ["fit", "fobt", "toks", "okult", "occult", "skryte krvacanie"],
     },
     {
         "id": "dental_checkup",
@@ -48,6 +78,8 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "both",
         "source": "WHO Oral Health Programme",
         "event_type": "screening",
+        "match": ["zub", "dental", "dent", "stomatolog"],
+        "document_categories": ["dental"],
     },
     {
         "id": "ophthalmology",
@@ -58,6 +90,7 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "both",
         "source": "AAO / European Society of Ophthalmology",
         "event_type": "screening",
+        "match": ["ocn", "oftalmo", "ophthalm", "eye"],
     },
     {
         "id": "dermatology_screening",
@@ -68,6 +101,7 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "both",
         "source": "EADV / Euromelanoma",
         "event_type": "screening",
+        "match": ["dermat", "kozn", "skin", "znamien", "dermatoskop"],
     },
     {
         "id": "cardiovascular_risk",
@@ -78,6 +112,7 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "both",
         "source": "ESC 2021 CVD Prevention Guidelines",
         "event_type": "screening",
+        "match": ["score2", "kardiovaskul", "cardiovascular"],
     },
     {
         "id": "psa_screening",
@@ -88,6 +123,7 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "male",
         "source": "EAU Guidelines on Prostate Cancer",
         "event_type": "screening",
+        "match": ["psa"],
     },
     {
         "id": "lipid_panel",
@@ -98,6 +134,7 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "both",
         "source": "ESC/EAS 2019 Dyslipidaemia Guidelines",
         "event_type": "screening",
+        "match": ["lipid", "cholesterol"],
     },
     {
         "id": "fasting_glucose",
@@ -108,6 +145,7 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "both",
         "source": "ADA / WHO diabetes screening",
         "event_type": "screening",
+        "match": ["glykem", "glukoz", "glucose"],
     },
     {
         "id": "mammography",
@@ -119,6 +157,7 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "female",
         "source": "EU Council Recommendation 2022/C 473/01",
         "event_type": "screening",
+        "match": ["mamograf", "mammograph", "mamo"],
     },
     {
         "id": "cervical_screening",
@@ -130,6 +169,7 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "female",
         "source": "EU Council Recommendation 2022/C 473/01",
         "event_type": "screening",
+        "match": ["cytolog", "pap", "hpv", "cervi", "krck"],
     },
     {
         "id": "flu_vaccine",
@@ -140,6 +180,7 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "both",
         "source": "ECDC seasonal influenza vaccination",
         "event_type": "vaccination",
+        "match": ["chripk", "influenz", "flu"],
     },
     {
         "id": "tetanus_booster",
@@ -150,8 +191,33 @@ SCREENING_PROTOCOLS: list[dict] = [
         "sex": "both",
         "source": "WHO / ÚVZSR vaccination schedule",
         "event_type": "vaccination",
+        "match": ["tetan", "difter", "diphther", "td", "tdap", "dtap"],
     },
 ]
+
+_PROTOCOLS_BY_ID = {p["id"]: p for p in SCREENING_PROTOCOLS}
+_SEX_ALIASES = {
+    "male": "male", "m": "male", "muz": "male",
+    "female": "female", "f": "female", "z": "female", "zena": "female",
+}  # fmt: skip
+
+
+def fold(text: str | None) -> str:
+    """Lower case without diacritics (``Očkovanie`` → ``ockovanie``)."""
+    norm = unicodedata.normalize("NFKD", str(text or ""))
+    return "".join(c for c in norm if not unicodedata.combining(c)).lower()
+
+
+def _matches(proto: dict, text: str | None) -> bool:
+    folded = fold(text)
+    return any(re.search(r"(?<![a-z0-9])" + re.escape(k), folded) for k in proto["match"])
+
+
+def add_months(d: date, months: int) -> date:
+    """``d`` plus calendar months; the day is clamped to the month's last day."""
+    y, m = divmod(d.month - 1 + months, 12)
+    year, month = d.year + y, m + 1
+    return date(year, month, min(d.day, calendar.monthrange(year, month)[1]))
 
 
 def _calculate_age(dob: date, reference_date: date | None = None) -> int:
@@ -168,7 +234,7 @@ def get_applicable_screenings(
     sex: str,
     reference_date: date | None = None,
 ) -> list[dict]:
-    """Return screening protocols applicable to a patient based on age and sex."""
+    """Guideline items whose age and sex range covers the patient."""
     age = _calculate_age(dob, reference_date)
     applicable = []
     for proto in SCREENING_PROTOCOLS:
@@ -182,102 +248,200 @@ def get_applicable_screenings(
     return applicable
 
 
+def _to_date(value) -> date | None:
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10]) if value else None
+    except ValueError:
+        return None
+
+
+def match_evidence(items: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
+    """Link evidence items to guideline ids.
+
+    Each item: ``source`` (procedure | document | treatment_event), ``kind``
+    (procedure kind / document category / event type), ``text`` (printed
+    text, title, filename), optional ``screening_id`` (an explicit id, manual
+    entries), ``date`` and provenance fields. A vaccination-type guideline item
+    only takes vaccination evidence, a screening item only non-vaccination
+    evidence. Returns ({guideline id: [items]}, unmatched items).
+    """
+    by_id: dict[str, list[dict]] = {}
+    unmatched: list[dict] = []
+    for it in items:
+        explicit = it.get("screening_id")
+        if explicit in _PROTOCOLS_BY_ID:
+            ids = [explicit]
+        else:
+            is_vacc = it.get("kind") == "vaccination"
+            ids = [
+                p["id"]
+                for p in SCREENING_PROTOCOLS
+                if (p["event_type"] == "vaccination") == is_vacc
+                and (
+                    _matches(p, it.get("text"))
+                    or (
+                        it.get("source") == "document"
+                        and it.get("kind") in p.get("document_categories", ())
+                    )
+                )
+            ]
+        if not ids:
+            unmatched.append(it)
+        for sid in ids:
+            by_id.setdefault(sid, []).append(it)
+    return by_id, unmatched
+
+
 def evaluate_screening_compliance(
     dob: date,
     sex: str,
     completed_screenings: list[dict],
     reference_date: date | None = None,
 ) -> list[dict]:
-    """Evaluate which screenings are due, overdue, or up-to-date.
+    """Per applicable guideline item: the newest evidence and the guideline interval.
 
-    Args:
-        dob: Patient date of birth.
-        sex: "male" or "female".
-        completed_screenings: List of dicts with at least:
-            - screening_id: str (matches protocol id)
-            - date: date (when it was completed)
-        reference_date: Date to evaluate against (default: today).
+    ``completed_screenings``: evidence items with ``screening_id`` and ``date``
+    (plus any provenance fields, returned untouched under ``evidence``).
 
-    Returns:
-        List of screening status dicts with:
-            - id, name, name_sk, source
-            - status: "up_to_date", "due_soon" (within 3 months), "overdue", "never_done"
-            - last_done: date or None
-            - next_due: date
-            - days_until_due: int (negative = overdue)
+    ``status`` (relative to the guideline interval, not a clinical judgement):
+    ``within_interval``, ``due_soon`` (next guideline date within
+    ``DUE_SOON_MONTHS`` calendar months), ``past_interval``, ``no_evidence``,
+    ``not_yet_applicable``.
     """
     ref = reference_date or date.today()
     applicable = get_applicable_screenings(dob, sex, ref)
 
-    # Index completed screenings by id, keep latest
-    latest_by_id: dict[str, date] = {}
+    by_id: dict[str, list[dict]] = {}
     for cs in completed_screenings:
+        d = _to_date(cs.get("date"))
         sid = cs.get("screening_id", "")
-        d = cs.get("date")
-        if isinstance(d, str):
-            d = date.fromisoformat(d)
-        if sid and d and (sid not in latest_by_id or d > latest_by_id[sid]):
-            latest_by_id[sid] = d
+        if sid and d:
+            by_id.setdefault(sid, []).append({**cs, "date": d.isoformat()})
 
     results = []
     for proto in applicable:
-        pid = proto["id"]
-        interval = timedelta(days=proto["interval_months"] * 30)  # approximate
-        last_done = latest_by_id.get(pid)
-
+        evidence = sorted(by_id.get(proto["id"], []), key=lambda e: e["date"], reverse=True)
+        last_done = _to_date(evidence[0]["date"]) if evidence else None
         if last_done:
-            next_due = last_done + interval
-            days_until = (next_due - ref).days
-            if days_until > 90:
-                status = "up_to_date"
-            elif days_until > 0:
+            next_due = add_months(last_done, proto["interval_months"])
+            if next_due <= ref:
+                status = "past_interval"
+            elif next_due <= add_months(ref, DUE_SOON_MONTHS):
                 status = "due_soon"
             else:
-                status = "overdue"
+                status = "within_interval"
         else:
-            # Never done — calculate when it should have started
-            start_date = date(dob.year + proto["start_age"], dob.month, dob.day)
-            next_due = start_date
-            days_until = (next_due - ref).days
-            status = "never_done" if days_until <= 0 else "not_yet_applicable"
+            next_due = add_months(dob, 12 * proto["start_age"])
+            status = "no_evidence" if next_due <= ref else "not_yet_applicable"
 
         results.append(
             {
-                "id": pid,
+                "id": proto["id"],
                 "name": proto["name"],
                 "name_sk": proto["name_sk"],
-                "source": proto["source"],
-                "interval_months": proto["interval_months"],
+                "guideline": {
+                    "kind": "guideline_interval",
+                    "interval_months": proto["interval_months"],
+                    "start_age": proto["start_age"],
+                    "end_age": proto.get("end_age"),
+                    "sex": proto["sex"],
+                    "source": proto["source"],
+                },
                 "status": status,
-                "last_done": last_done.isoformat() if last_done else None,
-                "next_due": next_due.isoformat(),
-                "days_until_due": days_until,
+                "last_evidence_date": last_done.isoformat() if last_done else None,
+                "next_by_guideline": next_due.isoformat(),
+                "days_until_next_by_guideline": (next_due - ref).days,
+                "evidence": evidence,
             }
         )
 
-    # Sort: overdue first, then never_done, then due_soon, then up_to_date
     priority = {
-        "overdue": 0,
-        "never_done": 1,
+        "past_interval": 0,
+        "no_evidence": 1,
         "due_soon": 2,
-        "up_to_date": 3,
+        "within_interval": 3,
         "not_yet_applicable": 4,
     }
-    results.sort(key=lambda r: (priority.get(r["status"], 5), r["days_until_due"]))
+    results.sort(key=lambda r: (priority.get(r["status"], 5), r["days_until_next_by_guideline"]))
     return results
 
 
-async def get_preventive_care_status(db, patient_id: str) -> str:
-    """Get preventive care compliance status for a patient.
+async def _collect_evidence(db, patient_id: str) -> list[dict]:
+    """Evidence items from the facts model, documents and manual treatment events."""
+    from oncofiles.fact_labels import method_of, verification_label
+    from oncofiles.models import TreatmentEventQuery
 
-    Reads patient context for DOB/sex, queries treatment_events for
-    completed screenings, and evaluates compliance against EU protocols.
+    rows = await db.preventive_evidence_rows(patient_id=patient_id)
+    items: list[dict] = []
+    for p in rows["procedures"]:
+        items.append(
+            {
+                "source": "procedure",
+                "procedure_id": p["id"],
+                "kind": p["kind"],
+                "text": p["printed_text"],
+                "outcome": p["outcome"],
+                "date": p["at"],
+                "date_source": p["date_source"],
+                "document_id": p["source_document_id"],
+                "page_number": p["page_number"],
+                "verification": p["verification"],
+                "method": method_of(p["extracted_by"]),
+                "verification_label": verification_label(p["verification"], p["extracted_by"]),
+            }
+        )
+    for d in rows["documents"]:
+        items.append(
+            {
+                "source": "document",
+                "document_id": d["id"],
+                "kind": d["category"],
+                "text": " ".join(x for x in (d["title"], d["filename"]) if x),
+                "date": d["document_date"],
+                "date_source": "document",
+            }
+        )
+    # manual entries (add_treatment_event): newest 200 screening/vaccination events
+    for event_type in ("screening", "vaccination"):
+        events = await db.list_treatment_events(
+            TreatmentEventQuery(event_type=event_type, limit=200), patient_id=patient_id
+        )
+        for ev in events:
+            try:
+                meta = json.loads(ev.metadata) if ev.metadata else {}
+            except (TypeError, ValueError):
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            items.append(
+                {
+                    "source": "treatment_event",
+                    "treatment_event_id": ev.id,
+                    "kind": ev.event_type,
+                    "text": ev.title,
+                    "screening_id": meta.get("screening_id") or meta.get("screening_type"),
+                    "date": ev.event_date.isoformat() if ev.event_date else None,
+                    "date_source": "manual",
+                }
+            )
+    return items
 
-    Returns JSON string with screening compliance report.
+
+async def get_preventive_care_status(
+    db, patient_id: str, reference_date: date | None = None
+) -> str:
+    """Preventive-care evidence of a general patient next to EU guideline intervals.
+
+    Reads date of birth and sex from the patient context, evidence from the
+    facts model (procedures), the preventive document categories and manual
+    treatment events. Returns JSON.
     """
-    from oncofiles.patient_context import get_context
+    from oncofiles import patient_context
 
-    ctx = get_context(patient_id)
+    await patient_context.ensure_loaded(db.db, patient_id)
+    ctx = patient_context.get_context(patient_id)
     patient_type = ctx.get("patient_type", "oncology")
     if patient_type != "general":
         return json.dumps(
@@ -287,51 +451,48 @@ async def get_preventive_care_status(db, patient_id: str) -> str:
             }
         )
 
-    dob_str = ctx.get("date_of_birth", "")
-    sex = ctx.get("sex", "")
-    if not dob_str or not sex:
+    dob = _to_date(ctx.get("date_of_birth"))
+    sex = _SEX_ALIASES.get(fold(ctx.get("sex")).strip(), "")
+    if not dob or not sex:
         return json.dumps(
             {
-                "error": "Patient context missing date_of_birth and/or sex. "
-                "Update patient context first via update_patient_context.",
+                "error": "Patient context missing a valid date_of_birth (YYYY-MM-DD) and/or "
+                "sex (male | female). Update patient context first via update_patient_context.",
             }
         )
 
-    dob = date.fromisoformat(dob_str)
+    ref = reference_date or date.today()
+    items = [it for it in await _collect_evidence(db, patient_id) if _to_date(it.get("date"))]
+    by_id, unmatched = match_evidence(items)
+    completed = [
+        {**{k: v for k, v in it.items() if k != "screening_id"}, "screening_id": sid}
+        for sid, its in by_id.items()
+        for it in its
+    ]
+    results = evaluate_screening_compliance(dob, sex, completed, ref)
+    for r in results:
+        for e in r["evidence"]:
+            e.pop("screening_id", None)
 
-    # Query treatment_events for completed screenings/vaccinations
-    events = await db.list_treatment_events(
-        patient_id=patient_id,
-        event_type=None,  # get all types
-        limit=500,
-    )
-
-    completed = []
-    for ev in events:
-        if ev.event_type in ("screening", "vaccination"):
-            meta = json.loads(ev.metadata) if ev.metadata and ev.metadata != "{}" else {}
-            screening_id = meta.get("screening_id") or meta.get("screening_type", "")
-            if screening_id:
-                completed.append(
-                    {
-                        "screening_id": screening_id,
-                        "date": ev.event_date,
-                    }
-                )
-
-    results = evaluate_screening_compliance(dob, sex, completed)
-
-    # Summary
     statuses = [r["status"] for r in results]
     summary = {
-        "patient": ctx.get("name", "Unknown"),
-        "age": _calculate_age(dob),
+        "age": _calculate_age(dob, ref),
         "sex": sex,
+        "reference_date": ref.isoformat(),
         "total_screenings": len(results),
-        "overdue": statuses.count("overdue"),
-        "never_done": statuses.count("never_done"),
-        "due_soon": statuses.count("due_soon"),
-        "up_to_date": statuses.count("up_to_date"),
+        **{
+            s: statuses.count(s)
+            for s in ("past_interval", "no_evidence", "due_soon", "within_interval")
+        },
+        "evidence_items": len(items),
     }
-
-    return json.dumps({"summary": summary, "screenings": results}, default=str)
+    return json.dumps(
+        {
+            "summary": summary,
+            "guideline_note": GUIDELINE_NOTE,
+            "screenings": results,
+            "unmatched_evidence": unmatched,
+        },
+        default=str,
+        ensure_ascii=False,
+    )
