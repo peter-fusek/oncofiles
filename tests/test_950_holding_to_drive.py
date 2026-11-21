@@ -600,3 +600,106 @@ async def test_the_mover_never_crosses_patients(idb, mails, brevo, model, inbox)
     assert set(inbox.targets) == {pid_a} and inbox.uploads == 2
     assert all(moved(d) is None for d in await held_docs(idb, pid_b))
     assert (await idb.get_trial(patient_id=pid_b))["converted_at"] is None
+
+
+# ── one run per trial: the claim (infra review of PR #962) ──────────────
+
+
+async def claim_of(db, pid):
+    return (await db.get_trial(patient_id=pid))["move_claimed_at"]
+
+
+async def test_two_concurrent_runs_one_copies_the_other_refuses(
+    idb, mails, brevo, model, inbox, monkeypatch
+):
+    import asyncio
+    import threading
+
+    pid = await trial_with_two(idb, brevo)
+    await connect(idb, pid)
+    entered, go = threading.Event(), threading.Event()
+    real_upload = inbox.upload
+
+    def slow_upload(gdrive, root_id, files):
+        entered.set()
+        assert go.wait(10)
+        return real_upload(gdrive, root_id, files)
+
+    monkeypatch.setattr(inbox_upload, "upload_to_inbox", slow_upload)
+    from collections import Counter
+
+    first_counts: Counter = Counter()
+    first = asyncio.create_task(holding_move.move_patient(idb, pid, first_counts, 20))
+    while not entered.is_set():  # run A is inside its first Drive write
+        await asyncio.sleep(0.01)
+    second_counts: Counter = Counter()
+    # run B (another container's scheduler job) on the same trial
+    assert await holding_move.move_patient(idb, pid, second_counts, 20) == 0
+    assert second_counts == Counter({"claim_refused": 1})
+    go.set()
+    assert await first == 2
+    assert first_counts["copied"] == 2
+    assert first_counts["converted"] == 1
+    assert inbox.uploads == 2  # exactly one run copied
+    assert await claim_of(idb, pid) is None  # released at the end
+
+
+async def test_a_fresh_claim_refuses_and_a_stale_one_is_taken_over(idb, mails, brevo, model, inbox):
+    pid = await trial_with_two(idb, brevo)
+    await connect(idb, pid)
+    fresh = holding_move._new_lease()
+    await idb.db.execute(
+        "UPDATE trial_accounts SET move_claimed_at = ? WHERE patient_id = ?", (fresh, pid)
+    )
+    await idb.db.commit()
+    counts = await run(idb)
+    assert counts["claim_refused"] == 1
+    assert inbox.uploads == 0
+    assert await claim_of(idb, pid) == fresh  # never freed by the refused run
+    stale = "2020-01-01 00:00:00|dead"  # a run that died long ago
+    await idb.db.execute(
+        "UPDATE trial_accounts SET move_claimed_at = ? WHERE patient_id = ?", (stale, pid)
+    )
+    await idb.db.commit()
+    counts = await run(idb)
+    assert counts["copied"] == 2
+    assert inbox.uploads == 2
+    assert await claim_of(idb, pid) is None
+
+
+async def test_a_lost_lease_mid_run_stops_further_writes(
+    idb, mails, brevo, model, inbox, monkeypatch
+):
+    pid = await trial_with_two(idb, brevo)
+    await connect(idb, pid)
+    real_mark = idb.mark_holding_moved
+    taken = "taken-over-by-another-run"
+
+    async def takeover_then_mark(*args, **kwargs):
+        # another container takes the trial over between the copy and its record
+        await idb.db.execute(
+            "UPDATE trial_accounts SET move_claimed_at = ? WHERE patient_id = ?", (taken, pid)
+        )
+        await idb.db.commit()
+        return await real_mark(*args, **kwargs)
+
+    monkeypatch.setattr(idb, "mark_holding_moved", takeover_then_mark)
+    counts = await run(idb)
+    assert counts["lease_lost"] == 1
+    assert inbox.uploads == 1  # the second file is never copied
+    assert all(moved(d) is None for d in await held_docs(idb, pid))  # nothing recorded
+    trial = await idb.get_trial(patient_id=pid)
+    assert trial["converted_at"] is None
+    assert trial["move_claimed_at"] == taken  # the new owner's claim is untouched
+
+
+async def test_record_helpers_refuse_without_the_lease(idb, mails, brevo, model):
+    pid = await trial_with_two(idb, brevo)
+    doc_id = (await held_docs(idb, pid))[0]["id"]
+    common = {"patient_id": pid, "lease": "not-the-lease"}
+    assert not await idb.mark_holding_moved(
+        doc_id, drive_id="idSynthNoLease0001", at=AT, via="copied", **common
+    )
+    assert not await idb.note_holding_move_error(doc_id, code="HttpError", **common)
+    assert not await idb.convert_trial(at=AT, **common)
+    assert all(moved(d) is None for d in await held_docs(idb, pid))

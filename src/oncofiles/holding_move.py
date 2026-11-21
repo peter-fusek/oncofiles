@@ -14,6 +14,18 @@ Rules
   retried). Only a curated root is a target (``dashboard_upload._resolve_target``
   path ``curated_inbox``); no Drive, a Drive-only (legacy layout) folder or a
   folder overlapping a curated tree is a wait code, nothing is written.
+* **One run per trial (infra review of PR #962).** Before any Drive write a
+  run claims the trial with ONE conditional UPDATE of
+  ``trial_accounts.move_claimed_at`` (free, or older than ``STALE_CLAIM_MIN``:
+  a run that died is taken over), the ``inbound_jobs`` pattern. The lease is
+  refreshed before every file copy (conditional on the current lease), every
+  per-row record (``moved_to_drive``, ``move_error``) and the conversion are
+  written only while it holds (``EXISTS … move_claimed_at = lease`` in the
+  UPDATE), a lost lease stops the run (``lease_lost``) with no further write,
+  and the claim is released at the end. Both entry points (the connect-time
+  :func:`kick` and the scheduler job) go through :func:`move_patient`, so a
+  second container's run on the same trial is refused (``claim_refused``)
+  while the lease is fresh.
 * **One file at a time**, at most ``MAX_FILES_PER_RUN`` per run; the first
   failed copy stops that patient's run (retried on the next run, the held copy
   untouched: ``holding.move_error`` = code, ``move_attempts`` + 1).
@@ -55,14 +67,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import secrets
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
 JOB = "holding_move"
 WORKER_INTERVAL_MIN = 10
 MAX_FILES_PER_RUN = 20
+STALE_CLAIM_MIN = 30  # a trial claim this old belongs to a run that died
 
 _EXT_BY_MIME = {
     "application/pdf": ".pdf",
@@ -165,8 +179,75 @@ async def _copy_one(target, name: str, data: bytes, mime: str) -> dict:
     return results[0]
 
 
+class LeaseLostError(RuntimeError):
+    """The trial's claim was taken over (stale) by another run: stop, write nothing."""
+
+
+class _Lease:
+    """This run's claim on one trial (``trial_accounts.move_claimed_at``)."""
+
+    def __init__(self, db, patient_id: str):
+        self.db = db
+        self.patient_id = patient_id
+        self.value = _new_lease()
+
+    async def claim(self) -> bool:
+        stale = (datetime.now(UTC) - timedelta(minutes=STALE_CLAIM_MIN)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        return await self.db.claim_trial_move(
+            patient_id=self.patient_id, lease=self.value, stale_before=stale
+        )
+
+    async def refresh(self) -> None:
+        """Before each file copy: move the lease forward, or stop the run."""
+        new = _new_lease()
+        if not await self.db.refresh_trial_move(
+            patient_id=self.patient_id, lease=self.value, new_lease=new
+        ):
+            raise LeaseLostError
+        self.value = new
+
+    def held(self, written: bool) -> None:
+        """A lease-conditional write that changed nothing: the lease is gone."""
+        if not written:
+            raise LeaseLostError
+
+    async def release(self) -> None:
+        await self.db.release_trial_move(patient_id=self.patient_id, lease=self.value)
+
+
+def _new_lease() -> str:
+    # ISO time first (the stale check compares the text), then a random part so
+    # two runs never hold the same value.
+    return f"{_now_iso()}|{secrets.token_hex(6)}"
+
+
 async def move_patient(db, patient_id: str, counts: Counter, budget: int) -> int:
-    """Copy one trial patient's held files; returns how many files it wrote."""
+    """Copy one trial patient's held files under the trial's claim; returns
+    how many files it wrote. A trial claimed by a live run (another container)
+    is refused (``claim_refused``); a claim older than ``STALE_CLAIM_MIN`` is
+    taken over. A lost lease stops the run (``lease_lost``), no further write."""
+    pp = patient_id[:4]
+    lease = _Lease(db, patient_id)
+    if not await lease.claim():
+        counts["claim_refused"] += 1
+        logger.info("holding: patient %s is being moved by another run", pp)
+        return 0
+    written = [0]
+    try:
+        await _move_claimed(db, patient_id, counts, budget, lease, written)
+    except LeaseLostError:
+        counts["lease_lost"] += 1
+        logger.warning("holding: patient %s lease lost, left to its new owner", pp)
+    finally:
+        await lease.release()  # conditional: never frees another run's claim
+    return written[0]
+
+
+async def _move_claimed(
+    db, patient_id: str, counts: Counter, budget: int, lease: _Lease, written_box: list
+) -> None:
     from oncofiles.curated.inbox_upload import InboxUnavailableError
     from oncofiles.dashboard_upload import Outcome
     from oncofiles.holding_store import holding_meta
@@ -174,52 +255,67 @@ async def move_patient(db, patient_id: str, counts: Counter, budget: int) -> int
     pp = patient_id[:4]
     rows = await db.holding_rows_to_move(patient_id=patient_id)
     if not rows:
-        if await db.note_trial_event("converted_at", patient_id=patient_id, at=_now_iso()):
+        if await db.convert_trial(patient_id=patient_id, lease=lease.value, at=_now_iso()):
             counts["converted"] += 1
             logger.info("holding: trial of patient %s converted", pp)
-        return 0
+        return
     try:
         target, present = await _present_md5s(db, patient_id)
     except Exception as exc:  # noqa: BLE001 - fail closed: no copy this run
         counts["listing_failed"] += 1
         logger.warning("holding: patient %s inbox listing failed (%s)", pp, type(exc).__name__)
-        return 0
+        return
     if isinstance(target, Outcome):
         code = str(target.payload.get("error") or "no_target")
         counts[code] += 1
         logger.info("holding: patient %s waits reason=%s", pp, code)
-        return 0
+        return
     if target.path != "curated_inbox":
         counts["not_curated"] += 1
         logger.info("holding: patient %s waits reason=not_curated", pp)
-        return 0
-    written = 0
+        return
     for row in rows:
         doc_id = int(row["id"])
         held = holding_meta(row.get("structured_metadata"))
         md5 = str(held.get("md5") or "")
         if md5 and md5 in present:
-            if await db.mark_holding_moved(
-                doc_id, patient_id=patient_id, drive_id=present[md5], at=_now_iso(), via="present"
-            ):
-                counts["present"] += 1
+            lease.held(
+                await db.mark_holding_moved(
+                    doc_id,
+                    patient_id=patient_id,
+                    drive_id=present[md5],
+                    at=_now_iso(),
+                    via="present",
+                    lease=lease.value,
+                )
+            )
+            counts["present"] += 1
             continue
-        if written >= budget:
+        if written_box[0] >= budget:
             counts["deferred"] += 1
-            return written
+            return
+        await lease.refresh()  # before every copy: still ours, or stop here
         try:
             data = await asyncio.to_thread(_read_held, row["file_id"], patient_id)
         except Exception as exc:  # noqa: BLE001 - the held copy stays; next run retries
             code = "held_unreadable"
-            await db.note_holding_move_error(doc_id, patient_id=patient_id, code=code)
+            lease.held(
+                await db.note_holding_move_error(
+                    doc_id, patient_id=patient_id, code=code, lease=lease.value
+                )
+            )
             counts[code] += 1
             logger.warning("holding: doc=%d unreadable (%s)", doc_id, type(exc).__name__)
-            return written
+            return
         if held.get("sha256") and hashlib.sha256(data).hexdigest() != held["sha256"]:
-            await db.note_holding_move_error(doc_id, patient_id=patient_id, code="sha_mismatch")
+            lease.held(
+                await db.note_holding_move_error(
+                    doc_id, patient_id=patient_id, code="sha_mismatch", lease=lease.value
+                )
+            )
             counts["sha_mismatch"] += 1
             logger.warning("holding: doc=%d content does not match its sha256", doc_id)
-            return written
+            return
         try:
             res = await _copy_one(target, inbox_name(row), data, row.get("mime_type") or "")
         except InboxUnavailableError as exc:
@@ -230,23 +326,35 @@ async def move_patient(db, patient_id: str, counts: Counter, budget: int) -> int
             data = b""
         if res.get("status") != "uploaded" or not res.get("id"):
             code = str(res.get("code") or "copy_failed")[:40]
-            await db.note_holding_move_error(doc_id, patient_id=patient_id, code=code)
             counts["copy_failed"] += 1
             logger.warning("holding: doc=%d patient %s copy failed (%s)", doc_id, pp, code)
-            return written  # first failure stops this patient; held copy untouched
-        written += 1
+            lease.held(
+                await db.note_holding_move_error(
+                    doc_id, patient_id=patient_id, code=code, lease=lease.value
+                )
+            )
+            return  # first failure stops this patient; held copy untouched
+        written_box[0] += 1
         present[md5] = res["id"]
-        await db.mark_holding_moved(
-            doc_id, patient_id=patient_id, drive_id=res["id"], at=_now_iso(), via="copied"
-        )
         counts["copied"] += 1
         logger.info("holding: doc=%d patient %s copied into the inbox", doc_id, pp)
-    if not await db.holding_rows_to_move(patient_id=patient_id) and await db.note_trial_event(
-        "converted_at", patient_id=patient_id, at=_now_iso()
+        # recorded only while the lease holds; a lost lease leaves the copy to
+        # the next owner, whose md5 check finds it (``present``), never twice
+        lease.held(
+            await db.mark_holding_moved(
+                doc_id,
+                patient_id=patient_id,
+                drive_id=res["id"],
+                at=_now_iso(),
+                via="copied",
+                lease=lease.value,
+            )
+        )
+    if not await db.holding_rows_to_move(patient_id=patient_id) and await db.convert_trial(
+        patient_id=patient_id, lease=lease.value, at=_now_iso()
     ):
         counts["converted"] += 1
         logger.info("holding: trial of patient %s converted", pp)
-    return written
 
 
 async def run_pending(db, *, limit: int = MAX_FILES_PER_RUN) -> Counter:

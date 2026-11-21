@@ -20,13 +20,18 @@ TRIAL_SOURCES = ("welcome_email",)
 HOLDING_PREFIX = "holding:"
 _TRIAL_COLUMNS = (
     "id, patient_id, source, trial_ends_at, created_at, drive_connected_at, "
-    "converted_at, first_reply_at, signed_in_at, ready_mail_sent_at"
+    "converted_at, first_reply_at, signed_in_at, ready_mail_sent_at, move_claimed_at"
+)
+# A holding row is written by the mover only while its trial's lease is the
+# run's own (one parameter: the lease).
+_LEASE_HOLDS_SQL = (
+    "AND EXISTS (SELECT 1 FROM trial_accounts t "
+    "WHERE t.patient_id = documents.patient_id AND t.move_claimed_at = ?)"
 )
 # #950 phase 3: the once-only trial instants a caller may set (allowlist, the
 # column name is interpolated into SQL).
 TRIAL_EVENT_COLUMNS = (
     "drive_connected_at",
-    "converted_at",
     "first_reply_at",
     "signed_in_at",
     "ready_mail_sent_at",
@@ -270,42 +275,97 @@ class TrialsMixin(DatabaseBase):
         ) as cursor:
             return [dict(r) for r in await cursor.fetchall()]
 
+    # The mover's per-trial lease (the inbound_jobs pattern): every write of
+    # the mover below is conditional on ``trial_accounts.move_claimed_at`` still
+    # being this run's lease, so a run whose claim was taken over as stale (a
+    # second container of a rolling deploy) changes nothing more.
+
+    async def claim_trial_move(self, *, patient_id: str, lease: str, stale_before: str) -> bool:
+        """Claim the trial for one mover run in ONE conditional UPDATE: free,
+        or a claim older than ``stale_before`` (a run that died). False = held
+        by a live run (or converted). ``lease`` starts with the ISO time, so
+        the stale check compares it as text."""
+        cursor = await self.db.execute(
+            "UPDATE trial_accounts SET move_claimed_at = ? WHERE patient_id = ? "
+            "AND converted_at IS NULL "
+            "AND (move_claimed_at IS NULL OR move_claimed_at < ?)",
+            (lease, patient_id, stale_before),
+        )
+        await self.db.commit()
+        return (cursor.rowcount or 0) == 1
+
+    async def refresh_trial_move(self, *, patient_id: str, lease: str, new_lease: str) -> bool:
+        """Move the lease forward, only while ``lease`` still holds."""
+        cursor = await self.db.execute(
+            "UPDATE trial_accounts SET move_claimed_at = ? "
+            "WHERE patient_id = ? AND move_claimed_at = ?",
+            (new_lease, patient_id, lease),
+        )
+        await self.db.commit()
+        return (cursor.rowcount or 0) == 1
+
+    async def release_trial_move(self, *, patient_id: str, lease: str) -> None:
+        """End of the run: free the trial, only if the lease is still ours."""
+        await self.db.execute(
+            "UPDATE trial_accounts SET move_claimed_at = NULL "
+            "WHERE patient_id = ? AND move_claimed_at = ?",
+            (patient_id, lease),
+        )
+        await self.db.commit()
+
+    async def convert_trial(self, *, patient_id: str, lease: str, at: str) -> bool:
+        """Set ``converted_at`` once, only while the mover's ``lease`` holds."""
+        cursor = await self.db.execute(
+            "UPDATE trial_accounts SET converted_at = ? WHERE patient_id = ? "
+            "AND converted_at IS NULL AND move_claimed_at = ?",
+            (at, patient_id, lease),
+        )
+        await self.db.commit()
+        return (cursor.rowcount or 0) == 1
+
     async def mark_holding_moved(
-        self, doc_id: int, *, patient_id: str, drive_id: str, at: str, via: str
+        self, doc_id: int, *, patient_id: str, drive_id: str, at: str, via: str, lease: str
     ) -> bool:
         """Record ``holding.moved_to_drive = {drive_id, at, via}`` once (a row
-        already marked is left as it is). ``via``: ``copied`` (written and read
-        back by size + md5) or ``present`` (the same md5 was already in the
-        inbox or the filed tree). Clears a previous ``move_error``."""
+        already marked is left as it is), only while the mover's ``lease``
+        holds. ``via``: ``copied`` (written and read back by size + md5) or
+        ``present`` (the same md5 was already in the inbox or the filed tree).
+        Clears a previous ``move_error``. False = not written."""
         cursor = await self.db.execute(
             "UPDATE documents SET structured_metadata = json_remove(json_set(structured_metadata, "
             "'$.holding.moved_to_drive', json(?)), '$.holding.move_error'), "
             "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
             "WHERE id = ? AND patient_id = ? AND file_id LIKE 'holding:%' "
             "AND json_valid(structured_metadata) "
-            "AND json_extract(structured_metadata, '$.holding.moved_to_drive') IS NULL",
+            "AND json_extract(structured_metadata, '$.holding.moved_to_drive') IS NULL "
+            f"{_LEASE_HOLDS_SQL}",
             (
                 json.dumps({"drive_id": drive_id, "at": at, "via": via}, sort_keys=True),
                 doc_id,
                 patient_id,
+                lease,
             ),
         )
         await self.db.commit()
         return (cursor.rowcount or 0) == 1
 
-    async def note_holding_move_error(self, doc_id: int, *, patient_id: str, code: str) -> None:
-        """A failed copy: ``holding.move_error`` = code, ``move_attempts`` + 1.
-        The held copy is untouched; a later run tries again."""
-        await self.db.execute(
+    async def note_holding_move_error(
+        self, doc_id: int, *, patient_id: str, code: str, lease: str
+    ) -> bool:
+        """A failed copy: ``holding.move_error`` = code, ``move_attempts`` + 1,
+        only while the mover's ``lease`` holds. The held copy is untouched; a
+        later run tries again. False = not written."""
+        cursor = await self.db.execute(
             "UPDATE documents SET structured_metadata = json_set(structured_metadata, "
             "'$.holding.move_error', ?, '$.holding.move_attempts', "
             "COALESCE(CAST(json_extract(structured_metadata, '$.holding.move_attempts') "
             "AS INTEGER), 0) + 1) "
             "WHERE id = ? AND patient_id = ? AND file_id LIKE 'holding:%' "
-            "AND json_valid(structured_metadata)",
-            (code, doc_id, patient_id),
+            f"AND json_valid(structured_metadata) {_LEASE_HOLDS_SQL}",
+            (code, doc_id, patient_id, lease),
         )
         await self.db.commit()
+        return (cursor.rowcount or 0) == 1
 
     async def mark_superseded_holding_rows(self) -> int:
         """Flag moved holding rows whose curated mirror row now exists
