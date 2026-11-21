@@ -2290,6 +2290,27 @@ def _start_sync_scheduler(
         next_run_time=datetime.now(),
     )
 
+    # #950 phase 2: local reading of welcome@ holding-store documents. The job
+    # only starts the background drain (``holding_extract.kick``), which reads
+    # one document at a time on the local model and never holds
+    # _sync_semaphore while the model works (minutes per scan).
+    async def _run_holding_extract():
+        from oncofiles import holding_extract
+
+        holding_extract.kick(db)
+
+    from oncofiles.holding_extract import WORKER_INTERVAL_MIN as HOLDING_INTERVAL_MIN
+
+    scheduler.add_job(
+        local_only_task("holding_extract", _run_holding_extract),
+        IntervalTrigger(minutes=HOLDING_INTERVAL_MIN),
+        id="holding_extract",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+        next_run_time=datetime.now(),
+    )
+
     # OF-1/OF-2: Periodic memory check — reclaim memory + graceful restart.
     # Start after 7 min to avoid false positives from startup sync spike (#366).
     scheduler.add_job(
@@ -2507,7 +2528,7 @@ async def privacy_policy(request: Request) -> HTMLResponse:
             "Privacy Policy",
             """
 <p class="meta">Effective: March 25, 2026 · Last updated: November 21, 2026 ·
-Consent version 2026-11-21</p>
+Consent version 2026-11-21b</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2577,7 +2598,8 @@ the terms. Only attachments sent from the patient's caregiver address (with the 
 confirmed by the mail system) are added to the patient's folder, where they are processed like
 any other document. The text of the e-mail is not stored and is not read by any AI model. Mail
 from other senders is not added; we only count it, with a keyed hash of the sender, never the
-sender's address itself.</p>
+sender's address itself. Documents removed after an unclaimed trial can still be restored from
+encrypted backups for up to 6 months.</p>
 <p lang="sk"><strong>Dokumenty poslané e-mailom.</strong> Každý pacient môže mať súkromnú
 e-mailovú adresu pre dokumenty. Kto pošle dokumenty na túto adresu, súhlasí s
 <a href="/terms">podmienkami používania</a> a so spracovaním týchto dokumentov podľa týchto
@@ -2585,7 +2607,8 @@ zásad; odosielateľ dostane e-mail, ktorý to uvádza, s odkazom na podmienky. 
 pacienta sa pridajú len prílohy poslané z adresy opatrovateľa pacienta (s odosielateľom
 potvrdeným poštovým systémom) a spracujú sa ako každý iný dokument. Text e-mailu sa neukladá a
 nečíta ho žiadny AI model. Pošta od iných odosielateľov sa nepridáva; iba ju započítame, s
-kľúčovaným odtlačkom odosielateľa, nikdy nie so samotnou adresou.</p>
+kľúčovaným odtlačkom odosielateľa, nikdy nie so samotnou adresou. Dokumenty odstránené po
+nevyužitej skúšobnej dobe sa ešte najviac 6 mesiacov dajú obnoviť zo šifrovaných záloh.</p>
 <p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
 unrelated to managing your medical documents.</p>
 
@@ -2687,7 +2710,7 @@ async def terms_of_service(request: Request) -> HTMLResponse:
             "Terms of Service",
             """
 <p class="meta">Effective: March 25, 2026 · Last updated: November 21, 2026 ·
-Consent version 2026-11-21</p>
+Consent version 2026-11-21b</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
@@ -7370,7 +7393,54 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
     except Exception as exc:
         logger.warning("API inbound-unmatched: job counts failed (%s)", type(exc).__name__)
         out["jobs"] = None
+    # #950 phase 2: why the trial reader last waited (codes and counts only)
+    from oncofiles import holding_extract
+
+    out["holding_reader"] = holding_extract.reader_status()
     return JSONResponse(out)
+
+
+@mcp.custom_route("/api/trial-status", methods=["GET"])
+async def api_trial_status(request: Request) -> JSONResponse:
+    """The welcome@ trial of the dashboard patient (#950 phase 2), counts only.
+
+    Same auth and patient resolution as ``/api/activity``
+    (``_get_dashboard_patient_id``; a caller without a patient gets the
+    sentinel, which has no trial). ``{"trial": false}`` for every patient that
+    did not start through welcome@. Otherwise ``trial_until`` (the 30-day end),
+    ``days_left`` and the holding documents per reading state (``documents``,
+    ``reading``, ``ready``, ``attention``) for the first-steps checklist, and
+    ``drive_connected``. No name, file name or address.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        patient_id = await _get_dashboard_patient_id(request)
+        trial = await db.get_trial(patient_id=patient_id)
+        if trial is None:
+            return JSONResponse({"trial": False})
+        from oncofiles import holding_store
+
+        counts = await db.holding_document_counts(patient_id=patient_id)
+        ends = datetime.strptime(trial["trial_ends_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        days_left = max(0, -(-int((ends - datetime.now(UTC)).total_seconds()) // 86400))
+        return JSONResponse(
+            {
+                "trial": True,
+                "trial_until": trial["trial_ends_at"],
+                "days_left": days_left,
+                "documents": sum(counts.values()),
+                "reading": counts.get("pending", 0) + counts.get("reading", 0),
+                "ready": counts.get("done", 0),
+                "attention": counts.get("failed", 0) + counts.get("excluded", 0),
+                "drive_connected": not await holding_store.holding_mode(db, patient_id),
+            }
+        )
+    except Exception:
+        logger.exception("API trial-status error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
 
 
 # Google's cap for an unverified OAuth client with sensitive/restricted scopes.

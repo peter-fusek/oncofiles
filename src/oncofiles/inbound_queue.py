@@ -125,7 +125,7 @@ import uuid
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
-from oncofiles import inbound_email
+from oncofiles import inbound_email, inbound_welcome
 from oncofiles.database._inbound_jobs import InboundQueueFullError
 
 __all__ = ["InboundQueueFullError", "enqueue", "kick", "run_pending"]
@@ -328,6 +328,8 @@ def to_payload(msg: inbound_email.InboundMessage, token: str) -> dict:
             for a in refs
         ],
         "progress": {"filed": [], "receipt_sent": False, "admitted": False},
+        # #950 phase 2: admitted through welcome@ (reply = the welcome text)
+        "welcome": bool(msg.welcome),
     }
 
 
@@ -376,6 +378,7 @@ def from_payload(payload: dict) -> inbound_email.InboundMessage:
         is_report=bool(payload.get("is_report")),
         attachments=attachments,
         parse_skips=skips,
+        welcome=bool(payload.get("welcome")),
     )
 
 
@@ -398,6 +401,16 @@ async def enqueue(db, messages: list[inbound_email.InboundMessage]) -> dict:
     dropped = 0
     for msg in messages:
         token = inbound_email._find_token(msg)
+        if token is None and inbound_welcome.is_welcome(msg):
+            # #950 phase 2: welcome@ is admitted here (auth, Gmail, caps, the
+            # onboarding gate, the trial patient) and queued for the trial
+            # patient's own address token; refused mail is never queued.
+            admitted = await inbound_welcome.admit(db, msg)
+            if admitted is None:
+                dropped += 1
+                continue
+            token = admitted[1]
+            msg.welcome = admitted[2]  # False: handed to an existing caregiver's patient
         th = inbound_email.token_hash(token) if token else None
         row = await db.find_inbound_address(th) if th else None
         if row is None or not row["active"]:

@@ -13,7 +13,9 @@ Rules (infra review of #948):
 * **Source.** Only the document's own Drive copy (``gdrive_id``, or the id in
   a ``gdrive:<id>`` file id): Drive's own thumbnail, fetched server-side with
   the patient's credentials (``GDriveClient.get_thumbnail``); when Drive holds
-  none, a local render of page 1 with PyMuPDF from a capped download. Never
+  none, a local render of page 1 with PyMuPDF from a capped download. A
+  holding-store document (#950 phase 2, ``holding:<uuid>``) is rendered the
+  same way from its held, decrypted bytes, also while Google is off. Never
   the Files API, never a model, no Drive or DB write. The ``thumbnailLink``
   (short-lived, access-bearing) never leaves ``GDriveClient``: only image
   bytes are proxied, as a data URI.
@@ -468,6 +470,111 @@ async def _fetch_one(gdrive, drive_id: str, size: str, deadline: float) -> Outco
         return Outcome(None, None, _error_reason(exc))
 
 
+# ── holding-store documents (#950 phase 2) ───────────────────────────────
+
+# Held renders (decrypt + PyMuPDF) per request, and at once in the process:
+# the rest of a batch is null (not cached) and comes with a later request.
+MAX_HOLDING_RENDERS_PER_REQUEST = 6
+HOLDING_RENDER_CONCURRENCY = 1
+_holding_sems: dict[str, tuple[Any, asyncio.Semaphore]] = {}
+
+
+def _holding_semaphore() -> asyncio.Semaphore:
+    """A semaphore of its own for held renders (one per running event loop)."""
+    loop = asyncio.get_running_loop()
+    held = _holding_sems.get("current")
+    if held is None or held[0] is not loop:
+        held = (loop, asyncio.Semaphore(HOLDING_RENDER_CONCURRENCY))
+        _holding_sems["current"] = held
+    return held[1]
+
+
+def _holding_blocking(file_id: str, patient_id: str, mime: str, size: str) -> Outcome:
+    """Decrypt a held file and render page 1 locally. Worker thread, no DB."""
+    from oncofiles import holding_store
+
+    data = holding_store.read(file_id, patient_id)
+    if len(data) > FALLBACK_MAX_DOWNLOAD_BYTES:
+        return Outcome(None, None, "too_large")
+    image = render_first_page(data, mime, SIZES_PX[size])
+    if not image or len(image) > MAX_IMAGE_BYTES[size]:
+        return Outcome(None, None, "render_failed")
+    return Outcome(image, "image/jpeg", "ok")
+
+
+async def _holding_previews(db, patient_id, ids, size, result, reasons) -> list[int]:
+    """Previews of the patient's holding-store documents, from the held bytes.
+
+    One SQL read scoped to the patient (``get_documents_by_ids(...,
+    patient_id=)``: unknown and foreign ids are simply not there, and are left
+    for the Drive path, which answers them ``null`` as before); deleted and
+    excluded rows are ``null``. Local PyMuPDF render only, under a semaphore
+    of its own (``HOLDING_RENDER_CONCURRENCY``), at most
+    ``MAX_HOLDING_RENDERS_PER_REQUEST`` renders per request and ONE deadline
+    for the whole batch (``BATCH_DEADLINE_S``, set before the loop, as on the
+    Drive path): once it has passed, the remaining held ids are ``null`` and
+    nothing is cached for them. Never while a curated run is active. Returns
+    the ids that are not holding documents.
+    """
+    from oncofiles.holding_store import is_holding_file_id, trial_active
+
+    found = await db.get_documents_by_ids(set(ids), patient_id=patient_id)
+    # #950 infra review: after trial_ends_at nothing held is read (null previews)
+    readable = trial_active(await db.get_trial(patient_id=patient_id))
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + BATCH_DEADLINE_S
+    renders = 0
+    rest: list[int] = []
+    for doc_id in ids:
+        doc = found.get(doc_id)
+        if doc is None or not is_holding_file_id(doc.file_id):
+            rest.append(doc_id)
+            continue
+        if doc.deleted_at is not None:
+            reasons["not_found"] += 1
+            continue
+        if not readable:
+            reasons["trial_ended"] += 1
+            continue
+        if excluded(doc):
+            reasons["excluded"] += 1
+            continue
+        mime = (doc.mime_type or "").lower()
+        if mime not in FALLBACK_MIMES:
+            reasons["no_preview"] += 1
+            continue
+        key = (patient_id, doc_id, size, doc.file_id, "holding")
+        hit = _cache.get(key)
+        if hit is not None:
+            reasons["cache_hit" if hit.image else "cache_hit_none"] += 1
+            if hit.image and hit.mime:
+                result[str(doc_id)] = {"src": data_uri(hit.image, hit.mime)}
+            continue
+        if _curated_run_active():
+            reasons["run_active"] += 1
+            continue
+        if loop.time() >= deadline:
+            reasons["deadline"] += 1  # null, not cached: a later request renders it
+            continue
+        if renders >= MAX_HOLDING_RENDERS_PER_REQUEST:
+            reasons["render_cap"] += 1  # null, not cached
+            continue
+        renders += 1
+        work = functools.partial(_holding_blocking, doc.file_id, patient_id, mime, size)
+        try:
+            out = await _bounded((_holding_semaphore(),), work, deadline)
+        except TimeoutError:
+            out = Outcome(None, None, "timeout")
+        except Exception:  # missing key or file, undecryptable → null
+            out = Outcome(None, None, "holding_unreadable")
+        reasons[out.reason] += 1
+        if out.cacheable:
+            _cache.put(key, out.image, out.mime)
+        if out.image and out.mime:
+            result[str(doc_id)] = {"src": data_uri(out.image, out.mime)}
+    return rest
+
+
 # ── the batch ────────────────────────────────────────────────────────────
 
 
@@ -490,7 +597,13 @@ async def thumbnails_for(
     result: dict[str, dict | None] = {str(i): None for i in ids}
     reasons: Counter[str] = Counter()
     drive_calls = 0
-    if not google_enabled:
+    if patient_id and patient_id != NO_PATIENT_ACCESS_SENTINEL:
+        # #950 phase 2: holding-store documents are rendered from the held
+        # bytes, Google or not; the rest goes the Drive way below.
+        ids = await _holding_previews(db, patient_id, ids, size, result, reasons)
+    if not ids:
+        pass  # every id was a holding document
+    elif not google_enabled:
         reasons["google_disabled"] = len(ids)
     elif not patient_id or patient_id == NO_PATIENT_ACCESS_SENTINEL:
         reasons["no_patient"] = len(ids)

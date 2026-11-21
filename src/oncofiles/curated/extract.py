@@ -121,6 +121,9 @@ class Extraction:
     # #931: the PDF had a text layer of enough characters that was not
     # born-digital (a scanner's OCR layer), so it was vision-read instead.
     text_layer_ignored: bool = False
+    # #950 phase 2: the #815 exclusion code when the file was refused before
+    # any model call (``_excluded``), so callers never match the error text.
+    excluded: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -397,7 +400,9 @@ def _render_image(content: bytes, ext: str) -> bytes:
 def _excluded(reason: str, pages: int) -> Extraction:
     """A file the model must never read (#815 rule, checked before OCR, #931):
     no text, no model call; the runner leaves it for review."""
-    return Extraction("", "none", pages, "-", error=f"{reason}: not sent to the model")
+    return Extraction(
+        "", "none", pages, "-", error=f"{reason}: not sent to the model", excluded=reason
+    )
 
 
 def extract(

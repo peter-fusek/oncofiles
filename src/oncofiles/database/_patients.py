@@ -116,6 +116,8 @@ class PatientsMixin:
         consent_version: str | None = None,
         consent_caller_hash: str | None = None,
         consent_by_admin: bool = False,
+        consent_kind: str = "wizard",
+        trial: dict[str, str] | None = None,
     ) -> Patient:
         """Create a new patient.
 
@@ -126,7 +128,16 @@ class PatientsMixin:
         the same transaction, so a patient created through ``POST /api/patients``
         never exists without its consent record. ``consent_caller_hash`` is the
         keyed hash from ``secrets_keys.caller_email_hash``, never an e-mail.
+
+        ``consent_kind`` (migration 097): ``wizard`` (default) or ``by_sending``
+        (#950 phase 2). ``trial`` (``sender_hash``, ``source``,
+        ``trial_ends_at``) also writes the ``trial_accounts`` row in the same
+        transaction, so a welcome@ trial patient never exists without it.
         """
+        from oncofiles.patient_consent import CONSENT_KINDS
+
+        if consent_kind not in CONSENT_KINDS:
+            raise ValueError("unknown consent kind")
         import re as _re
         import uuid as _uuid
 
@@ -167,12 +178,29 @@ class PatientsMixin:
             try:
                 await self.db.execute(
                     """INSERT INTO patient_consents
-                       (patient_id, consent_version, caller_email_hash, is_admin)
-                       VALUES (?, ?, ?, ?)""",
-                    (pid, consent_version, consent_caller_hash, int(bool(consent_by_admin))),
+                       (patient_id, consent_version, caller_email_hash, is_admin, kind)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        pid,
+                        consent_version,
+                        consent_caller_hash,
+                        int(bool(consent_by_admin)),
+                        consent_kind,
+                    ),
                 )
             except Exception:
                 await self.db.rollback()  # no patient without its consent record
+                raise
+        if trial is not None:
+            try:
+                await self.db.execute(
+                    """INSERT INTO trial_accounts
+                       (patient_id, sender_hash, source, trial_ends_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (pid, trial["sender_hash"], trial["source"], trial["trial_ends_at"]),
+                )
+            except Exception:
+                await self.db.rollback()  # no trial patient without its trial row
                 raise
         await self.db.commit()
         return (await self.get_patient(pid)) or patient
@@ -180,7 +208,8 @@ class PatientsMixin:
     async def get_patient_consents(self, *, patient_id: str) -> list[dict[str, Any]]:
         """Consent rows of one patient, oldest first (#857). Never holds an e-mail."""
         async with self.db.execute(
-            """SELECT id, patient_id, consent_version, consented_at, caller_email_hash, is_admin
+            """SELECT id, patient_id, consent_version, consented_at, caller_email_hash, is_admin,
+                      kind
                FROM patient_consents WHERE patient_id = ? ORDER BY id""",
             (patient_id,),
         ) as cursor:

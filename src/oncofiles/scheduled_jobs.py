@@ -124,6 +124,13 @@ CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
         "Spracuje dokumenty poslané e-mailom, ktoré čakajú vo fronte (aj po reštarte)",
         "Process documents sent by e-mail that wait in the queue (also after a restart)",
     ),
+    "holding_extract": (
+        "pipeline",
+        "Čítanie dokumentov skúšobného účtu",
+        "Trial document reading",
+        "Lokálnym modelom prečíta dokumenty poslané na welcome@, ktoré ešte čakajú",
+        "Read documents sent to welcome@ that still wait, with the local model",
+    ),
     "pipeline_integrity": (
         "pipeline",
         "Integrita pipeline",

@@ -323,6 +323,32 @@ REACHABLE_ALLOWLIST: dict[tuple[str, str], str] = {
         "to_thread",
     ): "#950, only after the signature and sender checks: "
     "Drive calls of the #935 upload and the SMTP receipt run in workers",
+    # #950 phase 2 (welcome@ trial, holding store): the immediate local reading.
+    (
+        "/inbound/brevo",
+        "module:oncofiles.curated.extract",
+    ): "#950 phase 2, only in the queue worker after the token, auth, Gmail, caps, gate "
+    "and sender checks: holding_extract reads a held document with the LOCAL model, one "
+    "document at a time, inside local_only(), under the #855 daily page budget",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.curated.llm",
+    ): "#950 phase 2: llm.configured() and the local model behind curated.extract (above)",
+    (
+        "/inbound/email",
+        "module:oncofiles.curated.extract",
+    ): "#950 phase 2, only after the signature and the welcome@ admission checks: the same "
+    "local reading of a held document (raw-MIME route, disabled in production)",
+    (
+        "/inbound/email",
+        "module:oncofiles.curated.llm",
+    ): "#950 phase 2: llm.configured() and the local model behind curated.extract (above)",
+    (
+        "/inbound/email",
+        "create_task",
+    ): "#950 phase 2, only after the signature and the welcome@ admission checks: ONE "
+    "holding-extraction drain task (holding_extract.kick) or one waitlist reply "
+    "(at most one per sender per 24 h), never raising, logging counts only",
 }
 
 # Public handlers that touch the DB: (path, handler) -> what they do.

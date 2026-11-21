@@ -186,7 +186,18 @@ def _email_matches_caregiver(email: str, caregiver_email: str | None) -> bool:
     if not email or not email.strip() or not caregiver_email:
         return False
     email_lower = email.strip().lower()
-    return any(e.strip().lower() == email_lower for e in caregiver_email.split(","))
+    if any(e.strip().lower() == email_lower for e in caregiver_email.split(",")):
+        return True
+    # #950 phase 2: Gmail addresses match by their canonical form (dots and a
+    # +tag ignored, googlemail.com = gmail.com), because they are one mailbox
+    # at Google; a welcome@ trial stores the canonical form. Only when BOTH
+    # sides are Gmail: every other address keeps the exact match above.
+    from oncofiles.email_identity import canonical_email, is_gmail
+
+    if not is_gmail(email):
+        return False
+    canon = canonical_email(email)
+    return any(is_gmail(e) and canonical_email(e) == canon for e in caregiver_email.split(","))
 
 
 class PersistentOAuthProvider(InMemoryOAuthProvider):
