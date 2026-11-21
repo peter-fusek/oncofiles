@@ -895,3 +895,133 @@ def test_pdf_with_an_oversized_embedded_image_is_never_rendered(monkeypatch):
     assert doc_thumbnails.render_first_page(pdf, "application/pdf", 220) is not None
     monkeypatch.setattr(doc_thumbnails, "FALLBACK_MAX_PIXELS", 1000)
     assert doc_thumbnails.render_first_page(pdf, "application/pdf", 220) is None
+
+
+# ── text notes: a local preview of the stored page text (#948 follow-up) ──
+
+NOTE_MD = "20270320_Annabel_Advocate_Advocate_InventedVisitNotes.md"
+NOTE_TXT = "20270321_Annabel_Advocate_Advocate_InventedCallNotes.txt"
+NOTE_FOREIGN = "20270322_Bea_Advocate_Advocate_InventedForeignNotes.md"
+DRIVE_NOTE = "idInvented948NoteMd1"
+# An invented sentence that must never show up in a log line.
+NOTE_SECRET = "Synteticka poznamka: kontrola 2027-05-04, otázka na lekára č. 7 ľťž"
+NOTE_TEXT = "---\nkind: advocate_note\n---\n# Invented visit\n\n" + "\n".join(
+    [NOTE_SECRET] + [f"Line {n} of an invented note" for n in range(40)]
+)
+
+
+async def _note(db, filename, mime, *, patient_id=A_UUID, text=NOTE_TEXT, **extra) -> int:
+    doc = await db.insert_document(
+        make_doc(
+            filename=filename,
+            original_filename=filename,
+            mime_type=mime,
+            document_date=date(2027, 3, 20),
+            category=DocumentCategory.ADVOCATE,
+            **extra,
+        ),
+        patient_id=patient_id,
+    )
+    if text is not None:
+        await db.save_ocr_page(doc.id, 1, text, "invented-text")
+    return doc.id
+
+
+def _jpeg_of(src: str) -> bytes:
+    import base64
+
+    assert src.startswith("data:image/jpeg;base64,")
+    data = base64.b64decode(src.split(",", 1)[1])
+    assert data[:3] == b"\xff\xd8\xff"
+    return data
+
+
+async def test_text_note_gets_a_jpeg_from_its_stored_text(docs, db, drive):
+    md = await _note(
+        db, NOTE_MD, "text/markdown", file_id=f"gdrive:{DRIVE_NOTE}", gdrive_id=DRIVE_NOTE
+    )
+    txt = await _note(db, NOTE_TXT, "text/plain", file_id="file_948_note_txt")
+    body = _thumbs(await _get(db, [md, txt, docs["thumb"]]))
+    _jpeg_of(body[str(md)]["src"])
+    _jpeg_of(body[str(txt)]["src"])
+    assert body[str(docs["thumb"])] is not None  # other rows go the Drive way as before
+    assert [c[1] for c in drive.calls] == [DRIVE_THUMB]  # the notes never reached Drive
+    large = _thumbs(await _get(db, [md], size="l"))
+    assert len(_jpeg_of(large[str(md)]["src"])) > len(_jpeg_of(body[str(md)]["src"]))
+
+
+async def test_text_note_preview_needs_no_google(docs, db, drive, monkeypatch):
+    monkeypatch.setattr(server, "GOOGLE_INTEGRATION_ENABLED", False)
+    md = await _note(db, NOTE_MD, "text/markdown", file_id="file_948_note_md")
+    body = _thumbs(await _get(db, [md]))
+    _jpeg_of(body[str(md)]["src"])
+    assert drive.count() == 0
+
+
+async def test_text_note_logs_carry_no_text(docs, db, drive, caplog):
+    md = await _note(db, NOTE_MD, "text/markdown", file_id="file_948_note_md")
+    with caplog.at_level(logging.DEBUG):
+        body = _thumbs(await _get(db, [md]))
+    assert body[str(md)] is not None
+    text = caplog.text
+    for fragment in (NOTE_SECRET, "Synteticka", "Invented visit", "advocate_note", NOTE_MD):
+        assert fragment not in text
+    assert "text_ok" in text  # reason codes only
+
+
+async def test_foreign_text_note_is_null(docs, db, drive):
+    foreign = await _note(db, NOTE_FOREIGN, "text/markdown", patient_id=B_UUID,
+                          file_id="file_948_note_foreign")  # fmt: skip
+    own_view = _thumbs(await _get(db, [foreign]))
+    named = _thumbs(await _get(db, [foreign], patient="thumb948-b"))
+    assert own_view == named == {str(foreign): None}
+    body = _thumbs(await _get(db, [foreign], patient="thumb948-b", email=B_EMAIL))
+    _jpeg_of(body[str(foreign)]["src"])  # the caregiver of B sees it
+
+
+async def test_text_preview_runs_the_exclusion_rule_on_the_text(docs, db, drive):
+    genotype = "\n".join(f"rs{1000 + n}\tAG" for n in range(5))
+    raw = await _note(db, NOTE_TXT, "text/plain", file_id="file_948_note_rs", text=genotype)
+    flagged = await _note(db, NOTE_MD, "text/markdown", file_id="file_948_note_flag")
+    await db.update_structured_metadata(flagged, json.dumps({"exclude_extract": True}))
+    csv = await _note(db, "20270323_Annabel_Lab_Other_Export.csv", "text/plain",
+                      file_id="file_948_note_csv", text="a,b\n1,2\n")  # fmt: skip
+    body = _thumbs(await _get(db, [raw, flagged, csv]))
+    assert set(body.values()) == {None}
+    assert drive.count() == 0
+
+
+async def test_text_note_without_stored_text_is_unchanged(docs, db, drive):
+    md = await _note(db, NOTE_MD, "text/markdown", file_id=f"gdrive:{DRIVE_NOTE}",
+                     gdrive_id=DRIVE_NOTE, text=None)  # fmt: skip
+    assert _thumbs(await _get(db, [md])) == {str(md): None}
+    assert [c[1] for c in drive.calls] == [DRIVE_NOTE]  # the Drive path, as before
+
+
+async def test_edited_note_gets_a_new_preview(docs, db, drive):
+    md = await _note(db, NOTE_MD, "text/markdown", file_id="file_948_note_md")
+    first = _thumbs(await _get(db, [md]))[str(md)]["src"]
+    assert _thumbs(await _get(db, [md]))[str(md)]["src"] == first  # cached
+    await db.save_ocr_page(md, 1, "# Invented\n\nA different invented line 2027-06-01", "x")
+    assert _thumbs(await _get(db, [md]))[str(md)]["src"] != first
+
+
+def test_text_like_and_preview_lines():
+    assert doc_thumbnails.is_text_like(make_doc(filename="n.md", mime_type="text/markdown"))
+    assert doc_thumbnails.is_text_like(make_doc(filename="n.txt", mime_type="text/plain"))
+    assert doc_thumbnails.is_text_like(
+        make_doc(filename="n.md", mime_type="application/octet-stream")
+    )
+    for name, mime in (("x.csv", "text/plain"), ("x.tsv", "text/plain"),
+                       ("x.vcf", "text/plain"), ("x.dat", "text/csv"),
+                       ("x.pdf", "application/pdf")):  # fmt: skip
+        assert not doc_thumbnails.is_text_like(
+            make_doc(filename=name, original_filename=name, mime_type=mime)
+        )
+    lines = doc_thumbnails.preview_lines(NOTE_TEXT)
+    assert len(lines) == doc_thumbnails.TEXT_PREVIEW_LINES
+    assert lines[0] == "# Invented visit"  # front matter dropped
+    assert all(len(line) <= doc_thumbnails.TEXT_PREVIEW_LINE_CHARS for line in lines)
+    assert doc_thumbnails.render_text_preview("   \n\n", 220) is None
+    jpeg = doc_thumbnails.render_text_preview(NOTE_SECRET, 220)
+    assert jpeg and jpeg[:3] == b"\xff\xd8\xff"

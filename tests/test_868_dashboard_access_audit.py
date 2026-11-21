@@ -374,6 +374,76 @@ async def test_refusal_burst_is_capped_per_caller_per_day(audit_db):
     assert len(await _rows(audit_db)) == dashboard_audit.REFUSAL_DAILY_CAP + 2
 
 
+# ── one audit row per view, not per thumbnail batch (#948 grid) ─────────
+
+
+def _thumb_request(db: Database, patient: str, n: int, *, tid: str = "d" * 16):
+    """The n-th ``/api/doc-thumbnails`` batch of one dashboard grid view."""
+    request = _request(db, patient, tid=tid)
+    ids = ",".join(str(n * 24 + i + 1) for i in range(24))
+    request.query_params = {"patient_id": patient, "ids": ids}
+    request.scope = {"endpoint": server.api_doc_thumbnails}
+    return request
+
+
+@contextmanager
+def _thumbnail_route():
+    with (
+        patch.object(server, "_check_dashboard_auth", return_value=None),
+        patch("oncofiles.doc_thumbnails.thumbnails_for", AsyncMock(side_effect=lambda *a, **k: {})),
+    ):
+        yield
+
+
+async def test_grid_of_thumbnail_batches_by_admin_writes_one_patient_read(audit_db):
+    """A 413-document grid asks for ~18 batches; 20 batches by an admin of a
+    foreign patient write ONE ``patient_read`` row (hourly per session +
+    patient), and the route answers every batch."""
+    with _caller(ADMIN_EMAIL, admin=True), _thumbnail_route():
+        for n in range(20):
+            resp = await server.api_doc_thumbnails(_thumb_request(audit_db, "audit-b", n))
+            assert resp.status_code == 200
+    (row,) = await _rows(audit_db)
+    assert (row["event"], row["target_patient_id"]) == ("patient_read", B_UUID)
+    assert row["route"] == "api_doc_thumbnails"
+    assert dashboard_audit.counters()["admin_cross_reads"] == 1
+
+
+async def test_refused_thumbnail_batches_write_one_row_per_minute(audit_db):
+    """20 refused batches in the same minute: one ``acl_refused`` row; the next
+    minute's 20 batches: one more. Every call is still counted."""
+    clock = [5000.0]
+    with (
+        _caller(NOBODY_EMAIL),
+        _thumbnail_route(),
+        patch.object(dashboard_audit.time, "monotonic", side_effect=lambda: clock[0]),
+    ):
+        for _minute in range(2):
+            for n in range(20):
+                clock[0] += 1.0  # 20 s of batches inside one minute
+                resp = await server.api_doc_thumbnails(_thumb_request(audit_db, "audit-b", n))
+                assert resp.status_code == 200
+            clock[0] += 61.0  # the next minute
+    rows = await _rows(audit_db)
+    assert [r["event"] for r in rows] == ["acl_refused", "acl_refused"]
+    assert {r["route"] for r in rows} == {"api_doc_thumbnails"}
+    assert {r["target_patient_id"] for r in rows} == {B_UUID}
+    c = dashboard_audit.counters()
+    assert c["acl_refusals"] == 40
+    assert c["acl_refusals_suppressed"] == 38
+
+
+def test_every_patient_read_write_goes_through_the_hourly_dedupe():
+    """``record`` dedupes ``acl_refused`` itself; ``patient_read`` relies on
+    the caller asking ``should_record_read`` first. Lock: the only write site
+    sits inside that check, so no high-frequency route can bypass it."""
+    src = inspect.getsource(server)
+    assert src.count('"patient_read"') == 1
+    site = src.index('"patient_read"')
+    guard = src.rfind("dashboard_audit.should_record_read(", 0, site)
+    assert guard != -1 and site - guard < 300
+
+
 def test_refusal_dedupe_memory_is_bounded():
     with patch.object(dashboard_audit, "_MAX_KEYS", 10):
         for i in range(50):
