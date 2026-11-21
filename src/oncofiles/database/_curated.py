@@ -231,14 +231,22 @@ class CuratedMixin(DatabaseBase):
         return int(row[0] or 0)
 
     async def get_last_scorecard(
-        self, *, patient_id: str, label_prefix: str | None = None, before_id: int | None = None
+        self,
+        *,
+        patient_id: str,
+        label_prefix: str | None = None,
+        before_id: int | None = None,
+        kind: str = "extraction",
     ) -> dict | None:
-        """The newest finished, ok extraction scorecard (#773) of one patient,
-        optionally only one whose label starts with ``label_prefix`` and older
-        than row ``before_id``. Its report holds aggregated counts only."""
+        """The newest finished, ok scorecard of one patient, optionally only one
+        whose label starts with ``label_prefix`` and older than row
+        ``before_id``. Its report holds aggregated counts only. ``kind``:
+        ``extraction`` (#773; rows without a ``kind``) or ``classification``
+        (#926); one kind is never the other's baseline."""
         where = ["patient_id = ?", "trigger = 'scorecard'", "status = 'ok'",
-                 "finished_at IS NOT NULL"]  # fmt: skip
-        params: list = [patient_id]
+                 "finished_at IS NOT NULL",
+                 "COALESCE(json_extract(report_json, '$.kind'), 'extraction') = ?"]  # fmt: skip
+        params: list = [patient_id, kind]
         if before_id is not None:
             where.append("id < ?")
             params.append(before_id)

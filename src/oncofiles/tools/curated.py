@@ -136,7 +136,14 @@ def request_stop() -> None:
 
 # background jobs that write nothing: a deploy may cut them
 _NO_WRITE_KINDS = frozenset(
-    {"llm_shadow", "clinical_preview", "extraction_scorecard", "lab_preview", "reocr_compare"}
+    {
+        "llm_shadow",
+        "clinical_preview",
+        "extraction_scorecard",
+        "lab_preview",
+        "reocr_compare",
+        "classify_scorecard",
+    }  # fmt: skip
 )
 
 
@@ -4488,6 +4495,225 @@ async def curated_extraction_scorecard(
     return json.dumps(_public_job(pid), ensure_ascii=False)
 
 
+# ── classification scorecard (#926): stored sidecar texts, counts only ────
+
+CLASSIFY_SCORECARD_MAX_DOCS = 25
+CLASSIFY_SCORECARD_MAX_REPEAT = 3
+
+
+async def _patient_contract(db, pid: str):
+    """The patient's README contract, read from Drive (read-only, own
+    connection in a worker thread). Raises when there is none."""
+    from oncofiles.curated import indexer
+    from oncofiles.curated.drive_ops import DriveOps
+    from oncofiles.server import _create_patient_clients
+
+    clients = await _create_patient_clients(db, pid)
+    if not clients or clients[0] is None:
+        raise RuntimeError("no Drive client for the patient")
+    gdrive, folder_id = clients[0], clients[3]
+
+    def _blocking():
+        own = gdrive.dedicated_copy()
+        try:
+            return indexer.read_contract(DriveOps(own), folder_id)
+        finally:
+            own.close()
+
+    return await asyncio.to_thread(_blocking)
+
+
+async def _classify_scorecard_job(
+    db,
+    pid: str,
+    docs: list[dict],
+    *,
+    row_id: int,
+    label: str,
+    compare_to_label: str | None,
+    requested: int,
+    missing: int,
+    repeat: int,
+) -> None:
+    """Re-run ``classify.propose`` + ``validate`` on each document's stored
+    sidecar text (#926). DRY RUN: no Drive write, no filing, no sidecar, no
+    fact; the only write is the job's own ``curated_runs`` row (trigger
+    ``scorecard``, report ``kind: classification``). DB reads first, then the
+    model calls one at a time in a worker thread (one LM Studio slot); the
+    task runs inside ``local_only()``."""
+    from oncofiles.curated import classify_scorecard as csc
+    from oncofiles.curated import llm_input
+    from oncofiles.curated import vocabulary as vocab_mod
+
+    started = time.monotonic()
+    job = _reocr_jobs[pid]
+    request = csc.request_settings()
+    auto_vocab = vocab_mod.enabled()
+    cards: list[dict] = []
+    stopped = False
+    try:
+        contract = await _patient_contract(db, pid)
+        # phase 1 (event loop, DB one call at a time): every document's text
+        work: list[tuple[dict, str | None, str | None]] = []
+        for d in docs:
+            loaded = await llm_input.load_for_llm(db, pid, d)
+            if isinstance(loaded, llm_input.Excluded):
+                work.append((d, None, loaded.reason))
+                continue
+            text = "\n\n".join(t for _, t in loaded if t and t.strip())
+            work.append((d, text, None if text.strip() else "no_page_text"))
+        # phase 2: model calls only, one document and one run at a time
+        for d, text, skip in work:
+            if skip:
+                cards.append(csc.skipped_card(d["id"], d.get("category"), skip))
+                continue
+            if _stopping.is_set():
+                stopped = True
+                break
+            runs = []
+            for _ in range(repeat):
+                runs.append(await asyncio.to_thread(
+                    csc.run_once, contract, text, d.get("filename") or "",
+                    auto_vocab=auto_vocab,
+                ))  # fmt: skip
+            cards.append(csc.card(d["id"], d.get("category"), runs))
+        totals = csc.totals(cards, requested=requested, missing=missing)
+        totals["speed"]["wall_seconds"] = round(time.monotonic() - started, 1)
+        prev = await db.get_last_scorecard(
+            patient_id=pid, label_prefix=compare_to_label, before_id=row_id, kind=csc.KIND
+        )
+        prev_report = (prev or {}).get("report") or {}
+        versions = csc.versions(sampling=request["sampling"])
+        job.update(state="done", report={
+            "kind": csc.KIND, "dry_run": True, "scorecard": csc.SCORECARD_VERSION,
+            "label": label, "partial": stopped, "versions": versions,
+            "settings": {**request, "repeat": repeat, "auto_vocab": auto_vocab,
+                         "max_age_days": None},
+            "totals": totals,
+            "compared_to": {"row_id": prev["id"], "label": prev_report.get("label"),
+                            "finished_at": prev.get("finished_at")} if prev else None,
+            **csc.compare(prev_report if prev else None, versions, totals),
+            "documents": cards,
+        })  # fmt: skip
+    except Exception as exc:
+        logger.exception("classification scorecard failed for %s", pid)
+        job.update(state="failed", error=type(exc).__name__,
+                   report={"kind": csc.KIND, "dry_run": True, "label": label,
+                           "documents": cards})  # fmt: skip
+    finally:
+        job["finished_at"] = datetime.now(UTC).isoformat()
+        status = "failed"
+        if job.get("state") == "done":
+            status = "partial" if stopped else "ok"  # only "ok" is a delta baseline
+        try:
+            await db.finish_curated_run(
+                row_id, patient_id=pid, status=status, message=job.get("error") or "",
+                report=csc.persisted(job.get("report") or {}),
+            )  # fmt: skip
+        except Exception:
+            logger.exception("could not persist the classification scorecard for %s", pid)
+
+
+async def curated_classify_scorecard(
+    ctx: Context,
+    document_ids: list[int],
+    patient_slug: str | None = None,
+    label: str = "classify",
+    compare_to_label: str | None = None,
+    repeat: int = 1,
+) -> str:
+    """DRY RUN classification scorecard (#926): re-run the curated
+    classification (LOCAL model, ``classify.propose`` + ``validate``) on the
+    stored sidecar texts of filed curated documents, as counts and codes only.
+
+    Nothing is filed, renamed, written to Drive or stored as a fact; the
+    README is only read. The only write is a summary row (trigger
+    ``scorecard``, report ``kind: classification``: label, settings, versions,
+    totals) that never counts as a curated run or preview. The report (poll
+    curated_reocr_status, kind ``classify_scorecard``) has per document its
+    runs: review yes/no, review reason codes, agreement of doc type / date /
+    institution with the currently filed name, truncation, retry, seconds,
+    tokens, the ``metadata_unverified`` codes; totals: review share, reason
+    histogram, agreement %, truncations, p50/p95 seconds, and with
+    ``repeat`` ≥ 2 the share of documents whose runs all agreed. ``delta``
+    against the previous ok classification scorecard (or the newest whose
+    label starts with ``compare_to_label``), with ``regressions``. Never a
+    filename, value or text. The age rule of new scans is not applied
+    (filed documents are old by nature).
+
+    Refused while a curated run, re-OCR, re-read, extraction or preview is
+    active for the patient. Max 25 documents; each run holds one LM Studio
+    slot, one at a time (about a minute per run with reasoning on).
+
+    Args:
+        document_ids: filed curated documents (explicit ids, at most 25).
+        patient_slug: the patient (admins must pass it).
+        label: short name, e.g. "before-926" (letters, digits, ``. _ : -``; max 60).
+        compare_to_label: compare with the newest classification scorecard
+            whose label starts with this; null = the previous one.
+        repeat: runs per document (1-3); 2 measures stability.
+    """
+    from oncofiles.curated import classify_scorecard as csc
+    from oncofiles.curated import llm
+
+    for name, value in (("label", label), ("compare_to_label", compare_to_label)):
+        if value is not None and not _SCORECARD_LABEL.fullmatch(str(value)):
+            return json.dumps({"error": f"{name} must be 1-60 letters, digits or . _ : - "
+                               "(starting with a letter or digit)"})  # fmt: skip
+    if (
+        isinstance(repeat, bool)
+        or not isinstance(repeat, int)
+        or not 1 <= repeat <= CLASSIFY_SCORECARD_MAX_REPEAT
+    ):
+        return json.dumps({"error": f"repeat must be an int, 1-{CLASSIFY_SCORECARD_MAX_REPEAT}"})
+    ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))
+    if not ids:
+        return json.dumps({"error": "document_ids is required"})
+    if len(ids) > CLASSIFY_SCORECARD_MAX_DOCS:
+        return json.dumps({"error": f"too many documents: at most {CLASSIFY_SCORECARD_MAX_DOCS}, "
+                           f"got {len(ids)}"})  # fmt: skip
+    if not llm.configured():
+        return json.dumps({"error": "local model not configured (LOCAL_LLM_BASE_URL/MODEL)"})
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+    known = {r["id"]: r for r in await db.curated_reocr_candidates(patient_id=pid)}
+    docs = [known[i] for i in ids if i in known]
+    missing = sorted(i for i in ids if i not in known)
+    if not docs:
+        return json.dumps({"status": "nothing to do", "missing_document_ids": missing})
+    if _busy(pid):
+        return json.dumps({"error": "busy: a curated run, re-OCR, re-read, extraction or "
+                           "preview is in progress for this patient"})  # fmt: skip
+    previous = _reocr_jobs.get(pid)
+    _reocr_jobs[pid] = job = {
+        "state": "running", "kind": "classify_scorecard", "dry_run": True, "label": label,
+        "compare_to_label": compare_to_label, "started_at": datetime.now(UTC).isoformat(),
+        "repeat": repeat, **csc.request_settings(),
+        "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
+        "missing_document_ids": missing,
+    }  # fmt: skip
+    try:
+        row_id = await db.insert_curated_run(patient_id=pid, dry_run=True, trigger="scorecard")
+    except Exception as exc:
+        if previous is not None:
+            _reocr_jobs[pid] = previous
+        else:
+            _reocr_jobs.pop(pid, None)
+        logger.exception("could not start the classification scorecard for %s", pid)
+        return json.dumps({"error": f"could not record the scorecard ({type(exc).__name__})"})
+    job["run_row_id"] = row_id
+    from oncofiles.cloud_guard import local_only
+
+    with local_only("curated classification scorecard"):
+        job["task"] = asyncio.create_task(
+            _classify_scorecard_job(
+                db, pid, docs, row_id=row_id, label=label, compare_to_label=compare_to_label,
+                requested=len(ids), missing=len(missing), repeat=repeat,
+            )
+        )  # fmt: skip
+    return json.dumps(_public_job(pid), ensure_ascii=False)
+
+
 async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) -> str:
     """State and report of the last re-OCR job for this patient (#660). Read-only."""
     pid = await _resolve_patient_id(patient_slug, ctx)
@@ -4983,6 +5209,8 @@ def register(mcp):
     mcp.tool()(curated_lab_extract)
     mcp.tool(annotations=_RETRACT_ANNOTATIONS)(curated_lab_retract)
     mcp.tool()(curated_extraction_scorecard)
+    # dry run (#926): re-classifies stored sidecar texts; only its summary row
+    mcp.tool()(curated_classify_scorecard)
     # admin, user-invoked (#806): replaces a sidecar's text, its current text
     # is backed up first; never scheduled
     mcp.tool(annotations=_RETRACT_ANNOTATIONS)(curated_restore_sidecar)
