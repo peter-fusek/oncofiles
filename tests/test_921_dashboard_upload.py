@@ -29,7 +29,7 @@ from oncofiles import dashboard_upload, server
 from oncofiles.curated import drive_ops, inbox_upload
 from oncofiles.curated.drive_ops import FOLDER_MIME, WriteVerificationError
 from oncofiles.database import Database
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PATIENT_A_UUID
 from tests.test_curated_originals_invariant import FakeGDrive, FakeService
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "oncofiles"
@@ -433,10 +433,10 @@ def no_drive_calls(monkeypatch):
 
 
 async def test_no_files_and_too_many_files(db: Database, no_drive_calls):
-    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, [])
+    out = await dashboard_upload.handle_upload(db, PATIENT_A_UUID, [])
     assert (out.status, out.payload["error"]) == (400, "no_files")
     many = [_upload(f"s{i}.pdf", PDF) for i in range(dashboard_upload.MAX_FILES + 1)]
-    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, many)
+    out = await dashboard_upload.handle_upload(db, PATIENT_A_UUID, many)
     assert (out.status, out.payload["error"]) == (400, "too_many_files")
     assert out.payload["message_sk"] and out.payload["message_en"]
 
@@ -444,7 +444,7 @@ async def test_no_files_and_too_many_files(db: Database, no_drive_calls):
 async def test_refused_files_never_reach_drive(db: Database, no_drive_calls, monkeypatch):
     monkeypatch.setattr(dashboard_upload, "MAX_FILES", 2)
     out = await dashboard_upload.handle_upload(
-        db, ERIKA_UUID, [_upload("x.vcf", b"##"), _upload("y.exe", b"MZ")]
+        db, PATIENT_A_UUID, [_upload("x.vcf", b"##"), _upload("y.exe", b"MZ")]
     )
     assert out.status == 200 and out.payload["uploaded"] == 0
     assert [f["code"] for f in out.payload["files"]] == [
@@ -459,13 +459,13 @@ async def test_document_cap_is_counted_before_writing(db: Database, no_drive_cal
 
     monkeypatch.setattr(config, "MAX_DOCUMENTS_PER_PATIENT", 2)
     monkeypatch.setattr(db, "count_documents", AsyncMock(return_value=2))
-    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, [_upload("a.pdf", PDF)])
+    out = await dashboard_upload.handle_upload(db, PATIENT_A_UUID, [_upload("a.pdf", PDF)])
     assert (out.status, out.payload["error"], out.payload["limit"]) == (409, "document_cap", 2)
 
 
 async def test_no_drive_is_refused(db: Database, monkeypatch):
     monkeypatch.setattr(server, "_create_patient_clients", AsyncMock(return_value=None))
-    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, [_upload("a.pdf", PDF)])
+    out = await dashboard_upload.handle_upload(db, PATIENT_A_UUID, [_upload("a.pdf", PDF)])
     assert (out.status, out.payload["error"]) == (409, "no_drive")
 
 
@@ -494,7 +494,7 @@ async def test_curated_patient_goes_to_the_inbox(db: Database, monkeypatch, capl
     monkeypatch.setattr("oncofiles.tools.documents.store_drive_only_upload", legacy)
     caplog.set_level("INFO")
     out = await dashboard_upload.handle_upload(
-        db, ERIKA_UUID, [_upload("Sken 2027-03-04.pdf", PDF), _upload("bad.csv", b"x")]
+        db, PATIENT_A_UUID, [_upload("Sken 2027-03-04.pdf", PDF), _upload("bad.csv", b"x")]
     )
     assert out.status == 200 and out.payload["path"] == "curated_inbox"
     assert seen["g"] is gdrive and seen["root"] == "rootFolder0001"
@@ -512,7 +512,7 @@ async def test_curated_inbox_unavailable(db: Database, monkeypatch):
         raise inbox_upload.InboxUnavailableError("inbox_missing")
 
     monkeypatch.setattr(inbox_upload, "upload_to_inbox", no_inbox)
-    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, [_upload("a.pdf", PDF)])
+    out = await dashboard_upload.handle_upload(db, PATIENT_A_UUID, [_upload("a.pdf", PDF)])
     assert (out.status, out.payload["error"], out.payload["reason"]) == (
         409,
         "inbox_unavailable",
@@ -527,7 +527,7 @@ async def test_curated_inbox_unavailable(db: Database, monkeypatch):
 async def test_overlapping_or_unchecked_folder_is_refused(db: Database, monkeypatch, reason):
     _clients(monkeypatch, reason)
     monkeypatch.setattr(inbox_upload, "upload_to_inbox", MagicMock(side_effect=AssertionError))
-    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, [_upload("a.pdf", PDF)])
+    out = await dashboard_upload.handle_upload(db, PATIENT_A_UUID, [_upload("a.pdf", PDF)])
     assert (out.status, out.payload["error"]) == (409, "folder_not_writable")
 
 
@@ -539,16 +539,16 @@ async def test_non_curated_patient_uses_the_drive_only_path(db: Database, monkey
         "oncofiles.tools.documents.resolve_category_folder", lambda m, c, f: "catFolder0001"
     )
     monkeypatch.setattr(inbox_upload, "upload_to_inbox", MagicMock(side_effect=AssertionError))
-    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, [_upload("plan.pdf", PDF)])
+    out = await dashboard_upload.handle_upload(db, PATIENT_A_UUID, [_upload("plan.pdf", PDF)])
     assert out.status == 200 and out.payload["path"] == "drive_only"
     assert out.payload["files"][0]["status"] == "uploaded"
-    docs = await db.list_documents(patient_id=ERIKA_UUID)
+    docs = await db.list_documents(patient_id=PATIENT_A_UUID)
     assert [(d.filename, d.file_id) for d in docs] == [("plan.pdf", "gdrive:driveFileA")]
     # a second file of the same name gets a suffix; nothing is superseded
     gdrive.upload.return_value = {"id": "driveFile0002", "modifiedTime": "2027-03-04T08:01:00Z"}
-    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, [_upload("plan.pdf", PDF)])
+    out = await dashboard_upload.handle_upload(db, PATIENT_A_UUID, [_upload("plan.pdf", PDF)])
     assert out.payload["files"][0]["name"] == "plan-2.pdf"
-    names = sorted(d.filename for d in await db.list_documents(patient_id=ERIKA_UUID))
+    names = sorted(d.filename for d in await db.list_documents(patient_id=PATIENT_A_UUID))
     assert names == ["plan-2.pdf", "plan.pdf"]
 
 
@@ -561,10 +561,10 @@ async def test_non_curated_drive_failure_stores_nothing(db: Database, monkeypatc
         "oncofiles.tools.documents.resolve_category_folder", lambda m, c, f: "catFolder0001"
     )
     out = await dashboard_upload.handle_upload(
-        db, ERIKA_UUID, [_upload("a.pdf", PDF), _upload("b.pdf", PDF)]
+        db, PATIENT_A_UUID, [_upload("a.pdf", PDF), _upload("b.pdf", PDF)]
     )
     assert [f["status"] for f in out.payload["files"]] == ["failed", "not_attempted"]
-    assert await db.list_documents(patient_id=ERIKA_UUID) == []
+    assert await db.list_documents(patient_id=PATIENT_A_UUID) == []
 
 
 # ── memory: one file's bytes at a time (infra review) ────────────────────
@@ -595,7 +595,7 @@ def test_server_takes_one_file_per_request():
 async def test_too_many_files_reads_no_file(db: Database, no_drive_calls):
     events: list = []
     ups = [TrackedUpload(f"s{i}.pdf", PDF, events) for i in range(2)]
-    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, ups)
+    out = await dashboard_upload.handle_upload(db, PATIENT_A_UUID, ups)
     assert out.payload["error"] == "too_many_files"
     assert not [e for e in events if e[0] == "read"]
 
@@ -613,7 +613,7 @@ async def test_each_file_is_read_stored_and_closed_before_the_next(db: Database,
 
     monkeypatch.setattr(inbox_upload, "upload_to_inbox", fake_upload)
     ups = [TrackedUpload(n, PDF, events) for n in ("a.pdf", "b.exe", "c.pdf")]
-    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, ups)
+    out = await dashboard_upload.handle_upload(db, PATIENT_A_UUID, ups)
     assert [f["status"] for f in out.payload["files"]] == ["uploaded", "refused", "uploaded"]
     assert events == [
         ("read", "a.pdf"),
@@ -671,7 +671,7 @@ async def test_upload_never_registers_as_a_run_or_job(db: Database, monkeypatch)
 
     def fake_upload(g, root_id, files):
         seen["run_active"] = curated_tools.run_active()
-        seen["blocked"] = curated_tools.run_block_reason(ERIKA_UUID)
+        seen["blocked"] = curated_tools.run_block_reason(PATIENT_A_UUID)
         seen["registries"] = (
             dict(curated_tools._runs),
             dict(curated_tools._reocr_jobs),
@@ -680,7 +680,7 @@ async def test_upload_never_registers_as_a_run_or_job(db: Database, monkeypatch)
         return [{"status": "uploaded", "name": files[0].name}]
 
     monkeypatch.setattr(inbox_upload, "upload_to_inbox", fake_upload)
-    out = await dashboard_upload.handle_upload(db, ERIKA_UUID, [_upload("a.pdf", PDF)])
+    out = await dashboard_upload.handle_upload(db, PATIENT_A_UUID, [_upload("a.pdf", PDF)])
     assert out.payload["uploaded"] == 1
     assert seen == {"run_active": False, "blocked": None, "registries": before}
     assert not curated_tools.run_active()
@@ -701,7 +701,7 @@ B_EMAIL = "carer-b@example.test"
 async def acl_db(db: Database) -> Database:
     await db.db.execute(
         "UPDATE patients SET slug = ?, caregiver_email = ? WHERE patient_id = ?",
-        ("up921-a", A_EMAIL, ERIKA_UUID),
+        ("up921-a", A_EMAIL, PATIENT_A_UUID),
     )
     await db.db.execute(
         "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) "
@@ -749,7 +749,7 @@ async def test_route_own_patient_by_slug(acl_db, handled):
     with _caller(A_EMAIL):
         resp = await server.api_upload(_request(acl_db, "up921-a"))
     assert resp.status_code == 200
-    assert handled == [(ERIKA_UUID, ["a.pdf"])]
+    assert handled == [(PATIENT_A_UUID, ["a.pdf"])]
 
 
 @pytest.mark.parametrize("target", [B_UUID, "up921-b", "no-such-patient"])
