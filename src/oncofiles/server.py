@@ -7301,6 +7301,21 @@ async def _read_capped_body(request: Request, limit: int) -> bytearray | None:
     return buf
 
 
+async def _read_capped_body_in_time(request: Request, limit: int) -> bytearray | None | bool:
+    """``_read_capped_body`` under ``inbound_email.READ_DEADLINE_S``; False on timeout."""
+    from oncofiles import inbound_email
+
+    try:
+        async with asyncio.timeout(inbound_email.READ_DEADLINE_S):
+            return await _read_capped_body(request, limit)
+    except TimeoutError:
+        return False
+
+
+def _inbound_read_timeout() -> JSONResponse:
+    return JSONResponse({"error": "request timeout"}, status_code=408)
+
+
 def _declared_too_large(request: Request, limit: int) -> bool:
     try:
         return int(request.headers.get("content-length") or 0) > limit
@@ -7320,11 +7335,11 @@ async def inbound_email_webhook(request: Request) -> Response:
     provider (contract in ``oncofiles.inbound_email``), keyed with its own
     secret ``INBOUND_MIME_HMAC_SECRET``. Order (infra review): FIRST the
     adapter must be enabled, else the app's ordinary 404 before a single body
-    byte is read; then a read slot (``READ_SLOTS``, two at a time; full = 503,
-    nothing read); then the capped read (413); then the signature (it needs
-    the body), a missing or wrong one is the same 404. After a valid signature
-    always 202, whatever happened to the mail. Nothing from the request
-    content is logged.
+    byte is read; then a read slot of its own (``MIME_READ_SLOTS``, two at a
+    time, read deadline 408; full = 503, nothing read); then the capped read
+    (413); then the signature (it needs the body), a missing or wrong one is
+    the same 404. After a valid signature always 202, whatever happened to
+    the mail. Nothing from the request content is logged.
     """
     from starlette.exceptions import HTTPException
 
@@ -7333,12 +7348,14 @@ async def inbound_email_webhook(request: Request) -> Response:
     secret = inbound_email.mime_secret()
     if not secret:
         raise HTTPException(status_code=404)
-    if inbound_email.READ_SLOTS.locked():
+    if inbound_email.MIME_READ_SLOTS.locked():
         return _inbound_busy()
-    async with inbound_email.READ_SLOTS:
+    async with inbound_email.MIME_READ_SLOTS:
         if _declared_too_large(request, inbound_email.MAX_BODY_BYTES):
             return JSONResponse({"error": "request body too large"}, status_code=413)
-        raw = await _read_capped_body(request, inbound_email.MAX_BODY_BYTES)
+        raw = await _read_capped_body_in_time(request, inbound_email.MAX_BODY_BYTES)
+        if raw is False:
+            return _inbound_read_timeout()
         if raw is None:
             return JSONResponse({"error": "request body too large"}, status_code=413)
         original_to = request.headers.get(inbound_email.RECIPIENT_HEADER, "")
@@ -7372,8 +7389,9 @@ async def inbound_brevo_webhook(request: Request) -> Response:
     the raw-MIME HMAC key). Order (infra review): FIRST the adapter must be
     enabled, else the app's ordinary 404; then the token with
     ``hmac.compare_digest`` (missing or wrong = the same 404); both before a
-    single body byte is read. Then a read slot (``READ_SLOTS``; full = 503),
-    the capped read (413) and the strict JSON parse (duplicate keys refused).
+    single body byte is read. Then a read slot of its own
+    (``BREVO_READ_SLOTS``; full = 503; read deadline 408), the capped read
+    (413) and the strict JSON parse (duplicate keys refused).
     The answer is 202 right away; checks, attachment downloads, filing and the
     receipt run in a background task (``inbound_email.spawn_processing``,
     serialized under ``PROCESS_LOCK``). Nothing from the request content is
@@ -7390,12 +7408,14 @@ async def inbound_brevo_webhook(request: Request) -> Response:
     if not inbound_email.brevo_token_ok(secret, token):
         logger.info("inbound: refused request (token)")
         raise HTTPException(status_code=404)
-    if inbound_email.READ_SLOTS.locked():
+    if inbound_email.BREVO_READ_SLOTS.locked():
         return _inbound_busy()
-    async with inbound_email.READ_SLOTS:
+    async with inbound_email.BREVO_READ_SLOTS:
         if _declared_too_large(request, inbound_email.BREVO_MAX_BODY_BYTES):
             return JSONResponse({"error": "request body too large"}, status_code=413)
-        raw = await _read_capped_body(request, inbound_email.BREVO_MAX_BODY_BYTES)
+        raw = await _read_capped_body_in_time(request, inbound_email.BREVO_MAX_BODY_BYTES)
+        if raw is False:
+            return _inbound_read_timeout()
         if raw is None:
             return JSONResponse({"error": "request body too large"}, status_code=413)
         try:

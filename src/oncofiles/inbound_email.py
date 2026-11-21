@@ -1122,9 +1122,15 @@ async def _send_receipt(th: str, to: str, accepted: int, skipped: Counter, now: 
 
 # ── concurrency ──────────────────────────────────────────────────────────
 
-# At most two inbound bodies are read at a time (infra review): a third
-# request is answered 503 before a byte of its body is read.
-READ_SLOTS = asyncio.Semaphore(2)
+# At most two inbound bodies are read at a time PER ROUTE (infra review): a
+# third request is answered 503 before a byte of its body is read. Separate
+# slots per route, because the raw-MIME route reads its body before the HMAC
+# can be checked, so unauthenticated callers there must never starve the
+# Brevo route (whose token is checked before any slot is taken). Every read
+# also has a total deadline, so a slow sender cannot hold a slot.
+MIME_READ_SLOTS = asyncio.Semaphore(2)
+BREVO_READ_SLOTS = asyncio.Semaphore(2)
+READ_DEADLINE_S = 30
 # Every inbound mail is processed under ONE lock, one mail after another:
 # the app holds a single DB connection, and processing interleaves DB writes
 # (address rows, Drive-only rows of the upload) with Drive and SMTP awaits.

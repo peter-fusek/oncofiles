@@ -1296,7 +1296,8 @@ async def test_full_read_slots_answer_503_without_reading(idb, route):
     body = _Body(b"{}")
     headers = {"content-length": "2", inbound_email.BREVO_TOKEN_HEADER: BREVO_SECRET}
     handler = getattr(server, f"inbound_{route}_webhook")
-    held = [inbound_email.READ_SLOTS, inbound_email.READ_SLOTS]
+    slots = inbound_email.MIME_READ_SLOTS if route == "email" else inbound_email.BREVO_READ_SLOTS
+    held = [slots, slots]
     for slot in held:
         await slot.acquire()
     try:
@@ -1305,6 +1306,35 @@ async def test_full_read_slots_answer_503_without_reading(idb, route):
         for slot in held:
             slot.release()
     assert resp.status_code == 503 and body.read is False
+
+
+async def test_full_mime_slots_never_block_brevo(idb, monkeypatch):
+    """Unauthenticated raw-MIME callers hold their own slots, never Brevo's."""
+    monkeypatch.setenv(inbound_email.BREVO_TOKEN_ENV, BREVO_SECRET)
+    for _ in range(2):
+        await inbound_email.MIME_READ_SLOTS.acquire()
+    try:
+        body = _Body(b'{"items": []}')
+        headers = {"content-length": "13", inbound_email.BREVO_TOKEN_HEADER: BREVO_SECRET}
+        resp = await server.inbound_brevo_webhook(body.request(idb, headers, "/inbound/brevo"))
+    finally:
+        for _ in range(2):
+            inbound_email.MIME_READ_SLOTS.release()
+    assert resp.status_code == 202
+
+
+async def test_slow_body_read_times_out_and_frees_the_slot(idb, monkeypatch):
+    monkeypatch.setattr(inbound_email, "READ_DEADLINE_S", 0.05)
+
+    class _Slow:
+        headers = {"content-length": "5"}
+
+        async def stream(self):
+            await asyncio.sleep(1)
+            yield b"x"
+
+    assert await server._read_capped_body_in_time(_Slow(), 10) is False
+    assert not inbound_email.MIME_READ_SLOTS.locked()
 
 
 async def test_capped_read_uses_one_buffer(idb):
