@@ -18,7 +18,11 @@ Rules (infra review of #948):
   same way from its held, decrypted bytes, also while Google is off. Never
   the Files API, never a model, no Drive or DB write. The ``thumbnailLink``
   (short-lived, access-bearing) never leaves ``GDriveClient``: only image
-  bytes are proxied, as a data URI.
+  bytes are proxied, as a data URI. A Markdown / plain-text note (``.md``,
+  ``.txt``, text/markdown, text/plain; never CSV/TSV/VCF) with stored page
+  text gets a local drawing of its first lines instead (``_text_previews``),
+  from ``document_pages`` only; the extraction exclusion rule runs on the row
+  and on that text first.
 * **Excluded documents are never loaded.** A row the extraction exclusion
   rule refuses (``curated/llm_input.extraction_exclusion``: raw genotype
   export, ``exclude_extract: true``) and any raw text/CSV/VCF export
@@ -575,6 +579,180 @@ async def _holding_previews(db, patient_id, ids, size, result, reasons) -> list[
     return rest
 
 
+# ── text documents: a local preview of the stored page text ──────────────
+
+# Drive has no thumbnail for a Markdown / plain-text note, so its preview is
+# drawn here from the text already in ``document_pages`` (no Drive download,
+# no model): the first lines in a monospace font on a white A4 page.
+TEXT_PREVIEW_MIMES = frozenset({"text/markdown", "text/x-markdown", "text/plain"})
+TEXT_PREVIEW_EXTENSIONS = (".md", ".markdown", ".txt")
+# Data exports stay out whatever their mime says (their picture is raw data).
+_NOT_TEXT_PREVIEW_EXTENSIONS = (".csv", ".tsv", ".vcf", ".vcf.gz")
+TEXT_PREVIEW_LINES = 25
+TEXT_PREVIEW_LINE_CHARS = 60
+TEXT_PREVIEW_MAX_CHARS = 20_000  # of the stored text read for one preview
+MAX_TEXT_RENDERS_PER_REQUEST = MAX_IDS
+TEXT_RENDER_CONCURRENCY = 1
+_PAGE_W, _PAGE_H = 595.0, 842.0  # A4 in points
+_FRONT_MATTER_RE = re.compile(r"\A---[ \t]*\n.*?\n---[ \t]*(?:\n|\Z)", re.S)
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_text_sems: dict[str, tuple[Any, asyncio.Semaphore]] = {}
+
+
+def _text_semaphore() -> asyncio.Semaphore:
+    """A semaphore of its own for text renders (one per running event loop)."""
+    loop = asyncio.get_running_loop()
+    held = _text_sems.get("current")
+    if held is None or held[0] is not loop:
+        held = (loop, asyncio.Semaphore(TEXT_RENDER_CONCURRENCY))
+        _text_sems["current"] = held
+    return held[1]
+
+
+def is_text_like(doc) -> bool:
+    """A Markdown / plain-text note by mime type or extension (not CSV/TSV/VCF)."""
+    mime = (doc.mime_type or "").lower().split(";")[0].strip()
+    names = [n.lower() for n in (doc.filename, doc.original_filename) if n]
+    if any(n.endswith(_NOT_TEXT_PREVIEW_EXTENSIONS) for n in names):
+        return False
+    if mime and mime not in TEXT_PREVIEW_MIMES and mime.startswith("text/"):
+        return False  # text/csv, text/x-vcf, ...
+    return mime in TEXT_PREVIEW_MIMES or any(n.endswith(TEXT_PREVIEW_EXTENSIONS) for n in names)
+
+
+def text_excluded(doc, pages: list[tuple[int, str]]) -> bool:
+    """The extraction exclusion rule on the row AND its page text (rsIDs,
+    genotype markers, ``exclude_extract: true``); a genetics note is never
+    drawn either. True means no preview."""
+    from oncofiles.curated.llm_input import GENETICS_CATEGORIES, extraction_exclusion
+
+    category = str(getattr(doc.category, "value", doc.category) or "").lower()
+    if category in GENETICS_CATEGORIES:
+        return True
+    meta: Any = doc.structured_metadata
+    if meta:
+        with contextlib.suppress(TypeError, ValueError):
+            meta = json.loads(meta)
+    for name in {doc.filename, doc.original_filename}:
+        row = {"filename": name or "", "mime_type": doc.mime_type, "category": category,
+               "structured_metadata": meta}  # fmt: skip
+        if extraction_exclusion(row, pages):
+            return True
+    return False
+
+
+def preview_lines(text: str) -> list[str]:
+    """The first ``TEXT_PREVIEW_LINES`` lines of *text* as drawn: front matter
+    dropped, tabs expanded, control characters removed, each line cut."""
+    text = _FRONT_MATTER_RE.sub("", text.replace("\r\n", "\n").replace("\r", "\n"), count=1)
+    lines = text.lstrip("\n").split("\n")[:TEXT_PREVIEW_LINES]
+    out = []
+    for line in lines:
+        line = _CONTROL_RE.sub("", line.expandtabs(4)).rstrip()
+        if len(line) > TEXT_PREVIEW_LINE_CHARS:
+            line = line[: TEXT_PREVIEW_LINE_CHARS - 1] + "…"
+        out.append(line)
+    return out
+
+
+def render_text_preview(text: str, width_px: int) -> bytes | None:
+    """A white A4 page with the first lines of *text* (Courier) as a JPEG about
+    ``width_px`` wide, or None. Local PyMuPDF only."""
+    import pymupdf
+
+    lines = preview_lines(text)
+    if not any(lines):
+        return None
+    doc = pymupdf.open()
+    try:
+        page = doc.new_page(width=_PAGE_W, height=_PAGE_H)
+        font = pymupdf.Font("cour")  # built-in; covers Latin Extended-A (č, ľ, ť …)
+        fontsize, left, top = 13.0, 48.0, 64.0
+        writer = pymupdf.TextWriter(page.rect)
+        for n, line in enumerate(lines):
+            if line:
+                writer.append((left, top + n * fontsize * 1.4), line, font=font, fontsize=fontsize)
+        writer.write_text(page, color=(0.13, 0.16, 0.22))
+        zoom = width_px / _PAGE_W
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+        return pix.tobytes("jpeg", jpg_quality=FALLBACK_JPEG_QUALITY)
+    except Exception:
+        return None
+    finally:
+        doc.close()
+
+
+def _text_blocking(text: str, size: str) -> Outcome:
+    image = render_text_preview(text, SIZES_PX[size])
+    if not image or len(image) > MAX_IMAGE_BYTES[size]:
+        return Outcome(None, None, "render_failed")
+    return Outcome(image, "image/jpeg", "ok")
+
+
+async def _text_previews(db, patient_id, ids, size, result, reasons) -> list[int]:
+    """Previews of the patient's text notes, drawn from their stored page text.
+
+    One SQL read of the rows scoped to the patient (``get_documents_by_ids``),
+    then, for a text-like row only, its pages (``get_ocr_pages(...,
+    patient_id=)``), one after the other on the event loop. A row that is not
+    a text note, is deleted, or has no stored text is returned for the paths
+    below, which answer it exactly as before. An excluded note is ``null``.
+    Rendering runs in a worker thread under a semaphore of its own, at most
+    ``MAX_TEXT_RENDERS_PER_REQUEST`` per request and within one batch
+    deadline; the cache key carries a digest of the text, so an edited note
+    gets a new preview. The text is never logged.
+    """
+    import hashlib
+
+    found = await db.get_documents_by_ids(set(ids), patient_id=patient_id)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + BATCH_DEADLINE_S
+    renders = 0
+    rest: list[int] = []
+    for doc_id in ids:
+        doc = found.get(doc_id)
+        if doc is None or doc.deleted_at is not None or not is_text_like(doc):
+            rest.append(doc_id)
+            continue
+        pages = [(int(p["page_number"]), p.get("extracted_text") or "")
+                 for p in await db.get_ocr_pages(doc_id, patient_id=patient_id)]  # fmt: skip
+        text = "\n".join(t for _, t in pages if t)[:TEXT_PREVIEW_MAX_CHARS]
+        if not text.strip():
+            rest.append(doc_id)
+            continue
+        if text_excluded(doc, pages):
+            reasons["excluded"] += 1
+            continue
+        digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+        key = (patient_id, doc_id, size, "text", digest)
+        hit = _cache.get(key)
+        if hit is not None:
+            reasons["cache_hit" if hit.image else "cache_hit_none"] += 1
+            if hit.image and hit.mime:
+                result[str(doc_id)] = {"src": data_uri(hit.image, hit.mime)}
+            continue
+        if loop.time() >= deadline:
+            reasons["deadline"] += 1  # null, not cached
+            continue
+        if renders >= MAX_TEXT_RENDERS_PER_REQUEST:
+            reasons["render_cap"] += 1  # null, not cached
+            continue
+        renders += 1
+        work = functools.partial(_text_blocking, text, size)
+        try:
+            out = await _bounded((_text_semaphore(),), work, deadline)
+        except TimeoutError:
+            out = Outcome(None, None, "timeout")
+        except Exception:
+            out = Outcome(None, None, "render_failed")
+        reasons["text_" + out.reason] += 1
+        if out.cacheable:
+            _cache.put(key, out.image, out.mime)
+        if out.image and out.mime:
+            result[str(doc_id)] = {"src": data_uri(out.image, out.mime)}
+    return rest
+
+
 # ── the batch ────────────────────────────────────────────────────────────
 
 
@@ -601,8 +779,12 @@ async def thumbnails_for(
         # #950 phase 2: holding-store documents are rendered from the held
         # bytes, Google or not; the rest goes the Drive way below.
         ids = await _holding_previews(db, patient_id, ids, size, result, reasons)
+        # Text notes (.md / .txt): drawn locally from the stored page text,
+        # Google or not; anything else goes on unchanged.
+        if ids:
+            ids = await _text_previews(db, patient_id, ids, size, result, reasons)
     if not ids:
-        pass  # every id was a holding document
+        pass  # every id was a holding document or a text note
     elif not google_enabled:
         reasons["google_disabled"] = len(ids)
     elif not patient_id or patient_id == NO_PATIENT_ACCESS_SENTINEL:
