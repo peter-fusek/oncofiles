@@ -283,6 +283,40 @@ class OperationalMixin:
         await self.db.commit()
         return await self.get_oauth_token(token.patient_id, token.provider)
 
+    async def count_google_oauth_accounts(self) -> dict:
+        """Admin-only, cross-patient: Google accounts that granted the OAuth client.
+
+        Counts only, never an e-mail. Two numbers:
+
+        - ``accounts``: distinct keyed account hashes (``new_email_hash``) of
+          every Google link ever STORED (``google_link`` activity_log rows with
+          status ``ok``, written by ``google_link.store_google_link`` for both
+          ``/oauth/callback`` and the MCP callback since #591). activity_log is
+          append-only (#734), so a later revoke or re-link does not lower it,
+          which matches how Google counts users against the unverified-app cap.
+        - ``unaudited_links``: stored Google tokens (``oauth_tokens``) of patients
+          with no such hashed audit row (linked before #591, or stored while no
+          hash key existed). Their account is unknown, so each counts as one.
+        """
+        hashed_link = (
+            "tool_name = 'google_link' AND status = 'ok' AND json_valid(input_summary) "
+            "AND json_extract(input_summary, '$.new_email_hash') IS NOT NULL"
+        )
+        async with self.db.execute(
+            "SELECT COUNT(DISTINCT json_extract(input_summary, '$.new_email_hash')) "
+            f"FROM activity_log WHERE {hashed_link}"
+        ) as cursor:
+            row = await cursor.fetchone()
+            accounts = int(row[0] or 0) if row else 0
+        async with self.db.execute(
+            "SELECT COUNT(*) FROM oauth_tokens WHERE provider = 'google' "
+            "AND patient_id NOT IN (SELECT patient_id FROM activity_log "
+            f"WHERE patient_id IS NOT NULL AND {hashed_link})"
+        ) as cursor:
+            row = await cursor.fetchone()
+            unaudited = int(row[0] or 0) if row else 0
+        return {"accounts": accounts, "unaudited_links": unaudited}
+
     async def get_oauth_token(self, patient_id: str, provider: str = "google") -> OAuthToken | None:
         """Get OAuth tokens for a user/provider pair."""
         async with self.db.execute(

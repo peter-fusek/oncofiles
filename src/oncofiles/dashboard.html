@@ -343,6 +343,14 @@
  </div>
 
  <div class="admin-panel">
+ <button type="button" class="admin-head" data-action="toggleAdminPanel|oauth|@this" aria-expanded="false" aria-controls="admin-body-oauth"><span class="chevron" aria-hidden="true"></span><span data-sk="Používatelia Google OAuth (limit neovereného klienta)" data-en="Google OAuth users (unverified client cap)">Používatelia Google OAuth (limit neovereného klienta)</span></button>
+ <div class="admin-body" id="admin-body-oauth" hidden>
+ <p class="section-lead" data-sk="Google pustí neoverený OAuth klient s prístupom k Drive najviac 100 účtom. Počítajú sa rôzne Google účty, ktoré kedy dokončili prepojenie (aj neskôr odpojené), plus staršie prepojenia bez záznamu účtu (každé ako jeden). Prihlásenie do dashboardu sa nepočíta. Len počty, nikdy adresa." data-en="Google allows an unverified OAuth client with Drive access at most 100 accounts. Counted: distinct Google accounts that ever completed a link (also ones unlinked later), plus older links without an account record (one each). Dashboard sign-in does not count. Counts only, never an address.">Google pustí neoverený OAuth klient s prístupom k Drive najviac 100 účtom. Počítajú sa rôzne Google účty, ktoré kedy dokončili prepojenie (aj neskôr odpojené), plus staršie prepojenia bez záznamu účtu (každé ako jeden). Prihlásenie do dashboardu sa nepočíta. Len počty, nikdy adresa.</p>
+ <p class="curated-ops-note" id="oauth-users-line"></p>
+ </div>
+ </div>
+
+ <div class="admin-panel">
  <button type="button" class="admin-head" data-action="toggleAdminPanel|ai|@this" aria-expanded="false" aria-controls="admin-body-ai"><span class="chevron" aria-hidden="true"></span><span data-sk="Cloudové AI volania a náklady" data-en="Cloud AI calls and cost">Cloudové AI volania a náklady</span></button>
  <div class="admin-body" id="admin-body-ai" hidden>
  <p class="section-lead" data-sk="Cloudové AI je predvolene vypnuté; dokumenty číta lokálny model na našom serveri. Tieto čísla sa týkajú len volaní, ktoré niekto výslovne spustil." data-en="Cloud AI is off by default; documents are read by the local model on our own server. These numbers cover only calls someone started explicitly.">Cloudové AI je predvolene vypnuté; dokumenty číta lokálny model na našom serveri. Tieto čísla sa týkajú len volaní, ktoré niekto výslovne spustil.</p>
