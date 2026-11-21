@@ -340,7 +340,7 @@ def test_reocr_never_selects_an_ocr_v3_sidecar():
 async def test_index_stays_unchanged_over_an_ocr_v3_sidecar(db):
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from tests.helpers import ERIKA_UUID
+    from tests.helpers import PATIENT_A_UUID
 
     d, src = _prior_drive()
     gdrive = MagicMock()
@@ -350,14 +350,16 @@ async def test_index_stays_unchanged_over_an_ocr_v3_sidecar(db):
               AsyncMock(return_value=(gdrive, None, None, d.root))),
         patch("oncofiles.curated.drive_ops.DriveOps", lambda _own: d),
     ):  # fmt: skip
-        first = await curated_tools.index_patient(db, ERIKA_UUID)
-        again = await curated_tools.index_patient(db, ERIKA_UUID)
+        first = await curated_tools.index_patient(db, PATIENT_A_UUID)
+        again = await curated_tools.index_patient(db, PATIENT_A_UUID)
         assert first["created"] == 1
         assert not again["created"] and not again.get("updated")
         assert again["unchanged"] == 1
-        doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+        doc = await db.get_document_by_gdrive_id(src, patient_id=PATIENT_A_UUID)
         assert "ocr-v3" in str(doc.structured_metadata)  # the old reading is kept as it is
-        targets = await curated_tools._reocr_targets(db, ERIKA_UUID, None, only_with_facts=False)
+        targets = await curated_tools._reocr_targets(
+            db, PATIENT_A_UUID, None, only_with_facts=False
+        )
         assert targets == []
     assert d.writes == []
 
