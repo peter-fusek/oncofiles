@@ -22,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from oncofiles import mailer, scheduler_singleton, session_revocation
+from oncofiles.cloud_guard import local_only_task
 from oncofiles.config import (
     AI_NIGHT_WINDOW_START_UTC,
     AI_NIGHTLY_ONLY,
@@ -417,7 +418,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         # #784: one curated loop per process; a second lifespan gets the same task.
         curated_nightly_task, loop_started = scheduler_singleton.ensure_curated_loop(
-            lambda: asyncio.create_task(curated_nightly_loop(db))
+            # #925: the loop (continuous turns + nightly sweep) is a local-only zone.
+            lambda: asyncio.create_task(local_only_task("curated loop", curated_nightly_loop)(db))
         )
         if loop_started:
             cont, poll_s, settle_s, chunk = continuous_settings()
@@ -1625,7 +1627,7 @@ def _start_sync_scheduler(
         #   a restart at 23:10 doesn't silently skip the 23:00 run (#440).
         # coalesce=True: if multiple misses accumulate, run once — never double-bill.
         scheduler.add_job(
-            _run_nightly_ai_pipeline,
+            local_only_task("nightly_ai_pipeline", _run_nightly_ai_pipeline),
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=0),
             id="nightly_ai_pipeline",
             max_instances=1,
@@ -1638,7 +1640,7 @@ def _start_sync_scheduler(
         # offset from the nightly slot keeps the budget gate reading the
         # latest spend from the just-finished nightly run.
         scheduler.add_job(
-            _run_weekly_discovery_pipeline,
+            local_only_task("weekly_discovery_pipeline", _run_weekly_discovery_pipeline),
             CronTrigger(day_of_week="sun", hour=AI_NIGHT_WINDOW_START_UTC, minute=30),
             id="weekly_discovery_pipeline",
             max_instances=1,
@@ -1657,7 +1659,7 @@ def _start_sync_scheduler(
         if AI_RUN_ON_STARTUP:
             _oneoff_at = datetime.now() + timedelta(minutes=2)
             scheduler.add_job(
-                _run_nightly_ai_pipeline,
+                local_only_task("nightly_ai_oneoff", _run_nightly_ai_pipeline),
                 DateTrigger(run_date=_oneoff_at),
                 id="nightly_ai_oneoff",
                 max_instances=1,
@@ -1668,25 +1670,25 @@ def _start_sync_scheduler(
             )
     else:
         scheduler.add_job(
-            _run_sync,
+            local_only_task("gdrive_sync", _run_sync),
             IntervalTrigger(minutes=SYNC_INTERVAL_MINUTES),
             id="gdrive_sync",
             max_instances=1,
         )
         scheduler.add_job(
-            _run_enhancement_sweep,
+            local_only_task("enhancement_sweep", _run_enhancement_sweep),
             CronTrigger(hour=3, minute=20),
             id="enhancement_sweep",
             max_instances=1,
         )
         scheduler.add_job(
-            _run_metadata_extraction,
+            local_only_task("metadata_extraction", _run_metadata_extraction),
             CronTrigger(hour=3, minute=30),
             id="metadata_extraction",
             max_instances=1,
         )
         scheduler.add_job(
-            _run_document_groups_backfill,
+            local_only_task("document_groups_backfill", _run_document_groups_backfill),
             CronTrigger(hour=3, minute=55),
             id="document_groups_backfill",
             max_instances=1,
@@ -1721,7 +1723,7 @@ def _start_sync_scheduler(
             logger.exception("tier_transition job failed")
 
     scheduler.add_job(
-        _run_tier_transition,
+        local_only_task("tier_transition", _run_tier_transition),
         CronTrigger(hour=0, minute=5),
         id="tier_transition",
         max_instances=1,
@@ -1730,13 +1732,13 @@ def _start_sync_scheduler(
     )
 
     scheduler.add_job(
-        _run_oauth_token_cleanup,
+        local_only_task("oauth_token_cleanup", _run_oauth_token_cleanup),
         CronTrigger(hour=4, minute=0),
         id="oauth_token_cleanup",
         max_instances=1,
     )
     scheduler.add_job(
-        _run_prompt_log_cleanup,
+        local_only_task("prompt_log_cleanup", _run_prompt_log_cleanup),
         CronTrigger(hour=4, minute=15),
         id="prompt_log_cleanup",
         max_instances=1,
@@ -1744,7 +1746,7 @@ def _start_sync_scheduler(
     # #868: 04:25 UTC = 05:25 / 06:25 Europe/Bratislava, outside the 00:30-02:30
     # local night window (curated nightly runs, AI pipeline).
     scheduler.add_job(
-        _run_dashboard_access_log_retention,
+        local_only_task("dashboard_access_log_retention", _run_dashboard_access_log_retention),
         CronTrigger(hour=4, minute=25, timezone="UTC"),
         id="dashboard_access_log_retention",
         max_instances=1,
@@ -1755,7 +1757,7 @@ def _start_sync_scheduler(
     # Pipeline integrity check: opt-in only (AI-touching; gated by ENABLE_INTEGRITY_CHECK)
     if ENABLE_INTEGRITY_CHECK:
         scheduler.add_job(
-            _run_pipeline_integrity_check,
+            local_only_task("pipeline_integrity", _run_pipeline_integrity_check),
             CronTrigger(hour="*/6", minute=30),
             id="pipeline_integrity",
             max_instances=1,
@@ -1853,7 +1855,7 @@ def _start_sync_scheduler(
             logger.exception("sync_watchdog failed")
 
     scheduler.add_job(
-        _run_sync_watchdog,
+        local_only_task("sync_watchdog", _run_sync_watchdog),
         IntervalTrigger(hours=1, start_date=datetime.now() + timedelta(minutes=5)),
         id="sync_watchdog",
         max_instances=1,
@@ -1925,7 +1927,7 @@ def _start_sync_scheduler(
     # handles category upgrades inline during phase 2/3 via structured_metadata. #433
     if not AI_NIGHTLY_ONLY:
         scheduler.add_job(
-            _run_category_validation,
+            local_only_task("category_validation", _run_category_validation),
             CronTrigger(hour=3, minute=45),
             id="category_validation",
             max_instances=1,
@@ -1945,7 +1947,7 @@ def _start_sync_scheduler(
         await run_weekly_analytics(db)
 
     scheduler.add_job(
-        _run_weekly_analytics,
+        local_only_task("weekly_analytics", _run_weekly_analytics),
         CronTrigger(day_of_week="sun", hour=5, minute=0),  # Sunday 5:00 AM
         id="weekly_analytics",
         max_instances=1,
@@ -2047,7 +2049,7 @@ def _start_sync_scheduler(
 
     startup_time = datetime.now() + timedelta(seconds=90)
     scheduler.add_job(
-        _startup_catchup,
+        local_only_task("startup_catchup", _startup_catchup),
         DateTrigger(run_date=startup_time),
         id="startup_catchup",
         max_instances=1,
@@ -2092,7 +2094,7 @@ def _start_sync_scheduler(
         logger.info("Gmail sync not scheduled — GMAIL_CALENDAR_ENABLED=false (#618/#699)")
     elif AI_NIGHTLY_ONLY:
         scheduler.add_job(
-            _run_gmail_sync,
+            local_only_task("gmail_sync", _run_gmail_sync),
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=15),
             id="gmail_sync",
             max_instances=1,
@@ -2102,7 +2104,7 @@ def _start_sync_scheduler(
         logger.info("Gmail sync scheduled — nightly at %02d:15 UTC", AI_NIGHT_WINDOW_START_UTC)
     else:
         scheduler.add_job(
-            _run_gmail_sync,
+            local_only_task("gmail_sync", _run_gmail_sync),
             IntervalTrigger(
                 minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=2)
             ),
@@ -2111,7 +2113,7 @@ def _start_sync_scheduler(
         )
         gmail_startup_time = datetime.now() + timedelta(seconds=150)
         scheduler.add_job(
-            lambda: _run_gmail_sync("startup", initial=True),
+            local_only_task("gmail_startup_sync", lambda: _run_gmail_sync("startup", initial=True)),
             DateTrigger(run_date=gmail_startup_time),
             id="gmail_startup_sync",
             max_instances=1,
@@ -2176,7 +2178,7 @@ def _start_sync_scheduler(
         logger.info("Calendar sync not scheduled — GMAIL_CALENDAR_ENABLED=false (#618/#699)")
     elif AI_NIGHTLY_ONLY:
         scheduler.add_job(
-            _run_calendar_sync,
+            local_only_task("calendar_sync", _run_calendar_sync),
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=20),
             id="calendar_sync",
             max_instances=1,
@@ -2186,7 +2188,7 @@ def _start_sync_scheduler(
         logger.info("Calendar sync scheduled — nightly at %02d:20 UTC", AI_NIGHT_WINDOW_START_UTC)
     else:
         scheduler.add_job(
-            _run_calendar_sync,
+            local_only_task("calendar_sync", _run_calendar_sync),
             IntervalTrigger(
                 minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=3)
             ),
@@ -2195,7 +2197,9 @@ def _start_sync_scheduler(
         )
         calendar_startup_time = datetime.now() + timedelta(seconds=210)
         scheduler.add_job(
-            lambda: _run_calendar_sync("startup", initial=True),
+            local_only_task(
+                "calendar_startup_sync", lambda: _run_calendar_sync("startup", initial=True)
+            ),
             DateTrigger(run_date=calendar_startup_time),
             id="calendar_startup_sync",
             max_instances=1,
@@ -2278,7 +2282,7 @@ def _start_sync_scheduler(
     # OF-1/OF-2: Periodic memory check — reclaim memory + graceful restart.
     # Start after 7 min to avoid false positives from startup sync spike (#366).
     scheduler.add_job(
-        periodic_memory_check,
+        local_only_task("memory_check", periodic_memory_check),
         IntervalTrigger(
             minutes=5,
             start_date=datetime.now() + timedelta(minutes=7),
