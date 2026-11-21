@@ -1003,6 +1003,7 @@ dependencies = [
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
     { name = "httpx" },
+    { name = "publicsuffixlist" },
     { name = "pydantic" },
     { name = "pymupdf" },
     { name = "pynacl" },
@@ -1035,6 +1036,7 @@ requires-dist = [
     { name = "google-auth-oauthlib", specifier = ">=1.1.0" },
     { name = "google-cloud-storage", marker = "extra == 'backup'", specifier = ">=2.18.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "publicsuffixlist", specifier = "==1.1.2.20261106" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pymupdf", specifier = ">=1.24.0" },
     { name = "pynacl", specifier = ">=1.5.0" },
@@ -1132,6 +1134,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c5/f5/65d838092fd01c44d16037953fd4c2cc851e783de9b8f02b27ec4ffd906f/protobuf-6.33.5-cp39-abi3-manylinux2014_s390x.whl", hash = "sha256:8afa18e1d6d20af15b417e728e9f60f3aa108ee76f23c3b2c07a2c3b546d3afd", size = 339411, upload-time = "2026-01-29T21:51:27.446Z" },
     { url = "https://files.pythonhosted.org/packages/9b/53/a9443aa3ca9ba8724fdfa02dd1887c1bcd8e89556b715cfbacca6b63dbec/protobuf-6.33.5-cp39-abi3-manylinux2014_x86_64.whl", hash = "sha256:cbf16ba3350fb7b889fca858fb215967792dc125b35c7976ca4818bee3521cf0", size = 323465, upload-time = "2026-01-29T21:51:28.925Z" },
     { url = "https://files.pythonhosted.org/packages/57/bf/2086963c69bdac3d7cff1cc7ff79b8ce5ea0bec6797a017e1be338a46248/protobuf-6.33.5-py3-none-any.whl", hash = "sha256:69915a973dd0f60f31a08b8318b73eab2bd6a392c79184b3612226b0a3f8ec02", size = 170687, upload-time = "2026-01-29T21:51:32.557Z" },
+]
+
+[[package]]
+name = "publicsuffixlist"
+version = "1.1.2.20261106"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/93/58/25ba5f0cc8871ba7149211c6bc6ecc6ab6beabcb8079db45e8ca251e4159/publicsuffixlist-1.1.2.20261106.tar.gz", hash = "sha256:6688f0eb52baa4f07d196ef4d0410ea44aa3cc741283116a000f6a89a4d041b7", size = 106709, upload-time = "2026-11-06T10:43:25.408Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/92/4d99101c827c49e27f112e4c59fb55743e44bf6fad713e1e6428f654b542/publicsuffixlist-1.1.2.20261106-py3-none-any.whl", hash = "sha256:cda0b4c588b03f116bad6704fa46556739cb380a292cf3c5b9fdf58104239a95", size = 109471, upload-time = "2026-11-06T10:43:23.252Z" },
 ]
 
 [[package]]

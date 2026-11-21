@@ -12,72 +12,95 @@ No helper deletes a row (#734): a verified job ends ``done`` or ``failed``.
 from __future__ import annotations
 
 from ._base import DatabaseBase
-from ._inbound_jobs import INBOUND_JOB_STATES, InboundQueueFullError
+from ._inbound_jobs import INBOUND_JOB_STATES
 
 _OPEN_STATES = "('pending', 'processing')"
 
 
 class InboundClaimedJobsMixin(DatabaseBase):
-    async def _open_claimed(self, bucket: str | None = None) -> int:
+    async def _open_claimed(self, where: str = "", params: tuple = ()) -> int:
         sql = f"SELECT COUNT(*) FROM inbound_claimed_jobs WHERE state IN {_OPEN_STATES}"
-        params: tuple = ()
-        if bucket is not None:
-            sql += " AND bucket = ?"
-            params = (bucket,)
+        if where:
+            sql += " AND " + where
         async with self.db.execute(sql, params) as cursor:
             return int((await cursor.fetchone())[0])
 
     async def insert_inbound_claimed_jobs(
-        self, rows: list[dict], *, now: str | None = None, caps: dict[str, tuple[int, int]]
-    ) -> tuple[int, int]:
-        """Queue claimed ``rows`` in ONE transaction; returns (inserted, duplicates).
+        self, rows: list[dict], *, now: str | None = None, caps: dict[str, int]
+    ) -> tuple[int, int, dict[str, int]]:
+        """Queue claimed ``rows`` in ONE transaction.
 
-        Each row: ``job_uuid``, ``bucket``, ``message_id_hash``,
-        ``sender_hash``, ``payload_enc``. ``caps[kind] = (per bucket, total)``
-        with kind ``welcome`` for the welcome bucket and ``address`` for an
-        address token bucket, over open (pending + processing) rows. A row
-        already queued (a Brevo retry) is never counted against a cap. A
-        batch that would pass a cap raises ``InboundQueueFullError("claimed")``
-        and NOTHING is written (the route answers 503 + Retry-After, so Brevo
-        retries a real mail once the bucket has room again).
+        Returns (inserted, duplicates, dropped per cap). Each row:
+        ``job_uuid``, ``bucket``, ``message_id_hash``, ``sender_hash``,
+        ``domain_hash``, ``delivery_hash``, ``payload_enc``. Caps over open
+        (pending + processing) rows, keys of ``caps``: ``address`` / ``welcome``
+        (per bucket of that kind), ``total``, ``sender`` (per sender hash, all
+        buckets), ``domain`` (per From domain within a bucket). A row already
+        queued (a Brevo retry of the same delivery) is never counted. A row
+        over a cap is DROPPED and counted (infra review of #966): the rest of
+        the batch is still queued and the route still answers 202, so one
+        flooded address never makes the whole Brevo batch fail.
         """
         keep: list[dict] = []
-        added: dict[str | None, int] = {}
+        dropped: dict[str, int] = {}
+        added: dict[tuple, int] = {}
         # Reads only, outside the try (never roll back the shared connection).
         for row in rows:
             async with self.db.execute(
                 """SELECT 1 FROM inbound_claimed_jobs WHERE bucket = ?
-                   AND message_id_hash = ? AND sender_hash = ? LIMIT 1""",
-                (row["bucket"], row["message_id_hash"], row["sender_hash"]),
+                   AND message_id_hash = ? AND sender_hash = ? AND delivery_hash = ?
+                   LIMIT 1""",
+                (row["bucket"], row["message_id_hash"], row["sender_hash"], row["delivery_hash"]),
             ) as cursor:
                 if await cursor.fetchone() is not None:
                     keep.append(row)
                     continue
-            bucket = row["bucket"]
-            per_bucket, total = caps["welcome" if bucket == "welcome" else "address"]
-            if (
-                await self._open_claimed(bucket) + added.get(bucket, 0) >= per_bucket
-                or await self._open_claimed() + added.get(None, 0) >= total
-            ):
-                raise InboundQueueFullError("claimed")
-            added[bucket] = added.get(bucket, 0) + 1
-            added[None] = added.get(None, 0) + 1
+            bucket, sender, domain = row["bucket"], row["sender_hash"], row["domain_hash"]
+            checks = (
+                (
+                    "welcome" if bucket == "welcome" else "address",
+                    ("bucket", bucket),
+                    "bucket = ?",
+                    (bucket,),
+                ),
+                ("total", ("total",), "", ()),
+                ("sender", ("sender", sender), "sender_hash = ?", (sender,)),
+                (
+                    "domain",
+                    ("domain", bucket, domain),
+                    "bucket = ? AND domain_hash = ?",
+                    (bucket, domain),
+                ),
+            )
+            over = None
+            for cap, key, where, params in checks:
+                if await self._open_claimed(where, params) + added.get(key, 0) >= caps[cap]:
+                    over = cap
+                    break
+            if over:
+                dropped[over] = dropped.get(over, 0) + 1
+                continue
+            for _cap, key, _w, _p in checks:
+                added[key] = added.get(key, 0) + 1
             keep.append(row)
         inserted = 0
         try:
             for row in keep:
                 cursor = await self.db.execute(
                     """INSERT INTO inbound_claimed_jobs
-                       (job_uuid, bucket, message_id_hash, sender_hash, payload_enc,
-                        state, attempts, next_attempt_at)
-                       VALUES (?, ?, ?, ?, ?, 'pending', 0,
+                       (job_uuid, bucket, message_id_hash, sender_hash, domain_hash,
+                        delivery_hash, payload_enc, state, attempts, next_attempt_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0,
                                COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ','now')))
-                       ON CONFLICT (bucket, message_id_hash, sender_hash) DO NOTHING""",
+                       ON CONFLICT (bucket, message_id_hash, sender_hash, delivery_hash)
+                       DO NOTHING""",
                     (
                         row["job_uuid"],
                         row["bucket"],
                         row["message_id_hash"],
                         row["sender_hash"],
+                        row["domain_hash"],
+                        row["delivery_hash"],
                         row["payload_enc"],
                         now,
                     ),
@@ -87,7 +110,7 @@ class InboundClaimedJobsMixin(DatabaseBase):
         except Exception:
             await self.db.rollback()
             raise
-        return inserted, len(keep) - inserted
+        return inserted, len(keep) - inserted, dropped
 
     async def next_inbound_claimed_job(self, *, now: str, stale_before: str) -> dict | None:
         """The next claimable row (pending and due, or a stale processing one)."""

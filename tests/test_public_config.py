@@ -74,8 +74,9 @@ async def test_dkim_mode_needs_no_authserv_id(no_inbound_env):
         no_inbound_env.setenv(name, "x")
     assert inbound_email.verification_mode() == "dkim"
     assert (await _body())["inbound_welcome_enabled"] is True
+    # #966: the old authserv-id is ignored (DKIM only); it changes nothing
     no_inbound_env.setenv("INBOUND_BREVO_AUTHSERV_ID", "mx.synthetic.test")
-    assert inbound_email.verification_mode() == "authserv"
+    assert inbound_email.verification_mode() == "dkim"
     assert (await _body())["inbound_welcome_enabled"] is True
 
 

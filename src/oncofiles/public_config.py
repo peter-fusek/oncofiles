@@ -22,8 +22,8 @@ WELCOME_ADDRESS = f"welcome@{INBOUND_DOMAIN}"
 # Every one of these must be set before the landing may show the welcome
 # address: the Brevo route token, the durable queue key (#952) and the holding
 # store key. The sender verification must also be ready
-# (``inbound_email.verification_ready``: mode ``dkim`` needs nothing extra,
-# mode ``authserv`` is used only while ``INBOUND_BREVO_AUTHSERV_ID`` is set).
+# (``inbound_email.verification_ready``: DKIM only, it needs nothing extra;
+# ``INBOUND_BREVO_AUTHSERV_ID`` is ignored and changes nothing here).
 INBOUND_WELCOME_ENVS = (
     "INBOUND_BREVO_TOKEN",
     "INBOUND_JOBS_SECRET",

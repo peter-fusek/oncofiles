@@ -352,15 +352,17 @@ class InboundMessage:
     # #950 phase 2: admitted through welcome@ (``inbound_welcome.admit``): the
     # reply is the welcome text instead of the receipt.
     welcome: bool = False
-    # #950 DKIM mode (Brevo): ``auth_mode == "dkim"`` = the verdict is not
-    # known yet (``auth_pass`` stays False) and is decided by the queue worker
-    # on the raw message (``inbound_dkim``); ``eml_ref`` is Brevo's
-    # ``EMLDownloadToken``; ``dkim_header`` = the payload's headers name at
-    # least one ``DKIM-Signature`` (without one the verdict is ``dkim_none``
-    # at once, no download). Never logged.
+    # #950 (Brevo): ``auth_mode == "dkim"`` = the verdict is not known yet
+    # (``auth_pass`` stays False) and is decided by the queue worker on the
+    # raw message (``inbound_dkim``); ``eml_ref`` is Brevo's
+    # ``EMLDownloadToken``; ``dkim_prefilter`` is the refusal code the
+    # payload's own ``DKIM-Signature`` headers already give (``dkim_none`` /
+    # ``dkim_not_aligned``; "" = worth verifying); ``delivery_id`` is Brevo's
+    # per-delivery ``Uuid`` (part of the claimed dedupe key). Never logged.
     auth_mode: str = ""
     eml_ref: str = ""
-    dkim_header: bool = False
+    dkim_prefilter: str = ""
+    delivery_id: str = ""
 
 
 class UnparseableMessageError(ValueError):
@@ -563,50 +565,52 @@ async def _load_referenced(
 #   behind Traefik/TLS and the token must be rotated like a password.
 # * There is no SPF/DKIM/DMARC field. The original headers are in
 #   ``Headers``, but any sender can put an ``Authentication-Results`` line in
-#   their own mail, and whether Brevo's MX adds (and strips foreign copies of)
-#   its own line is NOT documented. So ``auth_pass`` is True only when
-#   exactly one ``Authentication-Results`` header carries the authserv-id of
-#   the runtime env ``INBOUND_BREVO_AUTHSERV_ID`` (two or more = a forged copy
-#   may be among them = fail), the topmost such line is used, and it says
-#   ``dmarc=pass`` with ``header.from`` equal to the From domain. Unset (the
-#   default) = every sender fails the check = nothing is filed, everything is
-#   listed as unmatched. Infra sets it only after reading a live payload.
-# Not verified (needs a live payload): the exact ``Headers`` shape, which
-# Authentication-Results line Brevo's MX writes, the ``auth`` header format.
+#   their own mail.
 #
 # Production finding (2026-11-21): Brevo's payload has NO
-# Authentication-Results header at all. So the default verification mode is
-# ``dkim`` (``VERIFICATION_MODE_DEFAULT``): the queue worker downloads the raw
-# message (item key ``EMLDownloadToken``) and verifies its DKIM signatures
-# itself (``inbound_dkim``; the design is in ``inbound_queue``). The
-# Authentication-Results rule above stays available as mode ``authserv``,
-# used only while ``INBOUND_BREVO_AUTHSERV_ID`` is set.
+# Authentication-Results header at all, so any such header in a payload was
+# written by the sender. The verdict is therefore DKIM ONLY (infra review of
+# #966): the queue worker downloads the raw message (item key
+# ``EMLDownloadToken``) and verifies its DKIM signatures itself
+# (``inbound_dkim``; the design is in ``inbound_queue``). The earlier
+# Authentication-Results mode was removed: ``INBOUND_BREVO_AUTHSERV_ID`` is
+# ignored (one ERROR when it is set; the verdict stays DKIM, fail closed).
+# Authentication-Results headers are still read for the go-live diagnostics
+# (authserv-id candidates), never for a verdict.
 
 BREVO_ATTACHMENT_URL = "https://api.brevo.com/v3/inbound/attachments/{token}"
 BREVO_TOKEN_HEADER = "x-inbound-token"
 BREVO_API_KEY_ENV = "BREVO_API_KEY"
+# Ignored on purpose (see above); its presence is reported once as an ERROR.
 BREVO_AUTHSERV_ENV = "INBOUND_BREVO_AUTHSERV_ID"
-VERIFICATION_MODE_DEFAULT = "dkim"
-VERIFICATION_MODES = ("dkim", "authserv")
+VERIFICATION_MODE = "dkim"
+_warned_authserv = False
 
 
 def verification_mode() -> str:
-    """``authserv`` while ``INBOUND_BREVO_AUTHSERV_ID`` is set, else ``dkim``."""
-    if os.environ.get(BREVO_AUTHSERV_ENV, "").strip():
-        return "authserv"
-    return VERIFICATION_MODE_DEFAULT
+    """Always ``dkim``. A set ``INBOUND_BREVO_AUTHSERV_ID`` is ignored and
+    logged once as an ERROR: an Authentication-Results header in a Brevo
+    payload comes from the sender and must never pass a mail."""
+    global _warned_authserv
+    if os.environ.get(BREVO_AUTHSERV_ENV, "").strip() and not _warned_authserv:
+        _warned_authserv = True
+        logger.error(
+            "inbound: INBOUND_BREVO_AUTHSERV_ID is set but ignored: Brevo sends no "
+            "Authentication-Results, the sender verdict is DKIM only; unset it"
+        )
+    return VERIFICATION_MODE
 
 
 def verification_ready() -> bool:
-    """The sender verification can decide a verdict: ``dkim`` needs nothing
-    extra (the EML is fetched with the same ``BREVO_API_KEY`` as the
-    attachments), ``authserv`` needs its authserv-id (set, by definition)."""
-    return verification_mode() in VERIFICATION_MODES
+    """The DKIM verification needs nothing extra (the EML is fetched with the
+    same ``BREVO_API_KEY`` as the attachments)."""
+    return verification_mode() == VERIFICATION_MODE
 
 
 BREVO_MAX_BODY_BYTES = 8 * 1024 * 1024  # JSON only: bodies and headers, no files
 BREVO_MAX_ITEMS = 20
 _DOWNLOAD_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,512}$")  # no dots, no slashes
+_DELIVERY_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 def brevo_token_ok(secret: str, header: str) -> bool:
@@ -644,92 +648,32 @@ def _brevo_headers(raw) -> dict[str, list[str]]:
     return out
 
 
-_SINGLE_VALUED_AUTH_HEADERS = ("from", "sender", "return-path")
-_AR_HEADER_FROM = re.compile(r"(?:^|[\s;])header\.from=([^\s;]+)")
-_AR_DMARC_PASS = re.compile(r"(?:^|[\s;])dmarc=pass\b")
-
-
-# Why the trusted verdict refused a Brevo item (go-live diagnostics, #950):
-# one code per refusal, in the order of the checks. Counted in memory and
-# shown in the admin overview as ``auth_refusals``; never a header value.
+# Why the sender verdict refused a Brevo item (#950): one code per refusal,
+# the DKIM codes of ``inbound_dkim.DKIM_REFUSAL_REASONS`` (same order).
+# Counted in memory and shown in the admin overview as ``auth_refusals``;
+# never a header value.
 AUTH_REFUSAL_REASONS = (
-    "authserv_unset",
-    "single_header_repeated",
-    "from_header_mismatch",
-    "no_trusted_line",
-    "multiple_trusted_lines",
-    "dmarc_not_pass",
-    "header_from_missing",
-    "header_from_mismatch",
-    # mode ``dkim`` (``inbound_dkim.DKIM_REFUSAL_REASONS``, same order)
     "eml_unavailable",
+    "eml_too_large",
     "from_repeated",
     "from_mismatch",
     "dkim_none",
     "dkim_not_aligned",
+    "dkim_malformed",
     "dkim_l_tag",
     "dkim_weak_alg",
     "dkim_weak_key",
+    "dkim_expired",
     "dkim_invalid",
+    "dkim_h_incomplete",
+    "recipient_not_signed",
+    "stale_date",
 )
 
 
 def note_auth_refusal(reason: str) -> None:
     """Count one refused verdict by its code (admin overview ``auth_refusals``)."""
     _state.auth_refusals[reason] += 1
-
-
-def _brevo_auth_refusal(headers: dict[str, list[str]], sender: str) -> str | None:
-    """The trusted Authentication-Results verdict for ``sender`` (fail closed).
-
-    Returns ``None`` on a pass, otherwise the first failing check as a code of
-    :data:`AUTH_REFUSAL_REASONS`.
-
-    Only lines whose authserv-id equals ``INBOUND_BREVO_AUTHSERV_ID`` count.
-    More than one such line = refused (a sender may have planted a copy with
-    the trusted id below the real one). The topmost (= only) trusted line must
-    say ``dmarc=pass`` AND carry ``header.from`` equal to the From domain,
-    case-insensitive.
-    """
-    authserv = os.environ.get(BREVO_AUTHSERV_ENV, "").strip().lower()
-    if not authserv:
-        return "authserv_unset"
-    # A header the verdict leans on that should occur once but occurs more
-    # often: refused (fail closed).
-    if any(len(headers.get(name, [])) > 1 for name in _SINGLE_VALUED_AUTH_HEADERS):
-        return "single_header_repeated"
-    header_from = headers.get("from")
-    if header_from and _domain(parseaddr(header_from[0])[1]) != _domain(sender):
-        return "from_header_mismatch"
-    trusted = [
-        line.partition(";")[2].lower()
-        for line in headers.get("authentication-results", [])
-        if line.partition(";")[0].strip().lower() == authserv
-    ]
-    if not trusted:
-        return "no_trusted_line"
-    if len(trusted) > 1:
-        return "multiple_trusted_lines"
-    line = trusted[0]
-    if not _AR_DMARC_PASS.search(line):
-        return "dmarc_not_pass"
-    match = _AR_HEADER_FROM.search(line)
-    if not match:
-        return "header_from_missing"
-    domain = match.group(1).strip().strip('"').rstrip(".").lower()
-    if not domain or domain != _domain(sender):
-        return "header_from_mismatch"
-    return None
-
-
-def _brevo_auth_pass(headers: dict[str, list[str]], sender: str) -> bool:
-    """True only when :func:`_brevo_auth_refusal` finds nothing; a refusal is
-    counted by reason code (admin overview ``auth_refusals``)."""
-    reason = _brevo_auth_refusal(headers, sender)
-    if reason is None:
-        return True
-    _state.auth_refusals[reason] += 1
-    return False
 
 
 # Authserv-id candidates (go-live diagnostics, #950): infra must learn which
@@ -1107,15 +1051,21 @@ def parse_brevo_item(item: dict) -> InboundMessage:
     eml_ref = str(item.get("EMLDownloadToken") or "")
     if not _DOWNLOAD_TOKEN_RE.match(eml_ref):
         eml_ref = ""
-    dkim_mode = verification_mode() == "dkim"
+    uuids = item.get("Uuid")
+    delivery = uuids[0] if isinstance(uuids, list) and uuids else uuids
+    delivery = str(delivery) if isinstance(delivery, str) else ""
+    from oncofiles.inbound_dkim import payload_prefilter
+
+    verification_mode()  # reports a set INBOUND_BREVO_AUTHSERV_ID once
     return InboundMessage(
         recipients=recipients,
         sender=sender,
-        # mode dkim: decided later by the queue worker on the raw message
-        auth_pass=False if dkim_mode else _brevo_auth_pass(headers, sender),
-        auth_mode="dkim" if dkim_mode else "",
+        # DKIM only: decided later by the queue worker on the raw message
+        auth_pass=False,
+        auth_mode="dkim",
         eml_ref=eml_ref,
-        dkim_header=bool(headers.get("dkim-signature")),
+        dkim_prefilter=payload_prefilter(headers.get("dkim-signature") or [], sender) or "",
+        delivery_id=delivery if _DELIVERY_ID_RE.match(delivery) else "",
         message_id=str(item.get("MessageId") or "").strip(),
         auto_submitted=first("auto-submitted"),
         precedence=first("precedence"),

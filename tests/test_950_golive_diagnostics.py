@@ -178,96 +178,40 @@ def test_no_payload_items_no_log(caplog):
 
 
 # ── auth refusal reason codes ────────────────────────────────────────────
+#
+# #966 (infra review): the Authentication-Results verdict was removed. Brevo
+# sends no A-R header, so any such header comes from the sender: it is still
+# read for the authserv-id candidates above, never for a verdict.
 
 
+@pytest.mark.parametrize("env", [None, AUTHSERV])
 @pytest.mark.parametrize(
-    ("env", "headers", "sender", "reason"),
+    "headers",
     [
-        (None, {"Authentication-Results": ar()}, SENDER, "authserv_unset"),
-        (
-            AUTHSERV,
-            {"Authentication-Results": ar(), "From": [SENDER, SENDER]},
-            SENDER,
-            "single_header_repeated",
-        ),
-        (
-            AUTHSERV,
-            {"Authentication-Results": ar(), "Return-Path": ["<a@x.test>", "<b@x.test>"]},
-            SENDER,
-            "single_header_repeated",
-        ),
-        (
-            AUTHSERV,
-            {"Authentication-Results": ar(), "From": "Other <someone@elsewhere.test>"},
-            SENDER,
-            "from_header_mismatch",
-        ),
-        (AUTHSERV, {"Authentication-Results": ar("other.example")}, SENDER, "no_trusted_line"),
-        (AUTHSERV, {}, SENDER, "no_trusted_line"),
-        # a forged lower line carrying the trusted id next to the real one
-        (
-            AUTHSERV,
-            {"Authentication-Results": [ar(), ar()]},
-            SENDER,
-            "multiple_trusted_lines",
-        ),
-        (AUTHSERV, {"Authentication-Results": ar(dmarc="fail")}, SENDER, "dmarc_not_pass"),
-        (
-            AUTHSERV,
-            {"Authentication-Results": f"{AUTHSERV}; spf=pass; dmarc=pass"},
-            SENDER,
-            "header_from_missing",
-        ),
-        (
-            AUTHSERV,
-            {"Authentication-Results": ar(domain="elsewhere.test")},
-            SENDER,
-            "header_from_mismatch",
-        ),
+        {"Authentication-Results": ar()},
+        {"Authentication-Results": [ar(), ar()]},
+        {"Authentication-Results": ar(), "From": f"Synthetic Carer <{SENDER}>"},
     ],
 )
-def test_each_refusal_reason(monkeypatch, env, headers, sender, reason):
+def test_an_authentication_results_header_never_passes(monkeypatch, env, headers):
     if env is None:
         monkeypatch.delenv(inbound_email.BREVO_AUTHSERV_ENV, raising=False)
     else:
         monkeypatch.setenv(inbound_email.BREVO_AUTHSERV_ENV, env)
-    parsed = inbound_email._brevo_headers(headers)
-    assert inbound_email._brevo_auth_refusal(parsed, sender) == reason
-    msg = inbound_email.parse_brevo_item(item(headers, sender))
-    assert msg.auth_pass is False
-    refusals = overview()["auth_refusals"]
-    if env is None:
-        # #950: without the authserv-id the mode is ``dkim``: the verdict is
-        # decided later by the queue worker, nothing is refused at parse time
-        assert msg.auth_mode == "dkim"
-        assert sum(refusals.values()) == 0
-        return
-    assert refusals[reason] == 1
-    assert sum(refusals.values()) == 1
+    msg = inbound_email.parse_brevo_item(item(headers))
+    assert msg.auth_pass is False and msg.auth_mode == "dkim"
+    # nothing is refused at parse time: the queue worker decides by DKIM
+    assert sum(overview()["auth_refusals"].values()) == 0
 
 
-def test_pass_records_no_refusal(monkeypatch):
-    monkeypatch.setenv(inbound_email.BREVO_AUTHSERV_ENV, AUTHSERV)
-    headers = {"Authentication-Results": ar(), "From": f"Synthetic <{SENDER}>"}
-    assert inbound_email._brevo_auth_refusal(inbound_email._brevo_headers(headers), SENDER) is None
-    assert inbound_email.parse_brevo_item(item(headers)).auth_pass is True
-    assert set(overview()["auth_refusals"].values()) == {0}
+def test_removed_authserv_verdict_is_gone():
+    for name in ("_brevo_auth_pass", "_brevo_auth_refusal"):
+        assert not hasattr(inbound_email, name)
+    assert inbound_email.verification_mode() == "dkim"
 
 
 def test_auth_refusals_lists_every_code():
-    assert list(overview()["auth_refusals"]) == list(inbound_email.AUTH_REFUSAL_REASONS)
-    # 8 Authentication-Results codes (mode authserv) + 9 DKIM codes (#950)
-    assert len(inbound_email.AUTH_REFUSAL_REASONS) == 17
     from oncofiles import inbound_dkim
 
-    assert set(inbound_dkim.DKIM_REFUSAL_REASONS) <= set(inbound_email.AUTH_REFUSAL_REASONS)
-
-
-def test_bool_contract_unchanged(monkeypatch):
-    """``_brevo_auth_pass`` stays a plain bool of the same verdict."""
-    monkeypatch.setenv(inbound_email.BREVO_AUTHSERV_ENV, AUTHSERV)
-    ok = inbound_email._brevo_auth_pass(
-        inbound_email._brevo_headers({"Authentication-Results": ar()}), SENDER
-    )
-    bad = inbound_email._brevo_auth_pass({}, SENDER)
-    assert ok is True and bad is False
+    assert list(overview()["auth_refusals"]) == list(inbound_email.AUTH_REFUSAL_REASONS)
+    assert tuple(inbound_email.AUTH_REFUSAL_REASONS) == tuple(inbound_dkim.DKIM_REFUSAL_REASONS)

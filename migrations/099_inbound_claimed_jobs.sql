@@ -10,7 +10,8 @@
 -- (oncofiles.inbound_queue) verifies it and only then queues it into
 -- inbound_jobs with the real verdict (trusted when the DKIM check passed).
 -- A forged flood that claims the caregiver's From can therefore fill only this
--- small bucket (own caps per bucket and in total), never the trusted slots.
+-- small bucket (own caps per bucket, per sender, per From domain and in total;
+-- a row over a cap is dropped and counted), never the trusted slots.
 --
 -- bucket:          the address token hash (the same value as
 --                  inbound_jobs.token_hash) or the literal 'welcome' for mail
@@ -20,9 +21,16 @@
 --                  ('claimed'|bucket|job_uuid).
 -- message_id_hash: keyed HMAC of the Message-ID (or of the payload digest),
 --                  as in inbound_jobs.
--- sender_hash:     keyed HMAC of the lowercased From; UNIQUE together with the
---                  bucket and the Message-ID hash, so a Brevo retry of a mail
---                  already waiting here is a no-op.
+-- sender_hash:     keyed HMAC of the lowercased From (also capped: at most a
+--                  few open rows per sender).
+-- domain_hash:     keyed HMAC of the From's organisational domain (capped per
+--                  bucket like the sender).
+-- delivery_hash:   keyed HMAC of this delivery's Brevo Uuid and download
+--                  tokens (EML + attachments). UNIQUE (bucket,
+--                  message_id_hash, sender_hash, delivery_hash): a Brevo retry
+--                  of the same delivery is a no-op, while a forged or refused
+--                  copy with the same Message-ID and From never suppresses a
+--                  later real delivery (security review of #966).
 -- payload_enc:     AES-GCM ciphertext of the same minimal payload as
 --                  inbound_jobs plus the Brevo EMLDownloadToken; never a
 --                  subject, a body or the EML itself.
@@ -40,6 +48,8 @@ CREATE TABLE IF NOT EXISTS inbound_claimed_jobs (
     bucket TEXT NOT NULL,
     message_id_hash TEXT NOT NULL,
     sender_hash TEXT NOT NULL,
+    domain_hash TEXT NOT NULL,
+    delivery_hash TEXT NOT NULL,
     payload_enc TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -47,8 +57,10 @@ CREATE TABLE IF NOT EXISTS inbound_claimed_jobs (
     next_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    UNIQUE (bucket, message_id_hash, sender_hash)
+    UNIQUE (bucket, message_id_hash, sender_hash, delivery_hash)
 );
 
 CREATE INDEX IF NOT EXISTS idx_inbound_claimed_due ON inbound_claimed_jobs(state, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_inbound_claimed_bucket ON inbound_claimed_jobs(bucket, state);
+CREATE INDEX IF NOT EXISTS idx_inbound_claimed_sender ON inbound_claimed_jobs(sender_hash, state);
+CREATE INDEX IF NOT EXISTS idx_inbound_claimed_domain ON inbound_claimed_jobs(bucket, domain_hash, state);
