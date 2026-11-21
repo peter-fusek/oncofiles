@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime, timedelta, timezone
 
+from oncofiles.fact_labels import FLAG_PRINTED, flag_source
+
 # ── system URIs ──────────────────────────────────────────────────────────────
 
 LOINC = "http://loinc.org"
@@ -154,11 +156,22 @@ OBSERVATION_STATUSES = frozenset(
 
 
 def interpretation_code(row: dict) -> str | None:
+    """Observation.interpretation code of a fact row, or None.
+
+    A flag computed in code from a generic reference range (#929,
+    ``metadata.flag_source = "generic"``) is never emitted: in FHIR
+    ``interpretation`` is the result's assessment against its reference range,
+    and the export carries only the lab's own range (``referenceRange``), never
+    the generic one, so an interpretation would read as the lab's own verdict
+    with nothing to back it. The value itself is exported unchanged; a reader
+    can still compare it with the printed range when there is one."""
     code = row.get("interpretation_code")
     if code and code.upper() in INTERPRETATION_DISPLAY:
         return code.upper()
-    flag = (row.get("flag") or "").strip().lower()
-    return _FLAG_TO_INTERPRETATION.get(flag)
+    flag = (row.get("flag") or "").strip()
+    if flag_source(flag, row.get("metadata_json")) != FLAG_PRINTED:
+        return None
+    return _FLAG_TO_INTERPRETATION.get(flag.lower())
 
 
 # Our canonical units (fact_codes.unit_canonical) → UCUM case-sensitive codes.

@@ -285,15 +285,18 @@ async def test_feed_shape_documents_and_unverified(db, curated_env):
     assert "evidence" not in raw and "stats" not in raw
     allowed = {"id", "code", "label", "at", "at_from", "at_to", "value", "value_text", "unit",
                "ref_low", "ref_high", "flag", "verification", "document_id", "page",
-               "ref_source", "ref_document_id"}  # the two optional keys of #899  # fmt: skip
+               "ref_source", "ref_document_id",  # the two optional keys of #899
+               "flag_source"}  # with every flag (#929)  # fmt: skip
     for f in out["facts"]:
         assert ("ref_source" in f) == ("ref_low" in f or "ref_high" in f)
+        assert ("flag_source" in f) == ("flag" in f)
         assert {"id", "code", "at", "verification", "document_id"} <= set(f) <= allowed
         date.fromisoformat(f["at"][:10])
     plt = next(f for f in out["facts"] if f["code"] == "PLT")
     assert plt["verification"] == "unverified"  # included, labelled
     hgb = next(f for f in out["facts"] if f["code"] == "HGB")
     assert hgb["flag"] == "L" and hgb["value"] < hgb["ref_low"] < hgb["ref_high"]
+    assert hgb["flag_source"] == "printed"  # the lab's own range (#929)
     [doc] = out["documents"]
     assert doc["url"].endswith(f"/d/{src}/view") and doc["category"] == "labs"
     assert doc["institution"] == "BoryNemocnica" and doc["date"]
