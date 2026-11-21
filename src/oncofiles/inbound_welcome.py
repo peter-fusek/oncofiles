@@ -28,7 +28,7 @@ At enqueue, :func:`admit` decides, in this order:
    second account. A new trial needs room under the global
    ``MAX_NEW_TRIALS_PER_DAY`` (counted in the DB, survives restarts). It is
    created with no name from the mail (``TRIAL_DISPLAY_NAME``), a random
-   slug, ``caregiver_email`` = the sender lowercased, the default patient
+   slug, ``caregiver_email`` = the sender's canonical form, the default patient
    type, and in the same transaction a ``patient_consents`` row of kind
    ``by_sending`` (terms version, time, keyed sender hash) and its
    ``trial_accounts`` row (``trial_ends_at`` = now + ``TRIAL_DAYS``). The
@@ -115,12 +115,19 @@ def is_welcome(msg: inbound_email.InboundMessage) -> bool:
 
 
 def _sender(msg: inbound_email.InboundMessage) -> str:
-    return (msg.sender or "").strip().lower()
+    """The sender's canonical identity (security review of #950 phase 2):
+    for Gmail lowercase, ``+tag`` dropped, dots removed, googlemail.com =
+    gmail.com (``email_identity.canonical_email``), so the variants of one
+    mailbox are one sender for the trial, every cap and the caregiver match."""
+    from oncofiles.email_identity import canonical_email
+
+    return canonical_email(msg.sender)
 
 
 def is_gmail(sender: str) -> bool:
-    local, at, domain = sender.rpartition("@")
-    return bool(at and local) and domain == inbound_email.GMAIL_DOMAIN
+    from oncofiles.email_identity import is_gmail as _is_gmail
+
+    return _is_gmail(sender)
 
 
 def _sender_key(sender: str) -> str | None:
@@ -347,11 +354,14 @@ async def admit(db, msg: inbound_email.InboundMessage) -> tuple[str, str] | None
         _count("welcome_sender_capped")
         logger.info("inbound: welcome dropped reason=welcome_sender_capped")
         return None
-    if not onboarding_gate.onboarding_allowed(sender, is_admin=_is_admin(sender)):
+    as_sent = (msg.sender or "").strip().lower()
+    if not any(
+        onboarding_gate.onboarding_allowed(a, is_admin=_is_admin(a)) for a in (sender, as_sent)
+    ):
         mode = onboarding_gate.onboarding_mode()
         _count(f"welcome_gate_{mode}")
         logger.info("inbound: welcome refused reason=gate mode=%s", mode)
-        _waitlist_reply(key, sender, now)
+        _waitlist_reply(key, as_sent, now)  # to the address that wrote
         return None
     async with _ADMIT_LOCK:
         trial = await db.get_trial_by_sender_hash(key)

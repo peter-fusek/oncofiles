@@ -472,6 +472,22 @@ async def _fetch_one(gdrive, drive_id: str, size: str, deadline: float) -> Outco
 
 # ── holding-store documents (#950 phase 2) ───────────────────────────────
 
+# Held renders (decrypt + PyMuPDF) per request, and at once in the process:
+# the rest of a batch is null (not cached) and comes with a later request.
+MAX_HOLDING_RENDERS_PER_REQUEST = 6
+HOLDING_RENDER_CONCURRENCY = 1
+_holding_sems: dict[str, tuple[Any, asyncio.Semaphore]] = {}
+
+
+def _holding_semaphore() -> asyncio.Semaphore:
+    """A semaphore of its own for held renders (one per running event loop)."""
+    loop = asyncio.get_running_loop()
+    held = _holding_sems.get("current")
+    if held is None or held[0] is not loop:
+        held = (loop, asyncio.Semaphore(HOLDING_RENDER_CONCURRENCY))
+        _holding_sems["current"] = held
+    return held[1]
+
 
 def _holding_blocking(file_id: str, mime: str, size: str) -> Outcome:
     """Decrypt a held file and render page 1 locally. Worker thread, no DB."""
@@ -492,13 +508,20 @@ async def _holding_previews(db, patient_id, ids, size, result, reasons) -> list[
     One SQL read scoped to the patient (``get_documents_by_ids(...,
     patient_id=)``: unknown and foreign ids are simply not there, and are left
     for the Drive path, which answers them ``null`` as before); deleted and
-    excluded rows are ``null``. Local PyMuPDF render only, one at a time (the
-    fallback semaphore), never while a curated run is active, cached like the
-    rest. Returns the ids that are not holding documents.
+    excluded rows are ``null``. Local PyMuPDF render only, under a semaphore
+    of its own (``HOLDING_RENDER_CONCURRENCY``), at most
+    ``MAX_HOLDING_RENDERS_PER_REQUEST`` renders per request and ONE deadline
+    for the whole batch (``BATCH_DEADLINE_S``, set before the loop, as on the
+    Drive path): once it has passed, the remaining held ids are ``null`` and
+    nothing is cached for them. Never while a curated run is active. Returns
+    the ids that are not holding documents.
     """
     from oncofiles.holding_store import is_holding_file_id
 
     found = await db.get_documents_by_ids(set(ids), patient_id=patient_id)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + BATCH_DEADLINE_S
+    renders = 0
     rest: list[int] = []
     for doc_id in ids:
         doc = found.get(doc_id)
@@ -525,11 +548,16 @@ async def _holding_previews(db, patient_id, ids, size, result, reasons) -> list[
         if _curated_run_active():
             reasons["run_active"] += 1
             continue
-        _drive_sem, fallback_sem = _semaphores()
-        deadline = asyncio.get_running_loop().time() + BATCH_DEADLINE_S
+        if loop.time() >= deadline:
+            reasons["deadline"] += 1  # null, not cached: a later request renders it
+            continue
+        if renders >= MAX_HOLDING_RENDERS_PER_REQUEST:
+            reasons["render_cap"] += 1  # null, not cached
+            continue
+        renders += 1
         work = functools.partial(_holding_blocking, doc.file_id, mime, size)
         try:
-            out = await _bounded((fallback_sem,), work, deadline)
+            out = await _bounded((_holding_semaphore(),), work, deadline)
         except TimeoutError:
             out = Outcome(None, None, "timeout")
         except Exception:  # missing key or file, undecryptable → null

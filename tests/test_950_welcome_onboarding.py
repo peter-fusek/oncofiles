@@ -36,6 +36,7 @@ from oncofiles import (
     server,
 )
 from oncofiles.curated.extract import Extraction
+from oncofiles.email_identity import canonical_email
 from tests.test_950_inbound_address import (  # noqa: F401 - fixtures
     CARER,
     PID,
@@ -148,7 +149,7 @@ async def test_open_gate_creates_a_trial_and_holds_the_files(idb, mails, brevo, 
     [trial] = await trials(idb)
     pid = trial["patient_id"]
     patient = await idb.get_patient(pid)
-    assert patient.caregiver_email == NEW
+    assert patient.caregiver_email == canonical_email(NEW)
     assert patient.display_name == inbound_welcome.TRIAL_DISPLAY_NAME  # no name from the mail
     assert trial["source"] == "welcome_email" and trial["sender_hash"] != NEW
     assert fetched == ["w-a", "w-b"]
@@ -173,7 +174,8 @@ async def test_consent_row_is_by_sending_with_a_keyed_hash(idb, mails, brevo, mo
     [trial] = await trials(idb)
     [consent] = await idb.get_patient_consents(patient_id=trial["patient_id"])
     assert consent["kind"] == "by_sending" and consent["consent_version"] == CONSENT_VERSION
-    assert consent["caller_email_hash"] == caller_email_hash(NEW) == trial["sender_hash"]
+    canon = canonical_email(NEW)
+    assert consent["caller_email_hash"] == caller_email_hash(canon) == trial["sender_hash"]
     assert NEW not in json.dumps(consent) and consent["is_admin"] == 0
 
 
@@ -185,7 +187,8 @@ async def test_one_trial_per_sender(idb, mails, brevo, model):
     await send(idb, welcome_item(files=files, mid="<w-2@example.test>"))
     [trial] = await trials(idb)
     assert len(await held_docs(idb, trial["patient_id"])) == 3
-    patients = [p for p in await idb.list_patients(active_only=False) if p.caregiver_email == NEW]
+    everyone = await idb.list_patients(active_only=False)
+    patients = [p for p in everyone if p.caregiver_email == canonical_email(NEW)]
     assert len(patients) == 1
 
 
@@ -215,7 +218,7 @@ async def test_invite_mode_admits_only_invited_senders(idb, mails, brevo, model,
     assert len(mails) == 1 and inbound_welcome.WAITLIST_URL in mails[0]["text"]
     await send(idb, welcome_item(sender=NEW2, files=two_files(store)))
     [trial] = await trials(idb)
-    assert (await idb.get_patient(trial["patient_id"])).caregiver_email == NEW2
+    assert (await idb.get_patient(trial["patient_id"])).caregiver_email == canonical_email(NEW2)
 
 
 @pytest.mark.parametrize(
@@ -560,3 +563,141 @@ async def test_nothing_is_deleted(idb, mails, brevo, model, welcome_env):
     src = (Path(server.__file__).parent / "holding_store.py").read_text()
     for call in ("unlink(", "os.remove(", "rmtree(", "DELETE FROM"):
         assert call not in src
+
+
+# ── security review: Gmail identity, held-render deadline ───────────────
+
+CANON = "syntheticwelcome950@gmail.com"
+VARIANTS = (
+    "synthetic.welcome950+x@gmail.com",
+    "SyntheticWelcome950@gmail.com",
+    "synthetic.welcome950@googlemail.com",
+)
+
+
+async def test_gmail_variants_are_one_sender_and_one_trial(idb, mails, brevo, model):
+    from oncofiles.secrets_keys import caller_email_hash
+
+    store, _ = brevo
+    for i, variant in enumerate(VARIANTS):
+        store[f"v-{i}"] = pdf(960 + i)
+        files = [(f"SynthVariant{i}.pdf", "application/pdf", len(store[f"v-{i}"]), f"v-{i}")]
+        await send(idb, welcome_item(sender=variant, files=files, mid=f"<v-{i}@example.test>"))
+    [trial] = await trials(idb)
+    assert trial["sender_hash"] == caller_email_hash(CANON)
+    assert (await idb.get_patient(trial["patient_id"])).caregiver_email == CANON
+    assert len(await held_docs(idb, trial["patient_id"])) == len(VARIANTS)
+
+
+async def test_gmail_variants_share_one_cap_bucket(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr(inbound_welcome, "MAX_MAILS_PER_SENDER_DAY", 1)
+    store, _ = brevo
+    await send(idb, welcome_item(sender=VARIANTS[0], files=two_files(store), mid="<cb-1@x.test>"))
+    await send(idb, welcome_item(sender=VARIANTS[2], files=two_files(store), mid="<cb-2@x.test>"))
+    assert inbound_email.unmatched_overview()["totals"]["welcome_sender_capped"] == 1
+    [trial] = await trials(idb)
+    assert len(await held_docs(idb, trial["patient_id"])) == len(FILES)
+
+
+async def test_gmail_variant_of_an_existing_caregiver_gets_no_trial(idb, mails, brevo, model):
+    store, fetched = brevo
+    variant = "syntheticcarer950+new@googlemail.com"  # CARER is synthetic.carer950@gmail.com
+    await send(idb, welcome_item(sender=variant, files=two_files(store)))
+    assert await trials(idb) == [] and fetched == []
+    [entry] = inbound_email.unmatched_overview()["senders"]
+    assert entry["reasons"] == {"welcome_existing_caregiver": 1}
+
+
+@pytest.mark.parametrize("signed_in", [CANON, *VARIANTS])
+async def test_sign_in_with_any_gmail_variant_reaches_the_trial(
+    idb, mails, brevo, model, signed_in
+):
+    store, _ = brevo
+    await send(idb, welcome_item(sender=VARIANTS[0], files=two_files(store)))
+    [trial] = await trials(idb)
+    with _caller(signed_in):
+        own = json.loads((await server.api_list_patients(_dash_request(idb))).body)["own"]
+    assert [p["patient_id"] for p in own] == [trial["patient_id"]]
+
+
+@pytest.mark.parametrize(
+    ("signed_in", "caregiver"),
+    [
+        ("jana.example@example.test", "janaexample@example.test"),
+        ("jana+x@example.test", "jana@example.test"),
+        ("jana@googlemail.example.test", "jana@gmail.com"),
+        ("janaexample@gmail.com", "jana.example@example.test"),
+    ],
+)
+def test_non_gmail_caregiver_match_stays_exact(signed_in, caregiver):
+    from oncofiles.persistent_oauth import _email_matches_caregiver
+
+    assert _email_matches_caregiver(signed_in, caregiver) is False
+
+
+def test_canonical_email():
+    from oncofiles.email_identity import canonical_email
+
+    for variant in VARIANTS:
+        assert canonical_email(variant) == CANON
+    assert canonical_email(" A.B+c@Example.Test ") == "a.b+c@example.test"
+    assert canonical_email("not-an-address") == ""
+
+
+async def _held_docs_for_thumbs(db, n):
+    ids = []
+    for i in range(n):
+        ids.append(
+            await holding_store.store_document(
+                db, PID, f"SynthHeld{i}.pdf", _tiny_pdf(), "application/pdf"
+            )
+        )
+    return ids
+
+
+async def test_held_renders_share_one_batch_deadline(idb, monkeypatch):
+    import time as _time
+
+    from oncofiles import doc_thumbnails
+
+    doc_thumbnails._cache.clear()
+    monkeypatch.setattr("oncofiles.tools.curated.run_active", lambda: False)
+    monkeypatch.setattr(doc_thumbnails, "BATCH_DEADLINE_S", 0.3)
+    ids = await _held_docs_for_thumbs(idb, 3)
+    calls = []
+
+    def slow(file_id, mime, size):
+        calls.append(file_id)
+        _time.sleep(0.5)  # longer than the whole batch deadline
+        return doc_thumbnails.Outcome(b"\xff\xd8\xffsynthetic", "image/jpeg", "ok")
+
+    monkeypatch.setattr(doc_thumbnails, "_holding_blocking", slow)
+    started = _time.monotonic()
+    with _caller(CARER):
+        resp = await server.api_doc_thumbnails(_thumb_request(idb, ids))
+    elapsed = _time.monotonic() - started
+    assert json.loads(resp.body)["thumbnails"] == {str(i): None for i in ids}
+    assert len(calls) == 1 and elapsed < 0.45  # one render started, the batch ended on time
+    assert len(doc_thumbnails._cache) == 0  # nothing cached for the late ids
+    doc_thumbnails._cache.clear()
+
+
+async def test_held_renders_are_capped_per_request(idb, monkeypatch):
+    from oncofiles import doc_thumbnails
+
+    doc_thumbnails._cache.clear()
+    monkeypatch.setattr("oncofiles.tools.curated.run_active", lambda: False)
+    n = doc_thumbnails.MAX_HOLDING_RENDERS_PER_REQUEST + 2
+    ids = await _held_docs_for_thumbs(idb, n)
+    monkeypatch.setattr(
+        doc_thumbnails,
+        "_holding_blocking",
+        lambda f, m, s: doc_thumbnails.Outcome(b"\xff\xd8\xffsynthetic", "image/jpeg", "ok"),
+    )
+    with _caller(CARER):
+        resp = await server.api_doc_thumbnails(_thumb_request(idb, ids))
+    body = json.loads(resp.body)["thumbnails"]
+    shown = [i for i in ids if body[str(i)]]
+    assert shown == ids[: doc_thumbnails.MAX_HOLDING_RENDERS_PER_REQUEST]
+    assert len(doc_thumbnails._cache) == doc_thumbnails.MAX_HOLDING_RENDERS_PER_REQUEST
+    doc_thumbnails._cache.clear()
