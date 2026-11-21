@@ -694,6 +694,26 @@ class DocumentMixin:
             }
         return out
 
+    async def curated_stale_review_ids(self, *, patient_id: str) -> frozenset[str]:
+        """Drive ids of the patient's active curated rows held in review without a
+        recognised reason (#919 item 4, ``document_stage.stale_review``). Ids only.
+
+        Only a hint for the curated run, which re-reads each sidecar before it
+        changes anything (the index may lag the folder)."""
+        from oncofiles.document_stage import stale_review
+
+        async with self.db.execute(
+            "SELECT gdrive_id, file_id, structured_metadata FROM documents "
+            "WHERE patient_id = ? AND file_id LIKE 'gdrive:%' AND deleted_at IS NULL",
+            (patient_id,),
+        ) as cursor:
+            rows = [dict(r) for r in await cursor.fetchall()]
+        return frozenset(
+            r["gdrive_id"]
+            for r in rows
+            if r["gdrive_id"] and stale_review(r["file_id"], r["structured_metadata"])
+        )
+
     async def curated_document_ids(self) -> set[int]:
         """Ids of every curated row and every holding-store row (#950), all patients:
         loads the cloud guard at startup."""
