@@ -35,7 +35,7 @@ def _lab_item(label: str, value: str, ref: str) -> dict:
     return {"label_as_printed": label, "value": value, "comparator": None,
             "unit_as_printed": None, "ref_range_as_printed": ref, "flag_as_printed": None,
             "date_as_printed": "3.5.2027", "date_role": "sample",
-            "evidence": f"{label} {value} {ref}"}  # fmt: skip
+            "date_evidence": "Odber: 3.5.2027", "evidence": f"{label} {value} {ref}"}  # fmt: skip
 
 
 Q = _lab_item("S-Faktor Q", "4,20", "1,0-5,0")
@@ -347,7 +347,7 @@ def test_both_extractors_go_through_the_split_path(local_llm, monkeypatch):
 
 
 def _undated(item: dict) -> dict:
-    return dict(item, date_as_printed=None, date_role=None)
+    return dict(item, date_as_printed=None, date_role=None, date_evidence=None)
 
 
 def test_date_null_items_per_page_and_rates_split_vs_unsplit(local_llm):

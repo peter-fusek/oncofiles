@@ -45,7 +45,8 @@ RANGE_META = {"date_source": "printed_range", "date_precision": "range",
 def _item(label, value, unit, evidence, date):
     return {"label_as_printed": label, "value": value, "comparator": None,
             "unit_as_printed": unit, "ref_range_as_printed": None, "flag_as_printed": None,
-            "date_as_printed": date, "date_role": "sample", "evidence": evidence}  # fmt: skip
+            "date_as_printed": date, "date_role": "sample", "date_evidence": date,
+            "evidence": evidence}  # fmt: skip
 
 
 def model_chat(system, user, info=None, **kw):

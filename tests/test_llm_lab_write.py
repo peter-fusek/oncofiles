@@ -59,7 +59,7 @@ def _answer_json() -> str:
     return json.dumps({"facts": [
         {"label_as_printed": label, "value": v, "comparator": None, "unit_as_printed": u,
          "ref_range_as_printed": r, "flag_as_printed": None, "date_as_printed": "14.6.2027",
-         "date_role": "sample", "evidence": ev}
+         "date_role": "sample", "date_evidence": "Dátum odberu: 14.6.2027", "evidence": ev}
         for label, v, u, r, ev in ROWS
     ]}, ensure_ascii=False)  # fmt: skip
 

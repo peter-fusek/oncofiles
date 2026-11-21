@@ -51,6 +51,7 @@ def cand(**kw):
         "flag_as_printed": None,
         "date_as_printed": "14.6.2027",
         "date_role": "sample",
+        "date_evidence": "Dátum odberu: 14.6.2027",
         "evidence": "S-ALT 0,45 0,10-0,60 µkat/l",
         "page_number": 1,
     }
@@ -137,11 +138,13 @@ def test_unit_without_a_conversion_and_implausible_values():
 def test_birth_date_and_missing_date():
     assert "birth_date" in reasons(cand(), birth_dates={"20270614"})
     assert "birth_date" in reasons(cand(), birth_dates={"2027-06-14"})
-    no_date = cand(date_as_printed=None, date_role=None)
+    no_date = cand(date_as_printed=None, date_role=None, date_evidence=None)
     assert reasons(no_date) == ["date_missing"]
-    f = check(no_date, report_date="2027-06-20")  # the document date, as the rules do
-    assert f["verification"] == "machine" and f["occurred_at"] == "2027-06-20"
+    # the document date is kept, as the rules keep it, but never as machine (#933)
+    f = check(no_date, report_date="2027-06-20")
+    assert f["verification"] == "unverified" and f["occurred_at"] == "2027-06-20"
     assert f["metadata"]["date_source"] == "document"
+    assert f["metadata"]["unverified_reasons"] == ["date_unknown"]
 
 
 def test_source_reason_is_carried():
@@ -234,7 +237,7 @@ def model_answer(*_a, **_k):
     return json.dumps({"facts": [
         {"label_as_printed": label, "value": v, "comparator": None, "unit_as_printed": u,
          "ref_range_as_printed": r, "flag_as_printed": None, "date_as_printed": "14.6.2027",
-         "date_role": "sample", "evidence": ev}
+         "date_role": "sample", "date_evidence": "Dátum odberu: 14.6.2027", "evidence": ev}
         for label, v, u, r, ev in rows
     ]})  # fmt: skip
 
@@ -855,7 +858,7 @@ async def test_preview_timeout_override_and_no_prefill(db, monkeypatch):
                                     "reasoning_marker": None}  # fmt: skip
     await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     report = json.loads(await tool.curated_reocr_status(_ctx(db)))["report"]
-    assert report["extractor"] == "llm-extract-v10"
+    assert report["extractor"] == "llm-extract-v11"
     assert report["settings"]["timeout_s"] == 120.0 and "prefill" not in report["settings"]
     assert "prefill" not in report["settings"]["overrides"]
     assert seen == [{"timeout": 120.0, "thinking": False}]
