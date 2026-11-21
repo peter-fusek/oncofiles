@@ -106,3 +106,35 @@ def caller_email_hash(email: str, bearer: str | None = None) -> str | None:
     except RuntimeError:
         return None
     return hmac.new(key, normalised.encode(), hashlib.sha256).hexdigest()
+
+
+_INBOUND_ADDRESS_PURPOSE = b"oncofiles.inbound_address.v1"
+
+
+def inbound_address_key(bearer: str | None = None) -> bytes:
+    """Key for the patient document e-mail address token (#950).
+
+    ``token = base32(HMAC(key, f"{patient_id}:{version}"))[:10]``; the DB keeps
+    only a keyed hash of it. Override with ``INBOUND_ADDRESS_SECRET`` so the
+    addresses survive a rotation of ``MCP_BEARER_TOKEN`` (the derived key
+    changes with it, and with it every patient's address).
+    """
+    override = os.environ.get("INBOUND_ADDRESS_SECRET", "")
+    if override:
+        return override.encode()
+    return _derive(_INBOUND_ADDRESS_PURPOSE, bearer)
+
+
+_INBOUND_TOKEN_HASH_PURPOSE = b"oncofiles.inbound_token_hash.v1"
+
+
+def inbound_token_hash_key(bearer: str | None = None) -> bytes:
+    """Key for the stored routing hash of an inbound address token (#950).
+
+    Derived from the address key material (``INBOUND_ADDRESS_SECRET`` when
+    set, else ``MCP_BEARER_TOKEN``) with its own purpose string, so the hash
+    and the token never share a key and no extra env is needed.
+    """
+    return hmac.new(
+        inbound_address_key(bearer), _INBOUND_TOKEN_HASH_PURPOSE, hashlib.sha256
+    ).digest()

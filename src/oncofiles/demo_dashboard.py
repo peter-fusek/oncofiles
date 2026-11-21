@@ -10,6 +10,7 @@ for every API path the dashboard calls an answer of the same shape:
     documents  ~ GET /api/documents
     details    ~ GET /api/doc-detail/{id}   (keyed by document id)
     activity   ~ GET /api/activity
+    inbound_address ~ GET /api/inbound-address   (#950, invented address)
     thumbnails ~ GET /api/doc-thumbnails  (keyed by document id; the script
                  answers each request with the ids it asked for, #948)
 
@@ -26,8 +27,11 @@ import re
 
 from oncofiles import dashboard_inbox, demo_thumbnails
 from oncofiles.document_stage import stage_of
+from oncofiles.inbound_email import INBOUND_DOMAIN, TERMS_URL
 
 PATIENT_ID = "demo-patient"
+# Invented, never derived from any key: the demo address cannot reach a patient.
+DEMO_INBOUND_TOKEN = "7mq3x9k2ta"
 _HOSPITAL = ("Nemocnica Príkladov", "Example Hospital")
 _FILE_TOKENS = ("JanaTestova_NemPrikladov", "JaneDoe_ExampleHospital")
 
@@ -488,6 +492,16 @@ def build(showcase_documents: list[dict], version: str) -> dict:
             "documents": rows,
         },
         "details": details,
+        # #950: the demo twin of GET /api/inbound-address (an invented address
+        # with an invented Gmail-style prefix; rotating it is blocked in the demo).
+        "inbound_address": {
+            "enabled": True,
+            "address": f"jana.example-{DEMO_INBOUND_TOKEN}@{INBOUND_DOMAIN}",
+            "domain": INBOUND_DOMAIN,
+            "version": 1,
+            "created_at": "2027-01-19T15:20:00Z",
+            "terms_url": TERMS_URL,
+        },
         "thumbnails": demo_thumbnails.build(pictures),
         "activity": {
             "events": [

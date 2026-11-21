@@ -597,6 +597,18 @@
     .upload-state { flex: 1 1 100%; font-size: 0.8125rem; color: var(--ink-2); }
     .upload-item.is-attention .upload-state { color: var(--warn); }
     .upload-item.is-ready .upload-state { color: var(--ok); }
+    /* #950: the patient's document e-mail address. The address is the one
+       large element; the actions are the quiet copy buttons. */
+    .inbound-card[hidden] { display: none; }
+    .inbound-card { margin-top: 1.25rem; border-left: 4px solid var(--turq); }
+    .inbound-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.625rem 0.875rem; }
+    .inbound-address { font: 600 1.0625rem/1.35 var(--num); color: var(--ink); background: var(--bg-2); border: 1px solid var(--rule); border-radius: 8px; padding: 0.4375rem 0.75rem; overflow-wrap: anywhere; min-width: 0; max-width: 100%; }
+    .inbound-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .inbound-actions .copy-btn { min-height: 2.5rem; padding: 0.3125rem 0.75rem; font-size: 0.8125rem; }
+    .inbound-actions .copy-btn.armed { border-color: var(--err); color: var(--err); border-width: 2px; }
+    .inbound-terms { margin-top: 0.625rem; font-size: 0.8125rem; color: var(--ink-2); max-width: 46rem; }
+    .inbound-status { margin-top: 0.5rem; font-size: 0.8125rem; color: var(--ink); background: var(--info-bg); border-radius: 8px; padding: 0.5rem 0.75rem; }
+    .inbound-status[hidden] { display: none; }
     .steps-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 0.375rem 1.25rem; font-size: 0.8125rem; color: var(--ink-2); margin: 0 0 0.75rem; }
     .steps-legend li { display: inline-flex; align-items: center; gap: 0.4375rem; }
     .steps-legend strong { color: var(--ink); font-weight: 600; }
@@ -1215,6 +1227,10 @@
     .share-token-box { border-top: 1px solid var(--border); padding-top: 1rem; margin-bottom: 1rem; }
     .share-token-box .wizard-btn-secondary { padding: 0.4375rem 0.875rem; font-size: 0.875rem; }
     header .archive-patient-btn.armed { border-color: var(--peach); color: var(--peach); border-width: 2px; }
+    /* #950 admin zone: unmatched senders (counts only) */
+    .inbound-admin-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+    .inbound-admin-table th, .inbound-admin-table td { text-align: left; padding: 0.3125rem 0.5rem; border-bottom: 1px solid var(--border); }
+    .inbound-admin-table td:first-child { font-family: var(--num); }
 
     /* ── #948 Document previews, the grid view and the quick look ─────────
        A preview is a small A4 sheet: white, a thin rule, a soft shadow, 3px

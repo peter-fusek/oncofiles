@@ -190,7 +190,7 @@ class _Target:
     folder_id: str
 
 
-async def _resolve_target(db, patient_id: str) -> _Target | Outcome:
+async def _resolve_target(db, patient_id: str, log_pid: str | None = None) -> _Target | Outcome:
     from oncofiles.curated_folder import curated_reason
     from oncofiles.server import _create_patient_clients
 
@@ -203,7 +203,9 @@ async def _resolve_target(db, patient_id: str) -> _Target | Outcome:
         return _Target("curated_inbox", gdrive, folder_id)
     if reason is None:
         return _Target("drive_only", gdrive, folder_id)
-    logger.warning("dashboard upload: patient %s folder overlaps a curated tree", patient_id)
+    logger.warning(
+        "dashboard upload: patient %s folder overlaps a curated tree", log_pid or patient_id
+    )
     return refusal("folder_not_writable", 409)
 
 
@@ -237,7 +239,9 @@ def _show_in_table(patient_id: str, res: dict, size: int, mime: str) -> None:
     )
 
 
-async def handle_upload(db, patient_id: str, uploads: list) -> Outcome:
+async def handle_upload(
+    db, patient_id: str, uploads: list, *, log_pid: str | None = None
+) -> Outcome:
     """Check and store ``uploads`` (Starlette ``UploadFile``s) for one patient.
 
     The caller has already passed the ACL and read-only checks. Memory (infra
@@ -245,6 +249,9 @@ async def handle_upload(db, patient_id: str, uploads: list) -> Outcome:
     (Starlette has spooled a large part to disk), checked, stored, then
     released and closed before the next one is read, so a request never holds
     more than one file's bytes. ``MAX_FILES`` is 1 anyway.
+
+    ``log_pid`` replaces the patient id in this function's log lines (the
+    #950 e-mail path logs ``patient_id[:4]`` only).
     """
     from oncofiles import config
     from oncofiles.curated.inbox_upload import InboxUnavailableError
@@ -282,7 +289,7 @@ async def handle_upload(db, patient_id: str, uploads: list) -> Outcome:
                 entry["code"], stopped = "document_cap", True
                 continue
             if target is None:
-                resolved = await _resolve_target(db, patient_id)
+                resolved = await _resolve_target(db, patient_id, log_pid)
                 if isinstance(resolved, Outcome):
                     return resolved
                 target = resolved
@@ -290,7 +297,9 @@ async def handle_upload(db, patient_id: str, uploads: list) -> Outcome:
                 res = await _store_one(db, patient_id, target, name, data, mime)
             except InboxUnavailableError as exc:
                 logger.warning(
-                    "dashboard upload: patient %s inbox unavailable (%s)", patient_id, exc.code
+                    "dashboard upload: patient %s inbox unavailable (%s)",
+                    log_pid or patient_id,
+                    exc.code,
                 )
                 if not stored:
                     return refusal("inbox_unavailable", 409, reason=exc.code)
@@ -315,7 +324,7 @@ async def handle_upload(db, patient_id: str, uploads: list) -> Outcome:
     statuses = Counter(e["status"] for e in entries)
     logger.info(
         "dashboard upload: patient %s path=%s files=%d statuses=%s bytes=%d mimes=%s names=%s",
-        patient_id,
+        log_pid or patient_id,
         target.path if target else "-",
         len(entries),
         dict(statuses),

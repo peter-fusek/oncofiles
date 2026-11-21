@@ -18,6 +18,7 @@ from ._facts import FactsMixin
 from ._gmail import GmailMixin
 from ._hard_extract import HardExtractMixin
 from ._hard_facts import HardFactsMixin
+from ._inbound import InboundAddressMixin
 from ._onboarding import OnboardingEventsMixin
 from ._operational import OperationalMixin
 from ._patients import PatientsMixin
@@ -43,6 +44,7 @@ class Database(
     PromptLogMixin,
     AnalyticsMixin,
     DashboardAccessLogMixin,
+    InboundAddressMixin,
     DatabaseBase,
 ):
     """Async database for document metadata: a local SQLite file via aiosqlite (#617)."""

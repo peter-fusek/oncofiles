@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import smtplib
 import ssl
 from dataclasses import dataclass
@@ -105,6 +106,37 @@ def _one_line(value: str, limit: int = 200) -> str:
     return " ".join(cleaned.split())[:limit]
 
 
+_HEADER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,62}$")
+_RESERVED_HEADERS = frozenset(
+    {
+        "from",
+        "to",
+        "cc",
+        "bcc",
+        "subject",
+        "date",
+        "message-id",
+        "reply-to",
+        "x-mailin-tag",
+        "content-type",
+        "content-transfer-encoding",
+        "mime-version",
+    }
+)
+
+
+def _extra_headers(headers: dict[str, str] | None) -> list[tuple[str, str]] | None:
+    """Validated extra headers, or None when any of them is not allowed."""
+    out: list[tuple[str, str]] = []
+    for name, value in (headers or {}).items():
+        if not isinstance(name, str) or not _HEADER_NAME.match(name):
+            return None
+        if name.lower() in _RESERVED_HEADERS or not isinstance(value, str):
+            return None
+        out.append((name, _one_line(value, 200)))
+    return out
+
+
 def _ref(message_id: str) -> str:
     return hashlib.sha256(message_id.encode()).hexdigest()[:12]
 
@@ -142,12 +174,17 @@ async def send_mail(
     html: str | None = None,
     reply_to: str | None = None,
     tags: list[str] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> bool:
     """Send one message; True when the relay accepted it.
 
     Never raises: a missing config, a bad address or an SMTP failure returns
     False and logs one WARNING without addresses or content. ``tags[0]`` is
     the kind used in the log line; all tags go into ``X-Mailin-Tag``.
+    ``headers`` adds extra headers (e.g. ``Auto-Submitted: auto-replied`` for
+    an automatic reply, RFC 3834): names must be plain header tokens and may
+    not replace a header this function sets; values are collapsed to one line.
+    A rejected header refuses the whole send (False, one WARNING).
     """
     kind = _one_line(tags[0], 40) if tags else "mail"
     cfg = load_config()
@@ -174,6 +211,11 @@ async def send_mail(
         )
         return False
 
+    extra = _extra_headers(headers)
+    if extra is None:
+        logger.warning("Mail not sent (kind=%s): invalid extra header", kind)
+        return False
+
     msg = EmailMessage()
     msg["From"] = cfg.mail_from
     msg["To"] = ", ".join(recipients)
@@ -185,6 +227,8 @@ async def send_mail(
         msg["Reply-To"] = reply
     if tags:
         msg["X-Mailin-Tag"] = ", ".join(_one_line(t, 40) for t in tags if t)
+    for name, value in extra:
+        msg[name] = value
     msg.set_content(text)
     if html is not None:
         msg.add_alternative(html, subtype="html")
