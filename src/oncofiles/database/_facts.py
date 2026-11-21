@@ -626,9 +626,13 @@ class FactsMixin:
         date_to: str | None = None,
         kinds: list[str] | None = None,
         limit: int = 200,
+        exclude_entities: tuple[str, ...] = (),
     ) -> list[dict]:
         sql = "SELECT * FROM timeline_v WHERE patient_id = ? AND at IS NOT NULL"
         params: list = [patient_id]
+        if exclude_entities:
+            sql += f" AND entity NOT IN ({','.join('?' * len(exclude_entities))})"
+            params += list(exclude_entities)
         if date_from:
             sql += " AND at >= ?"
             params.append(date_from)
@@ -642,6 +646,47 @@ class FactsMixin:
         params.append(limit)
         async with self.db.execute(sql, tuple(params)) as cur:
             return _rows(await cur.fetchall())
+
+    async def has_timeline_facts(
+        self, *, patient_id: str, exclude_entities: tuple[str, ...] = ()
+    ) -> bool:
+        """True when ``timeline_v`` holds at least one dated row of this patient
+        outside ``exclude_entities`` (the legacy-fallback check of #928)."""
+        sql = "SELECT 1 FROM timeline_v WHERE patient_id = ? AND at IS NOT NULL"
+        params: list = [patient_id]
+        if exclude_entities:
+            sql += f" AND entity NOT IN ({','.join('?' * len(exclude_entities))})"
+            params += list(exclude_entities)
+        async with self.db.execute(sql + " LIMIT 1", tuple(params)) as cur:
+            return (await cur.fetchone()) is not None
+
+    async def preventive_evidence_rows(self, *, patient_id: str) -> dict[str, list[dict]]:
+        """Evidence for ``get_preventive_care_status`` (#928): every active
+        procedure (the #815 ``screening`` / ``vaccination`` kinds and any other
+        kind, e.g. an endoscopy) and every live document of the preventive
+        categories. Dates: the printed date, else the document date
+        (``date_source``)."""
+        async with self.db.execute(
+            "SELECT p.id, p.kind, p.printed_text, p.outcome, "
+            "COALESCE(p.performed_at, d.document_date) AS at, "
+            "CASE WHEN p.performed_at IS NOT NULL THEN 'printed' "
+            "     WHEN d.document_date IS NOT NULL THEN 'document' END AS date_source, "
+            "p.source_document_id, p.page_number, p.verification, p.extracted_by "
+            "FROM procedures p LEFT JOIN documents d ON d.id = p.source_document_id "
+            "AND d.patient_id = p.patient_id AND d.deleted_at IS NULL "
+            "WHERE p.patient_id = ? AND p.deleted_at IS NULL ORDER BY at DESC, p.id",
+            (patient_id,),
+        ) as cur:
+            procedures = _rows(await cur.fetchall())
+        async with self.db.execute(
+            "SELECT id, category, document_date, title, filename FROM documents "
+            "WHERE patient_id = ? AND deleted_at IS NULL "
+            "AND category IN ('vaccination', 'dental', 'preventive') "
+            "ORDER BY document_date DESC, id",
+            (patient_id,),
+        ) as cur:
+            documents = _rows(await cur.fetchall())
+        return {"procedures": procedures, "documents": documents}
 
     async def fact_catalog_rows(self, *, patient_id: str) -> list[dict]:
         async with self.db.execute(

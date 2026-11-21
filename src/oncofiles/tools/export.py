@@ -6,7 +6,7 @@ import json
 
 from fastmcp import Context
 
-from oncofiles import patient_context
+from oncofiles import facts_timeline, patient_context
 from oncofiles.config import DOC_QUERY_LIMIT
 from oncofiles.tools._helpers import _gdrive_url, _get_db, _resolve_patient_id
 
@@ -19,13 +19,20 @@ async def export_document_package(
 ) -> str:
     """Export a structured document package for consultations or second opinions.
 
-    Assembles all documents grouped by category with metadata, treatment
-    events timeline, and structured metadata. Returns JSON that an MCP client
-    can render as PDF, email, or share link.
+    Assembles all documents grouped by category with metadata, a timeline and
+    structured metadata. Returns JSON that an MCP client can render as PDF,
+    email, or share link.
+
+    ``treatment_timeline`` (oldest first) comes from the clinical facts model
+    (the ``timeline`` tool's rows without documents: visits, diagnoses,
+    treatments, procedures, medications, planned dates, abnormal values), each
+    with its source document, page and verification. Only for a patient with
+    no facts-model rows it lists the legacy treatment events instead;
+    ``timeline_source`` says which (``facts`` | ``legacy``).
 
     Args:
         include_metadata: Include AI summaries and structured metadata (default True).
-        include_timeline: Include treatment events timeline (default True).
+        include_timeline: Include the timeline (default True).
         patient_slug: Optional — explicit patient slug (#429).
     """
     db = _get_db(ctx)
@@ -66,17 +73,42 @@ async def export_document_package(
     }
 
     if include_timeline:
-        events = await db.get_treatment_events_timeline(patient_id=pid)
-        result["treatment_timeline"] = [
-            {
-                "id": e.id,
-                "event_date": e.event_date.isoformat(),
-                "event_type": e.event_type,
-                "title": e.title,
-                "notes": e.notes,
-            }
-            for e in events
-        ]
+        if await facts_timeline.has_facts(db, pid):
+            # facts model (#928): the timeline_v rows, oldest first like the
+            # legacy list, in its shape plus provenance
+            rows = await facts_timeline.fact_rows(db, pid)
+            result["timeline_source"] = "facts"
+            result["treatment_timeline"] = [
+                {
+                    "id": r["entity_id"],
+                    "entity": r["entity"],
+                    "event_date": str(r["at"] or "")[:10],
+                    "event_type": r["kind"],
+                    "title": r["title"] or "",
+                    "notes": facts_timeline.summary_of(r),
+                    "source_document_id": r["source_document_id"],
+                    "page_number": r["page_number"],
+                    "date_source": r["date_source"],
+                    "verification": r["verification"],
+                    "method": r["method"],
+                    "verification_label": r["verification_label"],
+                }
+                for r in reversed(rows)
+            ]
+        else:
+            # legacy fallback: only for a patient with no facts-model rows
+            events = await db.get_treatment_events_timeline(patient_id=pid)
+            result["timeline_source"] = "legacy"
+            result["treatment_timeline"] = [
+                {
+                    "id": e.id,
+                    "event_date": e.event_date.isoformat(),
+                    "event_type": e.event_type,
+                    "title": e.title,
+                    "notes": e.notes,
+                }
+                for e in events
+            ]
 
     return json.dumps(result)
 

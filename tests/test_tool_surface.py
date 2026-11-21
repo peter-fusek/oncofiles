@@ -66,6 +66,21 @@ def test_deprecated_tools_are_operator_only(registered):
     assert sorted(deprecated - OPERATOR_TOOLS) == []
 
 
+def test_interpretation_tools_are_operator_only():
+    """#928 (design #711 §4.4): tools that compute clinical interpretation in
+    code or read legacy tables curated patients lack are not user tools."""
+    moved = {
+        "add_clinical_analysis",
+        "analyze_labs",
+        "compare_labs",
+        "fetch_clinical_trials",
+        "get_lab_safety_check",
+        "get_precycle_checklist",
+    }
+    assert moved <= OPERATOR_TOOLS
+    assert not moved & USER_TOOLS
+
+
 def test_in_process_listing_is_the_full_surface(registered):
     """No HTTP request (stdio, in-process): nothing is hidden."""
     assert set(registered) == USER_TOOLS | OPERATOR_TOOLS

@@ -33,6 +33,7 @@ from datetime import date
 
 from fastmcp import Context
 
+from oncofiles import facts_timeline
 from oncofiles.models import ActivityLogEntry, ConversationEntry, ConversationQuery, EntryType
 from oncofiles.tools._helpers import (
     _caller_email,
@@ -552,17 +553,28 @@ async def get_journey_timeline(
 ) -> str:
     """Get a unified chronological timeline of the complete patient journey.
 
-    Merges documents, treatment events, conversations, lab values, and research
-    entries into a single date-sorted stream. Each item includes a source_table
-    field for namespaced IDs (e.g. doc:42, te:7).
+    Merges documents, the clinical facts model (the same rows as the
+    ``timeline`` tool: visits, diagnoses, treatments, procedures, medications,
+    planned dates, abnormal values; each with its source document, page,
+    ``verification``, ``method`` and ``verification_label``) and session-diary
+    entries into a single date-sorted stream. Each item includes a
+    source_table field for namespaced IDs (e.g. doc:42, facts:7).
+
+    Legacy fallback (#928): only for a patient with no facts-model rows at all,
+    the old ``treatment_events``, ``lab_values`` and ``research_entries`` tables
+    are read instead; ``timeline_source`` says which (``facts`` | ``legacy``).
 
     Args:
         date_from: Start date (YYYY-MM-DD).
         date_to: End date (YYYY-MM-DD).
         limit: Maximum total items returned (default 200, max 500).
         offset: Skip first N items for pagination.
-        source_tables: Comma-separated list to include (e.g. "documents,treatment_events").
-                       Default: all tables.
+        source_tables: Comma-separated list to include (documents, facts,
+                       conversations; e.g. "documents,facts"). Default: all.
+                       With facts-model rows, "treatment_events" selects the
+                       facts rows of kind treatment / medication / procedure /
+                       planned and "lab_values" the value rows; without them
+                       they select the legacy tables.
         search: Substring filter across title + summary + tags.
         sort: "desc" (newest first, default) or "asc" (oldest first).
         patient_slug: Optional — explicit patient slug (#429).
@@ -579,6 +591,7 @@ async def get_journey_timeline(
     # Which tables to include
     all_tables = {
         "documents",
+        "facts",
         "treatment_events",
         "conversations",
         "lab_values",
@@ -590,6 +603,8 @@ async def get_journey_timeline(
         include = all_tables
 
     timeline: list[dict] = []
+    # facts model first; the legacy tables only for a patient without facts rows (#928)
+    use_facts = await facts_timeline.has_facts(db, patient_id)
 
     # ── Documents ──────────────────────────────────────────────────────────
     if "documents" in include:
@@ -624,8 +639,47 @@ async def get_journey_timeline(
                     }
                 )
 
-    # ── Treatment events ──────────────────────────────────────────────────
-    if "treatment_events" in include:
+    # ── Clinical facts model (timeline_v) ─────────────────────────────────
+    if use_facts and include & {"facts", "treatment_events", "lab_values"}:
+        doc_urls = {
+            i["document_id"]: i["gdrive_url"] for i in timeline if i["source_table"] == "documents"
+        }
+        for r in await facts_timeline.fact_rows(
+            db,
+            patient_id,
+            date_from=parsed_from.isoformat() if parsed_from else None,
+            date_to=parsed_to.isoformat() if parsed_to else None,
+        ):
+            treatment = r["kind"] in facts_timeline.TREATMENT_KINDS
+            if not (
+                "facts" in include
+                or ("treatment_events" in include and treatment)
+                or ("lab_values" in include and r["entity"] == "fact" and not treatment)
+            ):
+                continue
+            timeline.append(
+                {
+                    "id": r["entity_id"],
+                    "source_table": "facts",
+                    "entity": r["entity"],
+                    "date": str(r["at"] or "")[:10],
+                    "event_type": r["kind"],
+                    "title": r["title"] or "",
+                    "summary": facts_timeline.summary_of(r)[:200],
+                    "category": r["kind"],
+                    "document_id": r["source_document_id"],
+                    "page_number": r["page_number"],
+                    "date_source": r["date_source"],
+                    "verification": r["verification"],
+                    "method": r["method"],
+                    "verification_label": r["verification_label"],
+                    "gdrive_url": doc_urls.get(r["source_document_id"], ""),
+                    "tags": [],
+                }
+            )
+
+    # ── Treatment events (legacy fallback) ────────────────────────────────
+    if not use_facts and "treatment_events" in include:
         try:
             conds = ["patient_id = ?", "deleted_at IS NULL"]
             params = [patient_id]
@@ -681,8 +735,8 @@ async def get_journey_timeline(
                 }
             )
 
-    # ── Lab values (grouped by date+document) ─────────────────────────────
-    if "lab_values" in include:
+    # ── Lab values, grouped by date+document (legacy fallback) ────────────
+    if not use_facts and "lab_values" in include:
         try:
             conds = ["patient_id = ?"]
             params = [patient_id]
@@ -718,8 +772,8 @@ async def get_journey_timeline(
         except Exception:
             logger.debug("lab_values query failed — table may not exist")
 
-    # ── Research entries ───────────────────────────────────────────────────
-    if "research_entries" in include:
+    # ── Research entries (legacy fallback) ────────────────────────────────
+    if not use_facts and "research_entries" in include:
         try:
             conds = ["patient_id = ?"]
             params = [patient_id]
@@ -770,7 +824,16 @@ async def get_journey_timeline(
     total = len(timeline)
     timeline = timeline[offset : offset + limit]
 
-    return json.dumps({"items": timeline, "total": total, "offset": offset, "limit": limit})
+    return json.dumps(
+        {
+            "items": timeline,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "timeline_source": "facts" if use_facts else "legacy",
+        },
+        default=str,
+    )
 
 
 async def get_conversation_stats(
