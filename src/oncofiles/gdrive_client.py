@@ -8,6 +8,7 @@ import functools
 import io
 import json
 import logging
+import re
 import ssl
 import threading
 import time
@@ -39,6 +40,35 @@ TEXT_EXPORT_EXTS = (".md", ".txt", ".json", ".jsonl")
 
 class DriveWriteRefusedError(RuntimeError):
     """A legacy write that would overwrite or trash an original. Never retried."""
+
+
+# #948: a Drive thumbnailLink is fetched with the patient's credentials, so it
+# (and any redirect from it) is followed only to Google's own https hosts.
+_THUMBNAIL_HOST_SUFFIXES = (".googleusercontent.com", ".google.com", ".googleapis.com")
+_THUMBNAIL_SIZE_RE = re.compile(r"=s\d+$")
+_REDIRECT_CODES = (301, 302, 303, 307, 308)
+_MAX_THUMBNAIL_REDIRECTS = 2
+
+
+def _is_google_https(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and host.endswith(_THUMBNAIL_HOST_SUFFIXES)
+
+
+def _sized_thumbnail_url(link: str, size_px: int) -> str | None:
+    """``link`` asking for ``size_px`` (Drive links end in ``=s<px>``), or None
+    when it is not an https URL on a Google host."""
+    if not _is_google_https(link):
+        return None
+    if _THUMBNAIL_SIZE_RE.search(link):
+        return _THUMBNAIL_SIZE_RE.sub(f"=s{int(size_px)}", link)
+    return link
 
 
 def _is_text_export_mime(mime: str) -> bool:
@@ -754,6 +784,97 @@ class GDriveClient(PerThreadServiceMixin):
         while not done:
             _, done = downloader.next_chunk()
         return buf.getvalue()
+
+    # ── Previews (#948): read-only, one attempt, short timeout ──────────────
+
+    def get_thumbnail(self, file_id: str, size_px: int, *, timeout: float, max_bytes: int) -> dict:
+        """Drive's own thumbnail of ``file_id`` at about ``size_px``, as bytes.
+
+        Read-only and deliberately NOT ``_retry_on_transient``: one metadata
+        request and at most one thumbnail request, each on a fresh connection
+        with ``timeout`` (``google_service.short_lived_http``); a 429 / HTTP
+        error / timeout raises to the caller, which answers "no preview".
+        ``thumbnailLink`` is short-lived and works as an access credential:
+        it is fetched here with the client's credentials, only from a Google
+        https host, and never returned, stored or logged.
+
+        Returns ``{"mime", "size", "trashed", "has_thumbnail", "image",
+        "image_state"}``: ``image`` is the thumbnail bytes or None;
+        ``image_state`` is ``ok``, ``none`` (Drive has no thumbnail),
+        ``bad_link``, ``http_<status>``, ``empty`` or ``too_large``.
+        """
+        from oncofiles import google_service
+
+        with google_service.short_lived_http(self.__dict__.get("_creds"), timeout) as http:
+            meta = (
+                self._service.files()
+                .get(
+                    fileId=file_id,
+                    fields="mimeType,size,trashed,hasThumbnail,thumbnailLink",
+                    supportsAllDrives=True,
+                )
+                .execute(http=http, num_retries=0)
+            )
+            link = str(meta.get("thumbnailLink") or "")
+            out = {
+                "mime": str(meta.get("mimeType") or ""),
+                "size": int(meta.get("size") or 0) or None,
+                "trashed": bool(meta.get("trashed")),
+                "has_thumbnail": bool(link) and not meta.get("trashed"),
+                "image": None,
+                "image_state": "none",
+            }
+            if not out["has_thumbnail"]:
+                return out
+            url = _sized_thumbnail_url(link, size_px)
+            if url is None:
+                out["image_state"] = "bad_link"
+                return out
+            # httplib2 would re-send the Authorization header to any Location;
+            # follow a redirect ourselves, and only to a Google https host.
+            http.follow_redirects = False
+            for _hop in range(_MAX_THUMBNAIL_REDIRECTS + 1):
+                resp, body = http.request(url, "GET")
+                status = int(getattr(resp, "status", 0) or 0)
+                location = resp.get("location") if hasattr(resp, "get") else None
+                if status not in _REDIRECT_CODES or not location:
+                    break
+                from urllib.parse import urljoin
+
+                url = urljoin(url, str(location))
+                if not _is_google_https(url):
+                    break
+            status = int(getattr(resp, "status", 0) or 0)
+            if status != 200:
+                out["image_state"] = f"http_{status}"
+            elif not body:
+                out["image_state"] = "empty"
+            elif len(body) > max_bytes:
+                out["image_state"] = "too_large"
+            else:
+                out["image"], out["image_state"] = bytes(body), "ok"
+            return out
+
+    def download_capped(self, file_id: str, mime: str, *, timeout: float, max_bytes: int):
+        """A file's bytes for a local preview render (#948), or None when bigger
+        than ``max_bytes``. Read-only, one attempt, no retry, fresh connection
+        with ``timeout``. A Google Doc / Sheet / Slides / Drawing is exported
+        as PDF (Google caps an export at 10 MB). The caller checks Drive's
+        reported ``size`` against the cap BEFORE calling, so a binary download
+        is bounded by it; the length is checked again here."""
+        from oncofiles import google_service
+
+        with google_service.short_lived_http(self.__dict__.get("_creds"), timeout) as http:
+            if mime.startswith("application/vnd.google-apps."):
+                request = self._service.files().export_media(
+                    fileId=file_id, mimeType="application/pdf"
+                )
+            else:
+                request = self._service.files().get_media(fileId=file_id, supportsAllDrives=True)
+            body = request.execute(http=http, num_retries=0)
+        if not isinstance(body, bytes | bytearray) or not body or len(body) > max_bytes:
+            return None
+        return bytes(body)
 
     # ── Batch operations ───────────────────────────────────────────────────
 
