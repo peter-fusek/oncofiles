@@ -75,6 +75,7 @@ def welcome_env(monkeypatch, tmp_path):
     monkeypatch.setattr("oncofiles.config.DASHBOARD_ADMIN_EMAILS", [])
     monkeypatch.delenv("CURATED_DAILY_PAGE_BUDGET", raising=False)
     inbound_welcome.reset_state()
+    holding_extract.reset_state()
     holding_extract._drain_task = None
     inbound_email._BACKGROUND.clear()  # tasks of an earlier test's (closed) loop
     yield tmp_path
@@ -209,16 +210,15 @@ async def test_one_trial_per_sender(idb, mails, brevo, model):
     assert len(patients) == 1
 
 
-async def test_closed_gate_replies_once_with_the_waitlist_and_keeps_nothing(
-    idb, mails, brevo, model, monkeypatch
-):
+async def test_closed_gate_replies_once_and_keeps_nothing(idb, mails, brevo, model, monkeypatch):
     monkeypatch.setattr("oncofiles.config.ONBOARDING_MODE", "closed")
     store, fetched = brevo
     await send(idb, welcome_item(files=two_files(store), mid="<c-1@example.test>"))
     await send(idb, welcome_item(files=two_files(store), mid="<c-2@example.test>"))
     assert await trials(idb) == [] and fetched == [] and model == []
     assert len(mails) == 1 and mails[0]["to"] == [NEW]
-    assert inbound_welcome.WAITLIST_URL in mails[0]["text"]
+    assert inbound_welcome.DEMO_URL in mails[0]["text"]
+    assert inbound_welcome.SIGN_IN_URL in mails[0]["text"]
     assert mails[0]["headers"] == {"Auto-Submitted": "auto-replied"}
     for name in (FILE_A, FILE_B, SUBJECT, NEW):
         assert name not in mails[0]["text"]
@@ -232,7 +232,7 @@ async def test_invite_mode_admits_only_invited_senders(idb, mails, brevo, model,
     store, _ = brevo
     await send(idb, welcome_item(files=two_files(store)))  # NEW: not invited
     assert await trials(idb) == []
-    assert len(mails) == 1 and inbound_welcome.WAITLIST_URL in mails[0]["text"]
+    assert len(mails) == 1 and inbound_welcome.DEMO_URL in mails[0]["text"]
     await send(idb, welcome_item(sender=NEW2, files=two_files(store)))
     [trial] = await trials(idb)
     assert (await idb.get_patient(trial["patient_id"])).caregiver_email == canonical_email(NEW2)
@@ -1018,7 +1018,7 @@ async def test_excluded_is_stored_as_a_code(idb, monkeypatch):
     monkeypatch.setattr(
         "oncofiles.curated.extract.extract",
         lambda name, content, mime="", **kw: Extraction(
-            "", "none", 1, "-", error="raw_genotype_excluded: not sent to the model"
+            "", "none", 1, "-", error="any wording at all", excluded="raw_genotype_excluded"
         ),
     )
     doc_id = await holding_store.store_document(idb, PID, "S.jpg", jpeg(40_000), "image/jpeg")
@@ -1107,3 +1107,191 @@ async def test_after_drive_connects_the_phase_one_caps_apply(
     assert first.outcome == "filed" and first.accepted == len(FILES)
     assert [f[0] for f in drive.files] == ["SynthRaw1-0.pdf", "SynthRaw1-1.pdf"]
     assert (await _raw(idb, address, 2)).outcome == "rate_limited"  # the phase-1 hourly cap
+
+
+# ── infra re-review follow-ups ──────────────────────────────────────────
+
+
+def _pdf_of(pages: int) -> bytes:
+    import pymupdf
+
+    doc = pymupdf.open()
+    for i in range(pages):
+        doc.new_page().insert_text((20, 40), f"Invented held page {i} 2027")
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+async def _state_of(db, doc_id):
+    async with db.db.execute(
+        "SELECT structured_metadata FROM documents WHERE id = ?", (doc_id,)
+    ) as cur:
+        return json.loads((await cur.fetchone())[0])["holding"]
+
+
+async def test_set_holding_state_lease_is_in_the_update(idb):
+    await make_trial(idb)
+    doc_id = await holding_store.store_document(idb, PID, "S.jpg", jpeg(40_000), "image/jpeg")
+    mine, theirs = _past(), _future()
+    assert await idb.claim_holding_extraction(
+        doc_id, patient_id=PID, claimed_at=mine, stale_before=_past()
+    )
+    assert await idb.refresh_holding_claim(
+        doc_id, patient_id=PID, claimed_at=mine, new_claimed_at=theirs
+    )  # another reader's lease now
+    written = await idb.set_holding_state(
+        doc_id, patient_id=PID, holding={"extract": "done"}, claimed_at=mine
+    )
+    assert written is False and (await _state_of(idb, doc_id))["extract"] == "reading"
+    assert await idb.set_holding_state(
+        doc_id, patient_id=PID, holding={"extract": "done", "claimed_at": theirs}, claimed_at=theirs
+    )
+    assert (await _state_of(idb, doc_id))["extract"] == "done"
+    src = (Path(server.__file__).parent / "database" / "_trials.py").read_text()
+    _head, _sep, rest = src.partition("async def set_holding_state")
+    body, _sep, _tail = rest.partition("async def ")
+    assert "SELECT" not in body  # one conditional UPDATE, no read-then-write
+
+
+async def test_shared_model_is_checked_before_every_page_batch(idb, monkeypatch):
+    from oncofiles.tools import curated
+
+    await make_trial(idb)
+    monkeypatch.setattr("oncofiles.curated.llm.configured", lambda: True)
+    monkeypatch.setattr("oncofiles.tools.curated.run_active", lambda: False)
+    calls = []
+
+    def _extract(name, content, mime_type="", **kw):
+        calls.append(len(content))
+        monkeypatch.setattr(curated, "run_active", lambda: True)  # a curated run starts
+        return Extraction("<!-- page 1 -->\nInvented 2027", "vision", 1, "synthetic-local")
+
+    monkeypatch.setattr("oncofiles.curated.extract.extract", _extract)
+    pages = holding_extract.PAGE_BATCH + 2
+    doc_id = await holding_store.store_document(
+        idb, PID, "SynthLong.pdf", _pdf_of(pages), "application/pdf"
+    )
+    counts = await holding_extract.run_pending(idb)
+    assert len(calls) == 1 and counts == {"curated_run_active": 1}
+    state = await _state_of(idb, doc_id)
+    assert state["extract"] == "pending" and int(state.get("attempts") or 0) == 0
+    assert await idb.get_ocr_pages(doc_id, patient_id=PID) == []
+    assert holding_extract.reader_status()["last_wait_reason"] == "curated_run_active"
+
+
+async def test_the_claim_is_refreshed_per_batch_and_pages_are_joined(idb, monkeypatch, model):
+    from datetime import timedelta
+
+    await make_trial(idb)
+    monkeypatch.setattr("oncofiles.tools.curated.run_active", lambda: False)
+    ticks = {"n": 0}
+    real_now = holding_extract._now
+
+    def _clock():
+        ticks["n"] += 1
+        return real_now() + timedelta(minutes=ticks["n"])
+
+    monkeypatch.setattr(holding_extract, "_now", _clock)
+    refreshed = []
+    real_refresh = idb.refresh_holding_claim
+
+    async def spy(*a, **kw):
+        refreshed.append(kw["new_claimed_at"])
+        return await real_refresh(*a, **kw)
+
+    monkeypatch.setattr(idb, "refresh_holding_claim", spy)
+    pages = 2 * holding_extract.PAGE_BATCH + 1
+    doc_id = await holding_store.store_document(
+        idb, PID, "SynthLonger.pdf", _pdf_of(pages), "application/pdf"
+    )
+    assert await holding_extract.run_pending(idb) == {"done": 1}
+    assert len(model) == 3 and len(refreshed) == 2  # three batches, two refreshes
+    state = await _state_of(idb, doc_id)
+    assert state["claimed_at"] == refreshed[-1] and state["extract"] == "done"
+    stub_pages = len(PAGE_TEXT.split("<!-- page ")) - 1  # pages the stub returns per call
+    assert len(await idb.get_ocr_pages(doc_id, patient_id=PID)) == len(model) * stub_pages
+
+
+def test_a_stuck_curated_inbox_signal_stops_blocking_after_the_timeout(monkeypatch, caplog):
+    from oncofiles.tools import curated
+
+    monkeypatch.setattr(curated, "run_active", lambda: False)
+    monkeypatch.setitem(
+        curated._probe_stats, "stuck-patient-0000", curated._ProbeStats(pending_inbox_count=1)
+    )
+    stale = holding_extract.CURATED_PENDING_STALE_S
+    assert holding_extract.lm_busy(now_mono=0.0) == "curated_pending"
+    assert holding_extract.lm_busy(now_mono=stale - 1) == "curated_pending"
+    caplog.set_level(logging.WARNING, logger="oncofiles")
+    assert holding_extract.lm_busy(now_mono=stale + 1) is None
+    assert holding_extract.lm_busy(now_mono=stale + 2) is None
+    assert caplog.text.count("curated_pending_stale") == 1  # logged once
+    assert holding_extract.reader_status()["stale_pending_ignored"] == 2
+    # the signal changes: it counts again from now
+    monkeypatch.setitem(
+        curated._probe_stats, "stuck-patient-0000", curated._ProbeStats(pending_inbox_count=2)
+    )
+    assert holding_extract.lm_busy(now_mono=stale + 3) == "curated_pending"
+
+
+async def test_admin_overview_shows_the_reader_status(idb, monkeypatch):
+    monkeypatch.setattr(server, "_check_bearer", lambda request: None)  # operator
+    resp = await server.api_inbound_unmatched(_dash_request(idb))
+    body = json.loads(resp.body)
+    assert set(body["holding_reader"]) == {
+        "last_wait_reason",
+        "last_wait_at",
+        "stale_pending_ignored",
+    }
+
+
+async def test_no_reply_text_mentions_a_waitlist(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setattr("oncofiles.config.ONBOARDING_MODE", "closed")
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    texts = [m["subject"] + m["text"] for m in mails]
+    texts += list(inbound_welcome.not_open_text())
+    texts += list(inbound_welcome.trial_ended_text())
+    texts += list(inbound_welcome.welcome_text(1, Counter(), "x@" + inbound_email.INBOUND_DOMAIN))
+    texts += list(inbound_email.receipt_text(1, Counter({"trial_ended": 1})))
+    for text in texts:
+        low = text.lower()
+        assert "waitlist" not in low and "poradovn" not in low and "#join" not in low
+    assert inbound_welcome.DEMO_URL in mails[0]["text"]
+
+
+async def test_a_full_store_stops_the_rest_of_the_mail(idb, mails, brevo, model, monkeypatch):
+    store, _ = brevo
+    calls = []
+    real = holding_store.check_limits
+
+    async def counting(db, pid, size):
+        calls.append(size)
+        await real(db, pid, size)
+
+    monkeypatch.setattr(holding_store, "check_limits", counting)
+    monkeypatch.setattr(holding_store, "HOLDING_MAX_BYTES", 10)
+    await send(idb, welcome_item(files=two_files(store)))
+    assert len(calls) == 1  # the second file is not even tried
+    [reply] = mails
+    assert "(holding_full): 2" in reply["text"]
+
+
+async def test_own_held_file_opens_after_the_trial_ended(idb, monkeypatch, model):
+    """Decision (#950 infra review): view_document may open the person's own
+    held file after the trial ended (read-only); writes and model reads stay
+    refused."""
+    from oncofiles.tools._helpers import _try_download
+
+    await make_trial(idb)
+    data = _tiny_pdf()
+    doc_id = await holding_store.store_document(idb, PID, "SynthOwn.pdf", data, "application/pdf")
+    await _end_trial(idb, PID)
+    doc = await idb.get_document(doc_id, patient_id=PID)
+    ok, _content, raw = await _try_download(MagicMock(), doc, None)
+    assert ok is True and raw == data
+    with pytest.raises(holding_store.HoldingRefusedError) as refused:
+        await holding_store.store_document(idb, PID, "SynthLate.pdf", data, "application/pdf")
+    assert refused.value.code == "trial_ended"
+    assert await holding_extract.run_pending(idb) == {} and model == []

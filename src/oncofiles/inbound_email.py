@@ -1113,7 +1113,17 @@ class _BytesUpload:
 
 
 # Request-level refusals of handle_upload: they stop the mail's filing.
-_STOPPING = {"no_drive", "folder_not_writable", "inbox_unavailable", "document_cap"}
+_STOPPING = {
+    "no_drive",
+    "folder_not_writable",
+    "inbox_unavailable",
+    "document_cap",
+    # #950 phase 2: holding-store refusals that no later file of the mail
+    # can pass either (a smaller file may still fit under trial_bytes_cap)
+    "trial_ended",
+    "holding_full",
+    "disk_low",
+}
 
 
 async def _file_one(db, patient_id: str, name: str, data: bytes) -> str:

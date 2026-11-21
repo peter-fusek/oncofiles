@@ -7364,6 +7364,10 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
     except Exception as exc:
         logger.warning("API inbound-unmatched: job counts failed (%s)", type(exc).__name__)
         out["jobs"] = None
+    # #950 phase 2: why the trial reader last waited (codes and counts only)
+    from oncofiles import holding_extract
+
+    out["holding_reader"] = holding_extract.reader_status()
     return JSONResponse(out)
 
 

@@ -168,34 +168,36 @@ class TrialsMixin(DatabaseBase):
     async def set_holding_state(
         self, doc_id: int, *, patient_id: str, holding: dict, claimed_at: str | None = None
     ) -> bool:
-        """Replace ``structured_metadata.holding`` of one holding document.
+        """Replace ``structured_metadata.holding`` of one holding document in ONE
+        UPDATE. With ``claimed_at`` only while that claim still holds: the
+        reader's lease is part of the WHERE, so a document taken over as stale
+        is never overwritten. False = not written."""
+        sql = (
+            "UPDATE documents SET structured_metadata = json_set(structured_metadata, "
+            "'$.holding', json(?)), updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "WHERE id = ? AND patient_id = ? AND file_id LIKE 'holding:%' "
+            "AND json_valid(structured_metadata)"
+        )
+        params: list = [json.dumps(holding, sort_keys=True), doc_id, patient_id]
+        if claimed_at is not None:
+            sql += " AND json_extract(structured_metadata, '$.holding.claimed_at') = ?"
+            params.append(claimed_at)
+        cursor = await self.db.execute(sql, params)
+        await self.db.commit()
+        return (cursor.rowcount or 0) == 1
 
-        With ``claimed_at`` only while that claim still holds (the reader's
-        lease): a document taken over as stale is not overwritten. False = not
-        written.
-        """
-        async with self.db.execute(
-            "SELECT structured_metadata FROM documents "
-            "WHERE id = ? AND patient_id = ? AND file_id LIKE 'holding:%'",
-            (doc_id, patient_id),
-        ) as cursor:
-            row = await cursor.fetchone()
-        if row is None:
-            return False
-        try:
-            meta = json.loads(row[0] or "{}")
-        except ValueError:
-            meta = {}
-        if not isinstance(meta, dict):
-            meta = {}
-        if claimed_at is not None and (meta.get("holding") or {}).get("claimed_at") != claimed_at:
-            return False
-        meta["holding"] = holding
-        await self.db.execute(
-            "UPDATE documents SET structured_metadata = ?, "
-            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
-            "WHERE id = ? AND patient_id = ?",
-            (json.dumps(meta, sort_keys=True), doc_id, patient_id),
+    async def refresh_holding_claim(
+        self, doc_id: int, *, patient_id: str, claimed_at: str, new_claimed_at: str
+    ) -> bool:
+        """Move the reader's lease forward, conditional on the current one, so a
+        long document is never taken over as stale while it is being read."""
+        cursor = await self.db.execute(
+            "UPDATE documents SET structured_metadata = json_set(structured_metadata, "
+            "'$.holding.claimed_at', ?) WHERE id = ? AND patient_id = ? "
+            "AND file_id LIKE 'holding:%' AND json_valid(structured_metadata) "
+            "AND json_extract(structured_metadata, '$.holding.extract') = 'reading' "
+            "AND json_extract(structured_metadata, '$.holding.claimed_at') = ?",
+            (new_claimed_at, doc_id, patient_id, claimed_at),
         )
         await self.db.commit()
-        return True
+        return (cursor.rowcount or 0) == 1

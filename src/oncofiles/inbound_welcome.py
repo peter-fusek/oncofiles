@@ -23,8 +23,10 @@ decides, in this order:
 5. **No attachments**: nothing to read, dropped (``welcome_no_files``).
 6. **Onboarding gate** (#852, ``onboarding_gate.onboarding_allowed``; admins
    pass): ``closed``, or ``invite`` for a sender not invited, gets at most one
-   reply per sender per ``WAITLIST_REPLY_INTERVAL_S`` (24 h) with the waitlist
-   link; the files are not kept. ``open`` continues.
+   reply per sender per ``NOT_OPEN_REPLY_INTERVAL_S`` (24 h): the files are
+   not kept, the person can try the demo and sign in with Google once their
+   account opens (no waitlist wording, aligned with the landing). ``open``
+   continues.
 7. **Trial patient**, under ``_ADMIT_LOCK`` (no two coroutines create one):
    the sender's existing trial (``trial_accounts.sender_hash``, one per
    canonical sender) or a new one, if the global ``MAX_NEW_TRIALS_PER_DAY``
@@ -75,7 +77,7 @@ logger = logging.getLogger(__name__)
 # ONE constant to narrow or widen: the addresses that start an onboarding.
 WELCOME_ADDRESSES = frozenset({f"welcome@{inbound_email.INBOUND_DOMAIN}"})
 SIGN_IN_URL = "https://oncofiles.com/dashboard"
-WAITLIST_URL = "https://oncofiles.com/#join"
+DEMO_URL = "https://oncofiles.com/demo"
 TRIAL_DAYS = 30
 TRIAL_SOURCE = "welcome_email"
 TRIAL_DISPLAY_NAME = "Moje dokumenty"
@@ -83,7 +85,7 @@ TRIAL_DISPLAY_NAME = "Moje dokumenty"
 MAX_MAILS_PER_SENDER_DAY = 20
 MAX_FILES_PER_SENDER_DAY = 100
 MAX_NEW_TRIALS_PER_DAY = 30
-WAITLIST_REPLY_INTERVAL_S = 24 * 3600
+NOT_OPEN_REPLY_INTERVAL_S = 24 * 3600
 
 _ADMIT_LOCK = asyncio.Lock()
 
@@ -93,7 +95,7 @@ class _State:
         self.reset()
 
     def reset(self) -> None:
-        self.waitlist_reply: dict[str, float] = {}  # sender hash -> last waitlist reply
+        self.not_open_reply: dict[str, float] = {}  # sender hash -> last not-open reply
         self.ended_reply: dict[str, float] = {}  # sender hash -> last trial-ended reply
 
 
@@ -175,23 +177,26 @@ def _bilingual(subject: str, sk: list[str], en: list[str]) -> tuple[str, str]:
     return subject, "\n".join(sk) + "\n\n---\n\n" + "\n".join(en) + "\n\nOncofiles\n"
 
 
-def waitlist_text() -> tuple[str, str]:
-    """(subject, body) of the closed-gate reply: no name, no file name."""
+def not_open_text() -> tuple[str, str]:
+    """(subject, body) of the closed-gate reply: no name, no file name, no
+    waitlist wording (the landing's: try the demo, sign in with Google)."""
     return _bilingual(
-        "Oncofiles: zatiaľ cez poradovník / waitlist first",
+        "Oncofiles: účty otvárame postupne / opening step by step",
         [
             "Dobrý deň,",
             "",
-            "ďakujeme za záujem. Nové účty zatiaľ otvárame postupne, preto sme poslané "
-            "súbory neuložili. Zapíšte sa do poradovníka a ozveme sa vám:",
-            WAITLIST_URL,
+            "ďakujeme za záujem. Nové účty otvárame postupne, preto sme poslané súbory "
+            "zatiaľ neuložili.",
+            "Vyskúšajte si ukážku s vymyslenou pacientkou: " + DEMO_URL,
+            "Keď sa váš účet otvorí, prihláste sa cez Google: " + SIGN_IN_URL,
         ],
         [
             "Hello,",
             "",
             "thank you for your interest. We are opening new accounts step by step, so the "
-            "files you sent were not kept. Join the waitlist and we will let you know:",
-            WAITLIST_URL,
+            "files you sent were not kept for now.",
+            "Try the demo with an invented patient: " + DEMO_URL,
+            "Once your account opens, sign in with Google: " + SIGN_IN_URL,
         ],
     )
 
@@ -407,12 +412,12 @@ async def admit(db, msg: inbound_email.InboundMessage) -> tuple[str, str, bool] 
         _count(f"welcome_gate_{mode}")
         logger.info("inbound: welcome refused reason=gate mode=%s", mode)
         _reply_once(
-            _state.waitlist_reply,
+            _state.not_open_reply,
             key,
-            WAITLIST_REPLY_INTERVAL_S,
+            NOT_OPEN_REPLY_INTERVAL_S,
             as_sent,
-            waitlist_text(),
-            "welcome_waitlist",
+            not_open_text(),
+            "welcome_not_open",
         )
         return None
     async with _ADMIT_LOCK:

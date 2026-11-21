@@ -555,7 +555,12 @@ async def _try_download(
     if holding_store.is_holding_file_id(doc.file_id):
         # the request's patient: the row was loaded scoped to it, and the
         # file's associated data binds it to that patient (another one's id
-        # never decrypts)
+        # never decrypts).
+        # Decision (#950 infra review): this read also works AFTER the trial
+        # ended, on purpose. It is the person's own document, opened read-only
+        # by them; nothing new is stored, and the holding reader (the model)
+        # and the holding write path refuse an ended trial
+        # (holding_store.check_limits, db.next_holding_extraction).
         pid = _get_patient_id(required=False)
         try:
             content_bytes = await asyncio.to_thread(holding_store.read, doc.file_id, pid)
