@@ -22,6 +22,11 @@ can never rename a real medical record into a wrong place:
   writes it) and an unknown one is only flagged. Real ambiguity — another
   person, no or a birth date, unknown type, split, low confidence, a near
   neighbour of a README token that is a different entity — still → review.
+
+#926: ``verify_metadata`` is the generic check of what the classifier
+writes besides the filename fields: ICD codes, doctor surname, department and
+the date evidence must be printed in the text, otherwise the field is dropped
+and ``unverified_<field>`` is listed (never a review reason).
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from oncofiles.curated.naming import (
     UNKNOWN,
     NameFields,
     camel,
+    doctor_surname,
     has_title,
     subject_token,
     surname_text,
@@ -299,6 +305,80 @@ def printed_in_text(value: str, text: str, birth_dates=frozenset()) -> bool:
             continue
         return True
     return False
+
+
+# ── #926: verified classifier metadata ──────────────────────────────
+
+METADATA_FIELDS = ("diagnoses", "doctor", "hospital_unit", "date_evidence")
+
+
+def _printed_plain(value, text: str) -> bool:
+    """``value`` printed in ``text`` ignoring diacritics, case and whitespace
+    runs, on word boundaries (no birth-context rule: these are no vocabulary)."""
+    if not isinstance(value, str):
+        return False
+    needle = _norm(value)
+    if len(re.sub(r"[^a-z0-9]", "", needle)) < 2:
+        return False
+    pattern = r"(?<![a-z0-9])" + re.escape(needle) + r"(?![a-z0-9])"
+    return re.search(pattern, _norm(text)) is not None
+
+
+def _icd_printed(code, text: str) -> bool:
+    """An ICD code as returned, or the same code with / without its dot."""
+    if not isinstance(code, str) or not code.strip():
+        return False
+    code = code.strip()
+    variants = {code, code.replace(".", "")}
+    if "." not in code and len(code) > 3:
+        variants.add(f"{code[:3]}.{code[3:]}")
+    return any(_printed_plain(v, text) for v in variants)
+
+
+def verify_metadata(raw: dict, text: str, iso_date: str | None) -> tuple[dict, list[str]]:
+    """The classifier's sidecar metadata, checked against the text (#926).
+
+    Generic, no layout rules: every ICD code in ``diagnoses`` printed (a code
+    that is not is dropped), the doctor's surname printed, ``hospital_unit``
+    printed, ``date_evidence`` printed AND holding ``iso_date`` (the validated
+    clinical date, ``date_in_text``). A failing field is dropped (None / the
+    printed codes only) and ``unverified_<field>`` is listed. An empty field
+    is no failure. Returns ``(fields, codes)``."""
+    raw = raw if isinstance(raw, dict) else {}
+    text = text or ""
+    out: dict = {}
+    codes: list[str] = []
+    diagnoses = raw.get("diagnoses") if isinstance(raw.get("diagnoses"), list) else []
+    kept = [d.strip() for d in diagnoses if _icd_printed(d, text)]
+    out["diagnoses"] = kept
+    if len(kept) != len([d for d in diagnoses if d not in (None, "")]):
+        codes.append("unverified_diagnoses")
+    doctor = raw.get("doctor")
+    if isinstance(doctor, str) and doctor.strip():
+        ok = _printed_plain(doctor_surname(doctor), text)
+        out["doctor"] = doctor if ok else None
+        codes += [] if ok else ["unverified_doctor"]
+    else:
+        out["doctor"] = None
+    unit = raw.get("hospital_unit")
+    if isinstance(unit, str) and unit.strip():
+        ok = _printed_plain(unit, text)
+        out["hospital_unit"] = unit if ok else None
+        codes += [] if ok else ["unverified_hospital_unit"]
+    else:
+        out["hospital_unit"] = None
+    evidence = raw.get("date_evidence")
+    if isinstance(evidence, str) and evidence.strip():
+        ok = (
+            iso_date is not None
+            and _printed_plain(evidence, text)
+            and date_in_text(iso_date, evidence)
+        )
+        out["date_evidence"] = evidence if ok else None
+        codes += [] if ok else ["unverified_date_evidence"]
+    else:
+        out["date_evidence"] = None
+    return out, codes
 
 
 def names_patient(value: str, contract: Contract) -> bool:
