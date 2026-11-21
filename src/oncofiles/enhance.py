@@ -87,6 +87,20 @@ _PATIENT_CONTEXT_INSTITUTION_FALLBACK_CATEGORIES = {
 }
 
 
+def _institution_fallback_excluded(document_id: int, file_id: str | None) -> bool:
+    """True when a primary-clinic fallback must never touch this row (#930).
+
+    Curated mirror rows and #777 Drive-only rows (``gdrive:`` file id) take
+    their institution from the README contract / the printed text only; a
+    clinic guessed from patient_context would overwrite a deliberate
+    ``Unknown``/NULL. The curated registry is checked too, so a curated row
+    is excluded even if its file id ever changes shape.
+    """
+    from oncofiles.curated.indexer import is_curated_file_id, is_curated_id
+
+    return is_curated_file_id(file_id) or is_curated_id(document_id)
+
+
 async def backfill_institution_from_patient_context(
     db_conn, *, patient_id: str, dry_run: bool = False
 ) -> dict:
@@ -114,6 +128,7 @@ async def backfill_institution_from_patient_context(
         "updated": 0,
         "skipped_unsafe_category": 0,
         "skipped_no_context_institution": 0,
+        "skipped_curated": 0,
         "dry_run": dry_run,
     }
 
@@ -137,7 +152,7 @@ async def backfill_institution_from_patient_context(
         return stats
 
     async with db_conn.execute(
-        "SELECT id, category, filename FROM documents "
+        "SELECT id, category, file_id FROM documents "
         "WHERE deleted_at IS NULL AND (institution IS NULL OR institution = '') "
         "AND patient_id = ?",
         (patient_id,),
@@ -146,6 +161,9 @@ async def backfill_institution_from_patient_context(
 
     for row in rows:
         stats["checked"] += 1
+        if _institution_fallback_excluded(row["id"], row["file_id"]):
+            stats["skipped_curated"] += 1
+            continue
         cat = (row["category"] or "").lower()
         if cat not in _PATIENT_CONTEXT_INSTITUTION_FALLBACK_CATEGORIES:
             stats["skipped_unsafe_category"] += 1
@@ -235,9 +253,15 @@ async def backfill_missing_institutions(db) -> dict:
     """
     import json as _json
 
-    stats = {"checked": 0, "updated": 0, "updated_from_patient_context": 0, "still_missing": 0}
+    stats = {
+        "checked": 0,
+        "updated": 0,
+        "updated_from_patient_context": 0,
+        "still_missing": 0,
+        "skipped_curated": 0,
+    }
     async with db.execute(
-        "SELECT id, patient_id, category, structured_metadata FROM documents "
+        "SELECT id, patient_id, category, file_id, structured_metadata FROM documents "
         "WHERE deleted_at IS NULL AND (institution IS NULL OR institution = '') "
         "AND structured_metadata IS NOT NULL"
     ) as cursor:
@@ -257,7 +281,11 @@ async def backfill_missing_institutions(db) -> dict:
             # for the allowlisted categories only (#404 Option B).
             cat = (row["category"] or "").lower()
             pid = row["patient_id"]
+            # Never for a curated or Drive-only row (#930).
             if cat in _PRIMARY_CLINIC_FALLBACK_CATEGORIES and pid:
+                if _institution_fallback_excluded(row["id"], row["file_id"]):
+                    stats["skipped_curated"] += 1
+                    continue
                 inst = _primary_institution_for_patient(pid)
                 from_fallback = bool(inst)
         if inst:
