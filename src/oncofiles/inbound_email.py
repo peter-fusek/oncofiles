@@ -671,6 +671,19 @@ AUTH_REFUSAL_REASONS = (
 )
 
 
+ALERT_CODES = ("claimed_address_refusals_high",)
+
+
+def note_alert(code: str) -> None:
+    """Count one alert (admin inbound panel and operator ``/readiness``)."""
+    _state.alerts[code] += 1
+
+
+def alerts_overview() -> dict:
+    """Alert codes with counts, in memory only (never on ``/health``)."""
+    return {code: _state.alerts[code] for code in ALERT_CODES}
+
+
 def note_auth_refusal(reason: str) -> None:
     """Count one refused verdict by its code (admin overview ``auth_refusals``)."""
     _state.auth_refusals[reason] += 1
@@ -1245,6 +1258,10 @@ class _State:
         self.locks: dict[str, asyncio.Lock] = {}
         # go-live diagnostics (#950): auth refusal codes, authserv candidates
         self.auth_refusals: Counter = Counter()
+        # alert codes for the admin panel and operator /readiness (codes and
+        # counts only), and the claimed-bucket batch-503s per token hash
+        self.alerts: Counter = Counter()
+        self.claimed_503: dict[str, list[float]] = {}
         self.authserv_hosts: dict[str, dict] = {}
         self.authserv_stats: Counter = Counter()
         # header / item / payload field names and auth evidence flags (#950)
@@ -1320,6 +1337,7 @@ def unmatched_overview() -> dict:
         "senders": senders,
         "totals": dict(_state.counters),
         "auth_refusals": {r: _state.auth_refusals[r] for r in AUTH_REFUSAL_REASONS},
+        "alerts": alerts_overview(),
         "authserv_candidates": authserv_candidates(),
         **field_names_overview(),
     }
