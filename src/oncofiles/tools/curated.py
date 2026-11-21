@@ -368,6 +368,8 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
         doc_cap=max(0, config.MAX_DOCUMENTS_PER_PATIENT),
         docs_existing=await db.count_documents(patient_id=pid),
         ocr_gate=_budget_gate(pid, pages_base),
+        # #919 item 4: filed documents held in review with no recognised reason
+        stale_review_ids=await db.curated_stale_review_ids(patient_id=pid),
     )
     return None, (gdrive, folder_id, opts)
 

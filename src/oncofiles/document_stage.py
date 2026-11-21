@@ -170,6 +170,24 @@ def review_reason_codes(structured_metadata) -> list[str]:
     return safe_codes(_curated(_metadata(structured_metadata)).get("review_reasons"))
 
 
+def stale_review(file_id: str | None, structured_metadata) -> bool:
+    """A curated row held in review with no recognised reason (#919 item 4).
+
+    True when the row would show ``review_needed`` (the same check as
+    ``attention_reason``, so an active #900 override is never stale) and its
+    kept codes are empty or only ``other``: the dashboard can name no action.
+    The curated runner re-checks such documents (``runner._recheck_stale_reviews``).
+    """
+    if not is_curated_row(file_id, structured_metadata):
+        return False
+    meta = _metadata(structured_metadata)
+    if not _review_needed(meta):
+        return False
+    from oncofiles.curated.review_codes import OTHER
+
+    return all(code == OTHER for code in review_reason_codes(meta))
+
+
 def attention_reason(
     *,
     file_id: str | None = None,

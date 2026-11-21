@@ -18,6 +18,10 @@ Rules from the folder README that this module enforces:
   #900) keeps that sidecar's text as it is (no re-OCR, no sidecar rewrite) and
   ignores only the vision soft reasons (rotated region, unsure orientation,
   chart page); every hard check still runs on the kept text;
+* a FILED document whose sidecar says ``review_needed: true`` with no
+  recognised reason (#919 item 4) is re-checked on its kept text, a few per
+  run: all hard checks pass → the flag is cleared, else its reason codes are
+  written; front-matter keys only, never a move;
 * a per-run action budget; a run that stops and explains itself is a success.
 
 ``dry_run=True`` (the default) performs every read, extraction and
@@ -36,7 +40,7 @@ from datetime import UTC, datetime
 
 from oncofiles.curated import classify as classify_mod
 from oncofiles.curated import extract as extract_mod
-from oncofiles.curated import llm, llm_input
+from oncofiles.curated import llm, llm_input, review_codes
 from oncofiles.curated import normalise as normalise_mod
 from oncofiles.curated import orientation as orientation_mod
 from oncofiles.curated import vocabulary as vocab_mod
@@ -80,6 +84,11 @@ ACTIONS_PER_DOCUMENT = 3  # sidecar + source move + sidecar move
 SOURCE_EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 YYYY_MM_RE = re.compile(r"^\d{4}-\d{2}( \(\d+\))?$")
 DUP_FOLDER_RE = re.compile(r"^(?P<base>.+?)(?: \(\d+\)| \d+)$")
+# #919 item 4: filed documents held in review without a recognised reason are
+# re-checked (one model classification of the kept sidecar text each, no OCR)
+# at most this many per run; the rest wait for a later run.
+STALE_REVIEW_MAX_PER_RUN = 5
+STALE_REVIEW_CLEARED_BY = "auto (#919)"
 
 
 @dataclass
@@ -125,6 +134,12 @@ class RunOptions:
     # always shows the plan. At most ``CURATED_NORMALISE_MAX`` renames per run.
     normalise_filed: bool = field(default_factory=normalise_mod.enabled)
     normalise_max: int = field(default_factory=normalise_mod.max_per_run)
+    # #919 item 4: Drive ids of FILED documents the read model shows held in
+    # review with no recognised reason (``db.curated_stale_review_ids``). The
+    # run re-reads each sidecar and re-checks at most ``stale_review_max`` of
+    # them (``_recheck_stale_reviews``); empty = the pass does nothing.
+    stale_review_ids: frozenset = frozenset()
+    stale_review_max: int = STALE_REVIEW_MAX_PER_RUN
 
 
 HOLD_DOCUMENT_CAP = "document_cap"
@@ -180,6 +195,10 @@ class RunReport:
     # Names are fine here (the patient's own run report); server logs get
     # counts and name shapes only.
     normalise: dict = field(default_factory=lambda: _normalise_report())
+    # #919 item 4: filed documents whose stale review flag was re-checked
+    # (``_recheck_stale_reviews``). Names only in this report; codes, never
+    # reason sentences; server logs get counts only.
+    stale_review: dict = field(default_factory=lambda: _stale_review_report())
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -574,6 +593,98 @@ def _normalise_report() -> dict:
     }
 
 
+def _stale_review_report() -> dict:
+    return {
+        "max_per_run": 0,
+        # {source, sidecar, outcome: clear | reasons, codes, proposed_doc_type}:
+        # within this run's cap (a real run writes exactly these)
+        "planned": [],
+        "done": [],  # real runs: the planned entries that were written
+        "deferred": [],  # {source}: over the cap / action budget, a later run
+        # {source, code}: not_found | no_sidecar | text_source | no_front_matter
+        # | resolved | override | source_changed | model_answer_* | no_code
+        "skipped": [],
+        "counts": {},
+    }
+
+
+# ── #919 item 4: filed documents held in review without a reason ─────
+
+
+def _front_lines_without(front: str, key: str) -> tuple[list[str], int | None]:
+    """The front-matter lines without ``key`` (and its indented / list
+    continuation lines), and the index where ``key`` stood (None = absent)."""
+    lines = front.split("\n")
+    out: list[str] = []
+    at = None
+    skipping = False
+    for line in lines:
+        if skipping and line.startswith((" ", "\t", "-")):
+            continue
+        skipping = False
+        if re.match(rf"^{re.escape(key)}:", line):
+            at = len(out) if at is None else at
+            skipping = True
+            continue
+        out.append(line)
+    return out, at
+
+
+def _put_front(front: str, key: str, value) -> str:
+    """``key: <json value>`` in place of the key's line(s), or appended."""
+    lines, at = _front_lines_without(front, key)
+    new = f"{key}: {_y(value)}"
+    if at is None:
+        lines.append(new)
+    else:
+        lines.insert(at, new)
+    return "\n".join(lines)
+
+
+def stale_review_skip(sidecar_text: str) -> str | None:
+    """Why this filed sidecar is NOT a stale review to re-check, or None.
+
+    A stale review: ``review_needed: true`` with no recognised reason code
+    (``review_codes.codes_of`` gives nothing or only ``other``), the same rule
+    as the read model (``document_stage.stale_review``), decided again from the
+    sidecar itself because the index may lag the folder. A maintainer's
+    override (#900) — active, or parked by a person with
+    ``review_override_status`` — is never touched.
+    """
+    from oncofiles.curated.indexer import parse_sidecar  # indexer imports this module
+
+    if _split_sidecar(sidecar_text) is None:
+        return "no_front_matter"
+    front, _pages = parse_sidecar(sidecar_text)
+    if review_override(sidecar_text) is not None or front.get(OVERRIDE_STATUS_KEY):
+        return "override"
+    flag = front.get("review_needed")
+    if not (flag is True or (isinstance(flag, str) and flag.strip().lower() == "true")):
+        return "resolved"
+    codes = review_codes.codes_of(front.get("review_reasons"))
+    if any(code != review_codes.OTHER for code in codes):
+        return "resolved"
+    return None
+
+
+def stale_review_cleared(sidecar_text: str, today) -> str:
+    """The sidecar with only ``review_needed: false`` + who / when cleared it;
+    every other byte (the body above all) unchanged."""
+    front, rest = _split_sidecar(sidecar_text)
+    front = _put_front(front, "review_needed", False)
+    front = _put_front(front, "review_cleared_by", STALE_REVIEW_CLEARED_BY)
+    front = _put_front(front, "review_cleared_at", today.isoformat())
+    return f"---\n{front}\n---{rest}"
+
+
+def stale_review_with_codes(sidecar_text: str, codes: list[str]) -> str:
+    """The sidecar with only ``review_reasons`` set to recognised codes (the
+    flag stays true); every other byte unchanged."""
+    front, rest = _split_sidecar(sidecar_text)
+    front = _put_front(front, "review_reasons", list(codes))
+    return f"---\n{front}\n---{rest}"
+
+
 def _vocab_report() -> dict:
     return {
         "auto_vocab_enabled": False,  # CURATED_AUTO_VOCAB for this run
@@ -775,6 +886,8 @@ class Runner:
             # #919: after the inbox, before the backfill (whose new sidecars do
             # not exist yet in a dry run) and before the index that follows the run
             self._normalise_filed(tree, self._contract)
+            # #919 item 4: stale review flags of filed documents (key-only edits)
+            self._recheck_stale_reviews(tree, self._contract)
             self._backfill_sidecars(tree, contract)
             if not self.opts.dry_run:
                 self._recheck(contract)
@@ -1563,6 +1676,143 @@ class Runner:
             replace(i, name=renamed[i.id]) if i.id in renamed else i for i in tree.files[folder]
         ]
 
+    # -- #919 item 4: stale review flags of filed documents --
+
+    def _recheck_stale_reviews(self, tree: Tree, contract: Contract) -> None:
+        """Re-check filed documents held in review with no recognised reason.
+
+        Candidates are ``opts.stale_review_ids`` (from the read model); each
+        sidecar is read again and must still be a stale review
+        (``stale_review_skip``). The kept sidecar text is classified by the
+        model and checked by ``classify.validate`` (no OCR, no file read except
+        a Google Doc's text export when its sidecar holds no text; no age rule,
+        as for the backfill: a filed document is no new scan). Every hard check
+        passes → ``review_needed: false`` + ``review_cleared_by`` /
+        ``review_cleared_at``; a check fails → its codes go into
+        ``review_reasons``. Only those front-matter keys change, the body stays
+        byte for byte, through ``drive.update_text`` (read back, no retry),
+        journaled first as ``update_sidecar_review_keys``. Never a move, a
+        rename, a README write or a write to the source. At most
+        ``stale_review_max`` documents per run; a dry run plans the same.
+        """
+        rep = self.report.stale_review
+        cap = max(0, int(self.opts.stale_review_max))
+        rep["max_per_run"] = cap
+        wanted = set(self.opts.stale_review_ids or ())
+        if not wanted:
+            return
+        found: set[str] = set()
+        for folder, doc_type in contract.folders.items():
+            if doc_type is None or folder not in tree.folders:
+                continue
+            items = sorted(tree.files.get(folder, []), key=lambda i: nfc(i.name))
+            names = {nfc(i.name) for i in items}
+            for item in items:
+                if item.id not in wanted or _is_sidecar(nfc(item.name), names):
+                    continue
+                found.add(item.id)
+                label = f"{folder}/{item.name}"
+                if _is_text_source(item) and not is_google_native(item.mime):
+                    # a text note is its own text: its front matter is the
+                    # original document, never edited by this pass
+                    rep["skipped"].append({"source": label, "code": "text_source"})
+                    continue
+                sidecar = self._existing_sidecar(tree, folder, item)
+                if sidecar is None:
+                    rep["skipped"].append({"source": label, "code": "no_sidecar"})
+                    continue
+                if (
+                    len(rep["planned"]) >= cap
+                    or self.actions_used + 1 > self.opts.max_actions
+                    or bool(self.opts.should_stop and self.opts.should_stop())
+                ):
+                    rep["deferred"].append({"source": label})
+                    continue
+                self._recheck_one(contract, folder, doc_type, item, sidecar, label)
+        # moved out of the filed folders or gone since the index: nothing to do
+        rep["skipped"].extend({"file_id": i, "code": "not_found"} for i in sorted(wanted - found))
+        rep["counts"] = {
+            "planned": len(rep["planned"]),
+            "done": len(rep["done"]),
+            "cleared": sum(1 for x in rep["planned"] if x["outcome"] == "clear"),
+            "reasons": sum(1 for x in rep["planned"] if x["outcome"] == "reasons"),
+            "deferred": len(rep["deferred"]),
+            "skipped": len(rep["skipped"]),
+        }
+        logger.info(
+            "curated %s: stale review re-check %s",
+            self.run_id,
+            " ".join(f"{k}={v}" for k, v in rep["counts"].items()),
+        )
+
+    def _recheck_one(self, contract, folder, doc_type, item, sidecar, label) -> None:
+        rep = self.report.stale_review
+        raw_text = self._sidecar_text(sidecar)
+        if skip := stale_review_skip(raw_text):
+            rep["skipped"].append({"source": label, "code": skip})
+            return
+        sha = re.search(r'^sha256:\s*"?([0-9a-f]{64})', raw_text[:4000], re.M)
+        if sha and item.sha256 and sha.group(1) != item.sha256:
+            # the source changed since its sidecar was written: the kept text
+            # is no reading of it any more (a re-OCR decides, not this pass)
+            rep["skipped"].append({"source": label, "code": "source_changed"})
+            return
+        text = _override_extraction(raw_text).text
+        if not text.strip() and item.mime in extract_mod.NATIVE_EXPORT:
+            # a pre-runner Google Doc sidecar may hold no text: read the
+            # document's own text export (a read, never a write; no OCR)
+            text = self._content(item).decode("utf-8", errors="replace").strip()
+        note = ""
+        cls = None
+        if not text.strip():
+            note = "no text to classify"
+        elif reason := llm_input.inbox_exclusion(item.name, item.mime, text):
+            note = f"{reason}: not sent to the model"  # raw genotype data (#815)
+        else:
+            try:
+                raw = self.propose_fn(contract, text)
+            except llm.LocalLLMError as exc:
+                if _llm_down(exc.failure):
+                    raise RunAbortError(f"local model unavailable — {exc}") from exc
+                # a bad answer is no property of the document: nothing is
+                # written, a later run asks again
+                rep["skipped"].append({"source": label, "code": _model_failure_code(exc)})
+                return
+            cls = classify_mod.validate(
+                contract, raw, text, today=self.now.date(), auto_vocab=self._auto_vocab
+            )
+        reasons = (cls.reasons if cls else []) + ([note] if note else [])
+        entry = {"source": label, "sidecar": f"{folder}/{sidecar.name}"}
+        if cls is not None and cls.doc_type != doc_type:
+            entry["proposed_doc_type"] = cls.doc_type  # report only: never a move
+        if not reasons:
+            entry.update(outcome="clear", codes=[])
+            new_text = stale_review_cleared(raw_text, self.now.date())
+            undo = {"op": "front_keys", "path": entry["sidecar"], "review_needed": True}
+        else:
+            codes = [c for c in review_codes.codes_of(reasons) if c != review_codes.OTHER]
+            if not codes:  # every reason unrecognised: writing would change nothing
+                rep["skipped"].append({"source": label, "code": "no_code"})
+                return
+            entry.update(outcome="reasons", codes=codes)
+            new_text = stale_review_with_codes(raw_text, codes)
+            previous = _front_value(_split_sidecar(raw_text)[0], "review_reasons")
+            undo = {"op": "front_keys", "path": entry["sidecar"], "review_reasons": previous}
+        rep["planned"].append(entry)
+        self._act(
+            {
+                "action": "update_sidecar_review_keys",
+                "path": entry["sidecar"],
+                "kind": "stale_review",  # #919 item 4
+                "outcome": entry["outcome"],
+                "codes": entry["codes"],
+                "undo": undo,
+            },
+            lambda: self.drive.update_text(sidecar.id, new_text),
+        )
+        if not self.opts.dry_run:
+            rep["done"].append(entry)
+
     def _backfill_sidecars(self, tree: Tree, contract: Contract) -> None:
         """Already-filed documents are read-only; only a missing sidecar may be added.
 
@@ -1878,6 +2128,15 @@ class Runner:
         if r.normalise["deferred"]:
             n = len(r.normalise["deferred"])
             lines.append(f"- filed names left for a later run (cap): {n}")
+        for x in r.stale_review["done"]:
+            if x["outcome"] == "clear":
+                lines.append(f"- stale review flag cleared, checks passed (#919): `{x['source']}`")
+            else:
+                codes = ", ".join(x["codes"])
+                lines.append(f"- review reason written (#919): `{x['source']}` ({codes})")
+        if r.stale_review["deferred"]:
+            n = len(r.stale_review["deferred"])
+            lines.append(f"- stale review flags left for a later run (cap): {n}")
         for v in r.vocabulary["added"]:
             lines.append(
                 f"- README vocabulary added: {v['label']} `{v['token']}` (for `{v['document']}`)"
