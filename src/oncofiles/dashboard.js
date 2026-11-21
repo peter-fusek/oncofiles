@@ -623,7 +623,7 @@
       if (path === '/api/manifest') return { generated_at: new Date().toISOString(), invented: true, documents: (d.documents || {}).documents || [] };
       if (path.indexOf('/api/doc-detail/') === 0) {
         var detailId = path.split('/').pop();
-        return (d.details || {})[detailId] || demoUploadDetail(detailId) || { error: 'not found' };
+        return (d.details || {})[detailId] || { error: 'not found' };
       }
       if (path === '/api/doc-thumbnails') {
         // the ids asked for, each with its drawing or null, like the real route (#948)
@@ -659,7 +659,8 @@
     // Files go one at a time (one request each: the server holds one DB
     // connection and one Drive writer) to POST /api/upload, which puts them
     // unchanged into the patient's inbox on Drive. In the demo nothing is
-    // sent: the files become invented "Waiting for extraction" rows.
+    // sent: the files become invented inbox rows ("Waiting to be processed"),
+    // the same shape GET /api/documents gives a file waiting in the inbox.
 
     var UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
     var UPLOAD_MAX_FILES = 20;
@@ -856,17 +857,19 @@
         var code = uploadPrecheck(f);
         if (code) { row.done('attention', UPLOAD_CODE_TEXT[code][0], UPLOAD_CODE_TEXT[code][1]); return; }
         demoUploadSeq += 1;
+        // the same shape as an inbox row of GET /api/documents (dashboard_inbox.row)
         demoUploads.push({
-          id: 'demo-upload-' + demoUploadSeq, filename: f.name, category: 'other', date: null,
-          institution: null, gdrive_id: null, uploaded_at: now, has_ocr: false, has_ai: false,
+          id: 'inbox:demo-upload-' + demoUploadSeq, inbox: true, filename: f.name, category: null,
+          date: null, institution: null, gdrive_id: null, size: f.size || 0, mime: f.type || '',
+          uploaded_at: now, has_ocr: false, has_ai: false,
           has_metadata: false, has_date: false, has_institution: false, is_synced: false,
           is_standard_name: false, fully_complete: false, curated: true, attention_reason: null,
-          stage: 'waiting_text', steps: { extracted: false, named: false, filed: false }
+          ready: false, stage: 'in_inbox', steps: { extracted: false, named: false, filed: false }
         });
         row.done('ready', 'Ukážka: nič sa neodoslalo, riadok je len v tomto prehliadači.', 'Demo: nothing was uploaded, the row exists only in this browser.');
       });
-      uploadNote('Ukážka: súbory sa neodoslali. V aplikácii by išli do priečinka pacienta na Google Drive a zobrazili sa ako „Čaká na vyťaženie“.',
-        'Demo: nothing was uploaded. In the app the files would go into the patient folder on Google Drive and show up as “Waiting for extraction”.');
+      uploadNote('Ukážka: súbory sa neodoslali. V aplikácii by išli do priečinka pacienta na Google Drive a hneď by sa tu zobrazili ako „Čaká na spracovanie“.',
+        'Demo: nothing was uploaded. In the app the files would go into the patient folder on Google Drive and show up here right away as “Waiting to be processed”.');
       refresh();
     }
 
@@ -877,14 +880,9 @@
       if (copy.summary) {
         copy.summary.total = (copy.summary.total || 0) + demoUploads.length;
         copy.summary.in_progress = (copy.summary.in_progress || 0) + demoUploads.length;
+        copy.summary.inbox = (copy.summary.inbox || 0) + demoUploads.length;
       }
       return copy;
-    }
-
-    function demoUploadDetail(id) {
-      var row = demoUploads.find(function (r) { return r.id === id; });
-      if (!row) return null;
-      return { id: row.id, filename: row.filename, gdrive_url: '', preview_url: '', category: 'other', pages: [], ai_tags: [], structured_metadata: {} };
     }
 
     /** Drop files or folders anywhere on the document section. */
@@ -2834,9 +2832,10 @@
     var docsSignature = '';          // skip a re-render when a refresh brought nothing new
     var openDoc = { id: null, data: null };  // the expanded row survives refreshes
 
-    var STAGE_RANK = { attention: 0, waiting_text: 1, waiting_name: 2, waiting_filing: 3, ready: 4 };
+    var STAGE_RANK = { attention: 0, in_inbox: 1, waiting_text: 2, waiting_name: 3, waiting_filing: 4, ready: 5 };
     var STAGE_TEXT = {
       ready: ['Pripravený na použitie', 'Ready to use'],
+      in_inbox: ['Čaká na spracovanie', 'Waiting to be processed'],
       waiting_text: ['Čaká na vyťaženie', 'Waiting for extraction'],
       waiting_name: ['Čaká na premenovanie', 'Waiting to be renamed'],
       waiting_filing: ['Čaká na zaradenie', 'Waiting to be filed'],
@@ -3001,7 +3000,7 @@
       if (signature === docsSignature && docsDrawn()) return;
       docsSignature = signature;
       docsData = rows.map(function(d) {
-        d.stage_rank = STAGE_RANK[d.stage] !== undefined ? STAGE_RANK[d.stage] : 1;
+        d.stage_rank = STAGE_RANK[d.stage] !== undefined ? STAGE_RANK[d.stage] : STAGE_RANK.waiting_text;
         return d;
       });
       renderTable();
@@ -3137,7 +3136,8 @@
       tr.appendChild(tdFn);
 
       var tdCat = document.createElement('td');
-      tdCat.appendChild(categoryBadge(d.category));
+      if (d.category) tdCat.appendChild(categoryBadge(d.category));
+      else tdCat.textContent = '–';  // an inbox file is not classified yet
       tr.appendChild(tdCat);
 
       var tdInst = document.createElement('td');
@@ -3189,6 +3189,27 @@
       badge.className = 'category-badge';
       var cat = CATEGORY_TEXT[category] || [category || '', category || ''];
       return setI18n(badge, cat[0], cat[1]);
+    }
+
+    /** In place of a category badge: an inbox file is not classified yet. */
+    function noCategoryMark() {
+      var dash = document.createElement('span');
+      dash.className = 'category-none';
+      dash.textContent = '–';
+      return dash;
+    }
+
+    /** An inbox row (`inbox:<drive id>`) has no document behind it, so no preview to ask for. */
+    function hasPreview(d) { return !!d && !d.inbox && /^\d+$/.test(String(d.id)); }
+
+    /** The tile or card of one document; ids are compared as text, never put into a selector. */
+    function findById(selector, attr, id) {
+      var want = String(id);
+      var found = null;
+      document.querySelectorAll(selector).forEach(function (el) {
+        if (!found && el.getAttribute(attr) === want) found = el;
+      });
+      return found;
     }
 
     /** The status as a shape plus a label (never colour alone); `short` for the grid cards. */
@@ -3249,6 +3270,7 @@
       detailRow.appendChild(detailTd);
       tr.parentNode.insertBefore(detailRow, tr.nextSibling);
 
+      if (doc.inbox) { renderInboxDetail(doc, detailTd); return; }  // no document row: nothing to fetch
       if (cached) { renderDocDetail(doc, cached, detailTd); return; }
 
       var loadingDiv = document.createElement('div');
@@ -3321,6 +3343,44 @@
       }
       box.appendChild(list);
       return box;
+    }
+
+    /** A file still in the patient's inbox on Drive: a short explanation, no detail fetch. */
+    function renderInboxDetail(doc, detailTd, opts) {
+      opts = opts || {};
+      clearEl(detailTd);
+      var panel = document.createElement('div');
+      panel.className = 'doc-detail-panel inbox-detail' + (opts.overlay ? ' is-overlay' : '');
+      if (!opts.overlay) {  // the quick look has its own close button
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'detail-close';
+        closeBtn.textContent = '×';
+        closeBtn.title = dashLang === 'sk' ? 'Zavrieť' : 'Close';
+        closeBtn.setAttribute('aria-label', closeBtn.title);
+        closeBtn.onclick = function(e) { e.stopPropagation(); closeDocDetail(); };
+        panel.appendChild(closeBtn);
+      }
+      var label = stageLabel(doc);
+      panel.appendChild(setI18n(document.createElement('h4'), label[0], label[1]));
+      var p = document.createElement('p');
+      if (doc.stage === 'attention') {
+        setI18n(p, 'Súbor je v priečinku pre nové súbory na Google Drive. Pri čítaní si systém nebol istý (napríklad rukopis alebo otočená strana), preto súbor čaká na kontrolu a zatiaľ sa nezaradí. Kým ho niekto neskontroluje, zostáva v tomto priečinku nezmenený.',
+          'The file is in the inbox folder on Google Drive. The system was not sure when reading it (for example handwriting or a rotated page), so it waits for a review and is not filed yet. Until someone reviews it, it stays unchanged in that folder.');
+      } else {
+        setI18n(p, 'Súbor je v priečinku pre nové súbory na Google Drive. Model na našom serveri ho o niekoľko minút prečíta, pomenuje a zaradí; potom sa tu zobrazí ako bežný dokument s textom a údajmi.',
+          'The file is in the inbox folder on Google Drive. Within a few minutes the model on our server reads, names and files it; it then shows here as an ordinary document with its text and data.');
+      }
+      panel.appendChild(p);
+      var meta = [];
+      if (doc.size) meta.push(fmtSize(doc.size));
+      if (doc.uploaded_at) meta.push(fmtDateTime(doc.uploaded_at));
+      if (meta.length) {
+        var small = document.createElement('p');
+        small.className = 'inbox-detail-meta';
+        small.textContent = meta.join(' · ');
+        panel.appendChild(small);
+      }
+      detailTd.appendChild(panel);
     }
 
     /** The document detail. In the quick look (`opts.overlay`) the overlay has its
@@ -3674,7 +3734,7 @@
       var box = document.createElement('span');
       box.className = 'doc-thumb';
       box.setAttribute('data-thumb-id', String(d.id));
-      var entry = thumbCache.get(thumbKey(d.id, 's'));
+      var entry = hasPreview(d) ? thumbCache.get(thumbKey(d.id, 's')) : null;  // inbox: the mark for good
       if (entry) {
         box.appendChild(thumbImg(entry, d));
         box.classList.add('has-img');
@@ -3705,6 +3765,7 @@
 
     function wantThumb(id) {
       id = String(id);
+      if (!/^\d+$/.test(id)) return;  // only integer document ids go to /api/doc-thumbnails
       if (thumbsOff || thumbCache.has(thumbKey(id, 's'))) return;
       if (thumbWanted.indexOf(id) !== -1 || thumbInFlight.indexOf(thumbKey(id, 's')) !== -1) return;
       thumbWanted.push(id);
@@ -3757,8 +3818,8 @@
       var entry = thumbCache.get(thumbKey(id, 's'));
       var d = findDoc(id);
       if (!entry || !d) return;  // null: the file-type mark stays
-      document.querySelectorAll('.doc-thumb[data-thumb-id="' + Number(id) + '"]').forEach(function (box) {
-        if (box.querySelector('img')) return;
+      document.querySelectorAll('.doc-thumb[data-thumb-id]').forEach(function (box) {
+        if (box.getAttribute('data-thumb-id') !== String(id) || box.querySelector('img')) return;
         var img = thumbImg(entry, d);
         var swap = function () { clearEl(box); box.appendChild(img); box.classList.add('has-img'); };
         if (img.decode) img.decode().then(swap, function () { thumbCache.set(thumbKey(id, 's'), null); });
@@ -3863,7 +3924,7 @@
       body.appendChild(filenameText(name, 'doc-card-name'));
       var meta = document.createElement('span');
       meta.className = 'doc-card-meta';
-      meta.appendChild(categoryBadge(d.category));
+      meta.appendChild(d.category ? categoryBadge(d.category) : noCategoryMark());
       var date = document.createElement('span');
       date.className = 'doc-card-date';
       date.textContent = fmtDate(d.date);
@@ -3912,7 +3973,7 @@
       document.getElementById('ql-title').textContent = loc(d, 'filename');
       var meta = document.getElementById('ql-meta');
       clearEl(meta);
-      meta.appendChild(categoryBadge(d.category));
+      meta.appendChild(d.category ? categoryBadge(d.category) : noCategoryMark());
       var date = document.createElement('span');
       date.className = 'ql-date';
       date.textContent = fmtDate(d.date);
@@ -3936,8 +3997,9 @@
       var d = findDoc(quickLook.id);
       var page = document.getElementById('ql-page');
       if (!d || !page) return;
-      var large = thumbCache.get(thumbKey(d.id, 'l'));
-      var entry = large || thumbCache.get(thumbKey(d.id, 's'));
+      var preview = hasPreview(d);  // an inbox row shows its file-type mark as the page
+      var large = preview ? thumbCache.get(thumbKey(d.id, 'l')) : null;
+      var entry = large || (preview ? thumbCache.get(thumbKey(d.id, 's')) : null);
       clearEl(page);
       if (entry) {
         var img = thumbImg(entry, d);
@@ -3959,6 +4021,7 @@
       var host = document.getElementById('ql-detail');
       var links = document.getElementById('ql-links');
       clearEl(links);
+      if (d.inbox) { renderInboxDetail(d, host, { overlay: true }); return; }  // nothing to fetch
       var cached = quickLook.details[d.id];
       if (cached) { renderDocDetail(d, cached, host, { overlay: true, linkHost: links }); return; }
       clearEl(host);
@@ -4001,7 +4064,7 @@
       // Focus goes back where the person was: the tile or card of the document
       // shown last (the opener itself unless they moved on with the arrows).
       var sel = docView === 'grid' ? '#doc-grid .doc-card' : '#doc-tbody .thumb-btn';
-      var target = document.querySelector(sel + '[data-doc-id="' + Number(lastId) + '"]');
+      var target = findById(sel, 'data-doc-id', lastId);
       if (!target && opener && opener.isConnected) target = opener;
       if (target) target.focus();
     }

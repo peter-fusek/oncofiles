@@ -42,7 +42,10 @@ WAITING_STAGE = {
     "named": "waiting_name",
     "filed": "waiting_filing",
 }
-STAGES = (STAGE_READY, STAGE_ATTENTION, *WAITING_STAGE.values())
+# A file still waiting in a curated inbox: no ``documents`` row yet, shown from
+# the probe's in-memory snapshot (``dashboard_inbox``, #921 follow-up).
+STAGE_IN_INBOX = "in_inbox"
+STAGES = (STAGE_READY, STAGE_ATTENTION, STAGE_IN_INBOX, *WAITING_STAGE.values())
 
 # ``attention_reason`` codes, in the order they are checked (first match wins).
 REASON_REVIEW_NEEDED = "review_needed"

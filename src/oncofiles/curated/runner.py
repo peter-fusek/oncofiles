@@ -1908,6 +1908,19 @@ class Runner:
 # ── probe (continuous mode) ──────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class InboxEntry:
+    """One document waiting in the inbox (or loose in the root), for the
+    dashboard's in-memory inbox rows (#921 follow-up). Never logged."""
+
+    id: str  # Drive file id
+    name: str
+    size: int
+    mime: str
+    modified: str  # Drive modifiedTime (RFC 3339)
+    review: bool  # its sidecar holds it for a human (``_awaiting_review``)
+
+
 @dataclass
 class Probe:
     """What a run would find to do right now — read-only, no model calls."""
@@ -1916,6 +1929,9 @@ class Probe:
     pending: dict[str, str] = field(default_factory=dict)  # file id -> label
     newest_age_s: float | None = None  # youngest file in the inbox / root
     canary: bool = False  # a leftover canary: a run must recover or report it
+    # Every inbox/root document with its review flag; None when this probe read
+    # no sidecars (an idle repeat of an unchanged tree, or no README).
+    inbox: list[InboxEntry] | None = None
 
 
 def _is_text_source(item: Item) -> bool:
@@ -1965,12 +1981,19 @@ def probe(
         return result
     r = Runner(drive, root_id, RunOptions(dry_run=True, now=now))
     r._set_auto_vocab(readme_text, contract)
+    inbox: list[InboxEntry] = []
     for folder, item in r._candidates(tree, contract):
         if _is_text_source(item) and (item.id, item.modified) in reviewed_text:
-            continue
-        side = r._existing_sidecar(tree, folder, item)
-        if side is None or not r._awaiting_review(side, item):
-            result.pending[item.id] = f"{folder or '(root)'}/{item.name}"
+            review = True
+        else:
+            side = r._existing_sidecar(tree, folder, item)
+            review = side is not None and r._awaiting_review(side, item)
+            if not review:
+                result.pending[item.id] = f"{folder or '(root)'}/{item.name}"
+        inbox.append(
+            InboxEntry(item.id, item.name, int(item.size or 0), item.mime, item.modified, review)
+        )
+    result.inbox = inbox
     for folder, doc_type in contract.folders.items():
         if doc_type is None or folder not in tree.folders:
             continue

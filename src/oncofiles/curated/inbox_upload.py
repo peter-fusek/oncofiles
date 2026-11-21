@@ -107,7 +107,8 @@ def unique_name(name: str, taken: set[str]) -> str:
 def upload_to_inbox(gdrive, root_id: str, files: list[InboxFile]) -> list[dict]:
     """Write ``files`` into the inbox; one result per file, in order.
 
-    Result: ``{"status": "uploaded", "name": <name in the inbox>}``, or
+    Result: ``{"status": "uploaded", "name": <name in the inbox>, "id": <Drive
+    file id>}``, or
     ``{"status": "failed", "code": <exception class>}`` for the file whose write
     failed, then ``{"status": "not_attempted"}`` for the rest. Raises
     ``InboxUnavailableError`` before any write when there is no usable inbox.
@@ -125,7 +126,9 @@ def upload_to_inbox(gdrive, root_id: str, files: list[InboxFile]) -> list[dict]:
                     continue
                 try:
                     name = unique_name(f.name, taken)
-                    drive_ops.upload_original(own, root_id, inbox_id, name, f.data, f.mime)
+                    file_id = drive_ops.upload_original(
+                        own, root_id, inbox_id, name, f.data, f.mime
+                    )
                 except Exception as exc:
                     logger.warning(
                         "inbox upload: write failed (%s), %d byte(s), stopping",
@@ -136,7 +139,7 @@ def upload_to_inbox(gdrive, root_id: str, files: list[InboxFile]) -> list[dict]:
                     stopped = True
                     continue
                 taken.add(nfc(name))
-                results.append({"status": "uploaded", "name": name})
+                results.append({"status": "uploaded", "name": name, "id": file_id})
         return results
     finally:
         own.close()

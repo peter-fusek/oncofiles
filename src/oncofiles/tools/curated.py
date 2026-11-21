@@ -804,6 +804,83 @@ def probe_stats() -> dict:
     return {pid: asdict(st) for pid, st in _probe_stats.items()}
 
 
+# ── inbox snapshot for the dashboard (#921 follow-up) ────────────────
+#
+# The curated read model indexes filed folders only, so a file a caregiver
+# just put into the inbox would appear in the dashboard table only once it is
+# filed. The probe already lists the inbox every poll; it keeps here, per
+# patient and in memory only, what it saw: Drive id, name, size, mime,
+# modifiedTime and whether a sidecar holds the file for review. The dashboard
+# route reads it (no Drive call, no DB write); the upload route adds its file
+# right away. Never on /health, never logged (names are patient data), gone
+# on restart. A snapshot no probe confirmed for INBOX_SNAPSHOT_MAX_AGE_S
+# (continuous mode off, Drive unreachable for long) is treated as unknown.
+
+INBOX_SNAPSHOT_MAX_AGE_S = 30 * 60
+
+
+@dataclass
+class _InboxSnapshot:
+    signature: str | None  # tree fingerprint of the probe that built it
+    taken_at: float  # time.monotonic() of the last probe that confirmed it
+    entries: dict[str, dict] = field(default_factory=dict)  # drive id -> entry
+
+
+_inbox_snapshots: dict[str, _InboxSnapshot] = {}
+
+
+def _inbox_entry(e) -> dict:
+    return {
+        "id": e.id,
+        "name": e.name,
+        "size": e.size,
+        "mime": e.mime,
+        "modified": e.modified,
+        "review": bool(e.review),
+    }
+
+
+def record_inbox_snapshot(pid: str, pr) -> None:
+    """Keep what a probe saw of the inbox. An idle repeat (``pr.inbox is None``)
+    of the same tree only confirms the snapshot it already has."""
+    inbox = getattr(pr, "inbox", None)
+    now = time.monotonic()
+    if inbox is None:
+        snap = _inbox_snapshots.get(pid)
+        if snap is not None and snap.signature == getattr(pr, "signature", None):
+            snap.taken_at = now
+        return
+    _inbox_snapshots[pid] = _InboxSnapshot(
+        pr.signature, now, {e.id: _inbox_entry(e) for e in inbox}
+    )
+
+
+def note_inbox_upload(pid: str, *, drive_id: str, name: str, size: int, mime: str) -> None:
+    """The dashboard upload put a file into this patient's inbox: show it now,
+    before the next probe (which replaces the whole snapshot anyway)."""
+    if not pid or not drive_id:
+        return
+    snap = _inbox_snapshots.get(pid)
+    if snap is None or time.monotonic() - snap.taken_at > INBOX_SNAPSHOT_MAX_AGE_S:
+        snap = _inbox_snapshots[pid] = _InboxSnapshot(None, time.monotonic())
+    snap.entries[drive_id] = {
+        "id": drive_id,
+        "name": name,
+        "size": int(size or 0),
+        "mime": mime,
+        "modified": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "review": False,
+    }
+
+
+def inbox_snapshot(pid: str | None) -> list[dict]:
+    """Copies of this patient's inbox entries, [] when unknown or stale."""
+    snap = _inbox_snapshots.get(pid) if pid else None
+    if snap is None or time.monotonic() - snap.taken_at > INBOX_SNAPSHOT_MAX_AGE_S:
+        return []
+    return [dict(e) for e in snap.entries.values()]
+
+
 async def probe_patient(db, pid: str, idle_signature: str | None):
     """Read-only probe of the patient's curated folder, or None if unreachable."""
     from oncofiles.curated.drive_ops import DriveOps
@@ -833,6 +910,7 @@ async def probe_patient(db, pid: str, idle_signature: str | None):
     result = await asyncio.to_thread(_blocking)
     global _last_probe_at
     _last_probe_at = time.monotonic()
+    record_inbox_snapshot(pid, result)
     return result
 
 

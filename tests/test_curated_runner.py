@@ -757,6 +757,31 @@ def test_probe_ignores_items_awaiting_review():
     assert p.pending == {}
 
 
+def test_probe_lists_the_inbox_for_the_dashboard():
+    """#921 follow-up: every inbox document (not a sidecar, not a filed file)
+    with its review flag; an idle repeat reads no sidecars and lists nothing."""
+    from oncofiles.curated.runner import probe
+
+    d = _drive_with_inbox()
+    first = probe(d, d.root, now=NOW)
+    assert sorted(e.name for e in first.inbox) == [
+        "scan_001.pdf",
+        "scan_002.pdf",
+        "scan_003.pdf",
+        "scan_dup.pdf",
+    ]
+    assert not any(e.review for e in first.inbox)
+    e = next(e for e in first.inbox if e.name == "scan_001.pdf")
+    assert e.size == len(b"VYSLEDKY 05.08.2026") and e.mime and e.modified and e.id
+    assert probe(d, d.root, idle_signature=first.signature, now=NOW).inbox is None
+
+    run(d, dry_run=False)  # files what it can, the rest waits for review
+    after = probe(d, d.root, now=NOW)
+    assert after.pending == {}
+    assert after.inbox and all(e.review for e in after.inbox)
+    assert not any(e.name.endswith(".md") for e in after.inbox)  # sidecars are no rows
+
+
 def test_identical_uploads_in_one_run_file_once_and_quarantine_the_rest():
     d = FakeDrive()
     d.add("photo_a.pdf", d.folder[INBOX], b"VYSLEDKY 05.08.2026", modified=_old(30))

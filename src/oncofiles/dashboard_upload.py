@@ -227,6 +227,16 @@ async def _store_one(db, patient_id: str, target: _Target, name: str, data: byte
         return {"status": "failed", "code": type(exc).__name__}
 
 
+def _show_in_table(patient_id: str, res: dict, size: int, mime: str) -> None:
+    """Put a file just written into the curated inbox into the dashboard's
+    in-memory inbox snapshot, so the table shows it before the next probe."""
+    from oncofiles.tools.curated import note_inbox_upload
+
+    note_inbox_upload(
+        patient_id, drive_id=res["id"], name=res.get("name") or "", size=size, mime=mime
+    )
+
+
 async def handle_upload(db, patient_id: str, uploads: list) -> Outcome:
     """Check and store ``uploads`` (Starlette ``UploadFile``s) for one patient.
 
@@ -294,6 +304,8 @@ async def handle_upload(db, patient_id: str, uploads: list) -> Outcome:
             name_lens.append(name_len(name))
             if entry["status"] == "uploaded":
                 stored += 1
+                if target.path == "curated_inbox" and res.get("id"):
+                    _show_in_table(patient_id, res, len(data), mime)
             else:
                 stopped = True
         finally:
