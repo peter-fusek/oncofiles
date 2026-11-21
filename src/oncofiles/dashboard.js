@@ -1143,6 +1143,61 @@
       line.appendChild(text);
     }
 
+    // #950 phase 3: time-to-value funnel of welcome@ trials (counts and
+    // median durations only; no ids, addresses, names or files).
+    var TRIAL_FUNNEL_STEPS = {
+      received: ['Prijatý mail', 'Mail received'],
+      first_reply: ['Prvá odpoveď', 'First reply'],
+      signed_in: ['Prihlásenie', 'Signed in'],
+      first_doc_ready: ['Prvý dokument pripravený', 'First document ready'],
+      first_mcp_call: ['Prvé volanie AI', 'First AI call'],
+      drive_connected: ['Pripojený Drive', 'Drive connected']
+    };
+
+    function funnelDuration(s) {
+      if (s === null || s === undefined) return '–';
+      if (s < 120) return s + ' s';
+      if (s < 7200) return Math.round(s / 60) + ' min';
+      if (s < 172800) return Math.round(s / 3600) + ' h';
+      return Math.round(s / 86400) + ' d';
+    }
+
+    function renderTrialFunnel(body, funnel) {
+      if (!funnel || !funnel.trials) return;
+      var head = document.createElement('p');
+      head.className = 'curated-ops-meta';
+      setI18n(head,
+        'Skúšobné účty (welcome@): ' + funnel.trials + ', presunuté do Drive: ' + (funnel.converted || 0) +
+          ', mail „pripravené“: ' + (funnel.ready_mail_sent || 0) + '.',
+        'Trials (welcome@): ' + funnel.trials + ', moved to Drive: ' + (funnel.converted || 0) +
+          ', "ready" mails: ' + (funnel.ready_mail_sent || 0) + '.');
+      body.appendChild(head);
+      var table = document.createElement('table');
+      table.className = 'inbound-admin-table';
+      var tr = document.createElement('tr');
+      [['Krok', 'Step'], ['Počet', 'Count'], ['Medián od mailu', 'Median from mail'],
+        ['Medián od predch.', 'Median from previous']].forEach(function (h) {
+        var th = document.createElement('th');
+        setI18n(th, h[0], h[1]);
+        tr.appendChild(th);
+      });
+      table.appendChild(tr);
+      (funnel.steps || []).forEach(function (st) {
+        var row = document.createElement('tr');
+        var label = TRIAL_FUNNEL_STEPS[st.step] || [st.step, st.step];
+        [label, [String(st.count), String(st.count)],
+          [funnelDuration(st.median_s_from_received), funnelDuration(st.median_s_from_received)],
+          [funnelDuration(st.median_s_from_previous), funnelDuration(st.median_s_from_previous)]
+        ].forEach(function (cell) {
+          var td = document.createElement('td');
+          setI18n(td, cell[0], cell[1]);
+          row.appendChild(td);
+        });
+        table.appendChild(row);
+      });
+      body.appendChild(table);
+    }
+
     function renderInboundUnmatched(data) {
       var totalsEl = document.getElementById('inbound-admin-totals');
       var body = document.getElementById('inbound-admin-body');
@@ -1177,6 +1232,7 @@
             ' (attachments expired: ' + (fr.download_expired || 0) + ', attempts used up: ' + usedUp + ').');
         body.appendChild(jobLine);
       }
+      renderTrialFunnel(body, data && data.trial_funnel);
       var senders = (data && data.senders) || [];
       if (!senders.length) {
         var empty = document.createElement('p');

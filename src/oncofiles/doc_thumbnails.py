@@ -227,11 +227,14 @@ def _semaphores() -> tuple[asyncio.Semaphore, asyncio.Semaphore]:
 def drive_id_of(doc) -> str | None:
     """The Drive id of the document's own copy, from the row only."""
     from oncofiles.curated.indexer import CURATED_FILE_PREFIX
+    from oncofiles.holding_store import is_holding_file_id, moved_drive_id
 
     file_id = doc.file_id or ""
     candidates = (
         doc.gdrive_id,
         file_id[len(CURATED_FILE_PREFIX) :] if file_id.startswith(CURATED_FILE_PREFIX) else None,
+        # #950 phase 3: a held file copied into the patient's Drive
+        moved_drive_id(doc.structured_metadata) if is_holding_file_id(file_id) else None,
     )
     return next((c for c in candidates if c and _DRIVE_ID_RE.match(c)), None)
 
@@ -520,7 +523,7 @@ async def _holding_previews(db, patient_id, ids, size, result, reasons) -> list[
     nothing is cached for them. Never while a curated run is active. Returns
     the ids that are not holding documents.
     """
-    from oncofiles.holding_store import is_holding_file_id, trial_active
+    from oncofiles.holding_store import is_holding_file_id, moved_drive_id, trial_active
 
     found = await db.get_documents_by_ids(set(ids), patient_id=patient_id)
     # #950 infra review: after trial_ends_at nothing held is read (null previews)
@@ -531,7 +534,12 @@ async def _holding_previews(db, patient_id, ids, size, result, reasons) -> list[
     rest: list[int] = []
     for doc_id in ids:
         doc = found.get(doc_id)
-        if doc is None or not is_holding_file_id(doc.file_id):
+        if (
+            doc is None
+            or not is_holding_file_id(doc.file_id)
+            # #950 phase 3: a copied file is previewed from its Drive copy
+            or moved_drive_id(doc.structured_metadata)
+        ):
             rest.append(doc_id)
             continue
         if doc.deleted_at is not None:

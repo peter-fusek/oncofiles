@@ -296,15 +296,18 @@ def _listed(sender: str, reason: str, files: int) -> None:
 
 
 async def _caregiver_patients(db, sender: str) -> list[str]:
-    """Ids of the non-trial patients whose caregiver is ``sender`` (canonical)."""
+    """Ids of the non-trial patients whose caregiver is ``sender`` (canonical).
+
+    A converted trial (#950 phase 3: its held files are in Drive) counts as an
+    ordinary patient: its welcome@ mail goes to its own address (phase 1)."""
     from oncofiles.persistent_oauth import _email_matches_caregiver
 
     out = []
     for patient in await db.list_patients(active_only=False):
-        if (
-            _email_matches_caregiver(sender, getattr(patient, "caregiver_email", None))
-            and await db.get_trial(patient_id=patient.patient_id) is None
-        ):
+        if not _email_matches_caregiver(sender, getattr(patient, "caregiver_email", None)):
+            continue
+        trial = await db.get_trial(patient_id=patient.patient_id)
+        if trial is None or trial.get("converted_at"):
             out.append(patient.patient_id)
     return out
 

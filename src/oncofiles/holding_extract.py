@@ -466,4 +466,12 @@ async def run_pending(db, *, limit: int = MAX_DOCS_PER_RUN) -> Counter:
             )
     if counts:
         logger.info("holding: extraction run %s", dict(sorted(counts.items())))
+    if counts.get("done"):
+        # #950 phase 3: the first batch may be read now -> the one "ready" mail
+        from oncofiles import trial_funnel
+
+        try:
+            await trial_funnel.send_due_ready_mails(db)
+        except Exception as exc:  # noqa: BLE001 - mail never stops the reader
+            logger.warning("holding: ready mails failed (%s)", type(exc).__name__)
     return counts

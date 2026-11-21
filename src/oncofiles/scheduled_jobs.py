@@ -131,6 +131,15 @@ CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
         "Lokálnym modelom prečíta dokumenty poslané na welcome@, ktoré ešte čakajú",
         "Read documents sent to welcome@ that still wait, with the local model",
     ),
+    "holding_move": (
+        "pipeline",
+        "Presun dokumentov skúšobného účtu do Drive",
+        "Trial documents to Drive",
+        "Po pripojení Drive skopíruje dokumenty skúšobného účtu do priečinka na nové "
+        "súbory a pošle e-mail, keď sú dokumenty pripravené",
+        "After Drive is connected, copy trial documents into the inbox folder and send "
+        "the e-mail when documents are ready",
+    ),
     "pipeline_integrity": (
         "pipeline",
         "Integrita pipeline",
