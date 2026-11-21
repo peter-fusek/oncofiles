@@ -9,8 +9,13 @@ formats. A candidate becomes ``machine`` only when all of these hold:
   value outside the label and outside the printed reference range, so
   "CA 19-9" never yields 19 and a range bound never passes as the value);
 * its date is printed on the page (``reread_verify.date_printed``) and is not
-  a birth date (README contract / patient context); without a model date the
-  document date is used, as the rule parsers do. A printed date RANGE
+  a birth date (README contract / patient context); the model's
+  ``date_evidence`` (the printed text it took the date from) is on the page
+  and contains that date (#933). Without a date of its own the fact keeps
+  the document date as ``occurred_at`` but stays unverified with
+  ``date_unknown``, as the rule parser does for a value quoted without its
+  own date; so does a ``date_role == "report"`` date on a document that is
+  not a lab sheet (a report or visit date is not a draw date). A printed date RANGE
   ("3.5.2027 - 9.5.2027:") dates the fact at the range END
   (``date_source=printed_range``, both ends kept, #726) only when that very
   range is printed on the page; harmless decoration of the model's answer
@@ -65,7 +70,25 @@ from oncofiles.curated.reread_verify import date_printed
 # 4-digit year only when that day and month is printed on the page, or is the
 # document date, with a year ending in "yy" (``anchor_two_digit_year``,
 # metadata ``year_anchored``); otherwise it stays ``date_unparsed``.
-VERIFIER_VERSION = 4
+# v5 (#933): every date is tied to its result. ``date_evidence`` (the printed
+# text the model took the date from) must be on the page and contain the
+# chosen date, else ``date_evidence_mismatch``. A fact with no date of its
+# own (document date) gets ``date_unknown`` instead of passing as machine, and
+# so does a ``date_role == "report"`` date on a non-lab-sheet document
+# (``is_report_category``), as the rule path treats report-quoted values.
+VERIFIER_VERSION = 5
+
+# Document categories that ARE lab sheets: their printed report / issue date
+# is the result's date as the lab states it. On every other known category
+# (reports, discharges, chemo sheets, imaging, ...) a result quoted with only
+# the report or visit date has no draw date of its own (#933, #661).
+LAB_SHEET_CATEGORIES = frozenset({"labs"})
+
+
+def is_report_category(category: str | None) -> bool:
+    """A known document category that is not a lab sheet. Unknown (None) is
+    not: without a category nothing is assumed about the document."""
+    return bool(category) and category not in LAB_SHEET_CATEGORIES
 
 
 # Facts parsed from LM Studio's ``reasoning_content`` channel (content empty)
@@ -170,6 +193,8 @@ REASONS = (
     "date_not_printed",  # the model's date is not printed on this page
     "date_unparsed",
     "date_missing",  # no model date and no document date
+    "date_unknown",  # no date of its own, or a report date on a report (#933)
+    "date_evidence_mismatch",  # date_evidence not on the page / lacks the date (#933)
     "birth_date",
     "label_unmapped",  # no fact_codes alias matches; review list → add an alias (data)
     "label_fuzzy",  # matched with one typo only
@@ -250,6 +275,34 @@ def date_exactly_printed(day: str, page_text: str) -> bool:
     y, mo, d = day[:10].split("-")
     key = f"{int(d)}.{int(mo)}.{y}"
     return any(_date_key(t.group(0)) == key for t in _DATE_TOKEN.finditer(page_text or ""))
+
+
+def date_evidence_holds(
+    printed: str | None,
+    date_evidence: str | None,
+    page_text: str,
+    *,
+    day: str | None = None,
+    range_key: tuple[str, str] | None = None,
+) -> bool:
+    """Is the model's ``date_evidence`` printed on the page (whitespace
+    normalised, as the evidence) and does it contain the chosen date (#933)?
+    "Contains" is the date as the model gave it (without the decoration
+    ``undecorate_date`` drops), or the same date read by the checks the page
+    itself gets: ``range_printed`` for a range (``range_key``),
+    ``reread_verify.date_printed`` for a single ``day`` — so "5.3.2027"
+    holds in "Odber: 05.03.2027". A missing ``date_evidence`` does not hold:
+    the date is not tied to anything printed. Generic: no layout rule, only
+    "on the page" and "contains"."""
+    evidence = ws(date_evidence)
+    chosen = ws(undecorate_date(printed))
+    if not evidence or not chosen or evidence not in ws(page_text):
+        return False
+    if chosen.lower() in evidence.lower():
+        return True
+    if range_key is not None:
+        return range_printed(range_key, evidence)
+    return bool(day) and date_printed(day[:10], evidence)
 
 
 def parse_printed_date(s: str | None) -> str | None:
@@ -494,10 +547,13 @@ def verify(  # noqa: PLR0912, PLR0915
     birth_dates=(),
     source_reason: str | None = None,
     normalise_label: bool = True,
+    document_category: str | None = None,
 ) -> dict:
     """One candidate → one fact dict (``facts_rules`` shape), ``machine`` or
     ``unverified`` with ``metadata.unverified_reasons``. ``normalise_label=False``
-    reproduces the v3 vocabulary lookup (``index_diff`` compares the two)."""
+    reproduces the v3 vocabulary lookup (``index_diff`` compares the two).
+    ``document_category`` decides whether a ``report`` date role is the
+    result's own date (``is_report_category``)."""
     reasons: list[str] = []
     evidence = ws(cand.get("evidence"))
     label = ws(cand.get("label_as_printed"))
@@ -535,6 +591,8 @@ def verify(  # noqa: PLR0912, PLR0915
     # date
     printed = cand.get("date_as_printed")
     date_meta: dict = {}
+    range_key = None
+    n_before = len(reasons)
     if printed:
         date_source = "printed"
         when = parse_printed_date(printed)
@@ -545,6 +603,7 @@ def verify(  # noqa: PLR0912, PLR0915
             # a printed range dates the fact at its END (#726); the range
             # itself, both ends, must be printed on this page
             start, when, key = rng
+            range_key = key
             date_source = "printed_range"
             date_meta = {"date_precision": "range", "date_range_start": start,
                           "date_range_end": when}  # fmt: skip
@@ -565,11 +624,21 @@ def verify(  # noqa: PLR0912, PLR0915
                 reasons.append("date_not_printed")
         else:
             reasons.append("date_unparsed")
+        # the date is printed: is it the one the model quoted for THIS
+        # result? Checked only for a date that passed, so one failure gives
+        # one reason (an unparsed or unprinted date is already unverified)
+        if len(reasons) == n_before and not date_evidence_holds(
+            printed, cand.get("date_evidence"), page_text, day=when, range_key=range_key
+        ):
+            reasons.append("date_evidence_mismatch")
+        if cand.get("date_role") == "report" and is_report_category(document_category):
+            reasons.append("date_unknown")  # a report / visit date, not the draw date
     else:
+        # no date of its own: the document date is kept as the rule parser
+        # keeps it for a value quoted without a date, but never as machine
         when = report_date
         date_source = "document"
-        if not when:
-            reasons.append("date_missing")
+        reasons.append("date_unknown" if when else "date_missing")
     if when and when[:10] in _birth_isos(birth_dates):
         reasons.append("birth_date")
 

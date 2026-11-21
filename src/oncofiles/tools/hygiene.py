@@ -852,6 +852,7 @@ async def _build_document_matrix(
     patient_id: str | None = None,
     *,
     truncate_names: bool = True,
+    inbox_items: list[dict] | None = None,
 ) -> dict:
     """Build document status matrix — shared by MCP tool and HTTP API.
 
@@ -878,8 +879,16 @@ async def _build_document_matrix(
 
     ``truncate_names``: the MCP tool keeps filenames cut to 60 characters; the
     dashboard route passes ``False`` and gets them whole.
+
+    ``inbox_items``: the dashboard route passes the curated probe's in-memory
+    inbox snapshot of this patient (``tools.curated.inbox_snapshot``); each
+    file not yet backing a document row becomes an ``inbox: true`` row
+    (``dashboard_inbox``) in ``all`` / ``in_progress`` / ``attention`` and is
+    counted in ``total`` / ``in_progress`` / ``attention`` (and in
+    ``summary.inbox``), so ready + in_progress + attention == total still
+    holds. The MCP tool passes nothing.
     """
-    from oncofiles import document_stage
+    from oncofiles import dashboard_inbox, document_stage
     from oncofiles.dashboard_activity import iso_utc
 
     limit = min(max(1, limit), 2000)
@@ -989,11 +998,25 @@ async def _build_document_matrix(
             }
         )
 
+    # Inbox files (#921 follow-up): no document row yet; shown from the probe's
+    # snapshot. A Drive id that already backs a row (filed meanwhile) is dropped.
+    known_drive_ids = {d.gdrive_id for d in docs if d.gdrive_id}
+    known_drive_ids |= {
+        d.file_id.split(":", 1)[1] for d in docs if (d.file_id or "").startswith("gdrive:")
+    }
+    inbox_rows = dashboard_inbox.rows(inbox_items, known_drive_ids)
+    if filter_param in ("all", "in_progress", "attention"):
+        for r in inbox_rows:
+            attention = r["attention_reason"] is not None
+            if filter_param == "all" or (filter_param == "attention") == attention:
+                all_filtered.append(r)
+
     total_matched = len(all_filtered)
     rows = all_filtered[offset : offset + limit]
 
     # Summary counts (reuse pre-computed flags)
-    total = len(doc_statuses)
+    inbox_attention = sum(1 for r in inbox_rows if r["attention_reason"] is not None)
+    total = len(doc_statuses) + len(inbox_rows)
     summary = {
         "total": total,
         "with_ocr": sum(1 for s in doc_statuses if s["has_ocr"]),
@@ -1006,8 +1029,11 @@ async def _build_document_matrix(
         "fully_complete": sum(1 for s in doc_statuses if s["fully_complete"]),
         # the user-facing lifecycle: ready + in_progress + attention == total
         "ready": sum(1 for s in doc_statuses if s["ready"]),
-        "in_progress": sum(1 for s in doc_statuses if s["in_progress"]),
-        "attention": sum(1 for s in doc_statuses if s["needs_attention"]),
+        "in_progress": sum(1 for s in doc_statuses if s["in_progress"])
+        + len(inbox_rows)
+        - inbox_attention,
+        "attention": sum(1 for s in doc_statuses if s["needs_attention"]) + inbox_attention,
+        "inbox": len(inbox_rows),
         "extracted": sum(1 for s in doc_statuses if s["steps"]["extracted"]),
         "named": sum(1 for s in doc_statuses if s["steps"]["named"]),
         "filed": sum(1 for s in doc_statuses if s["steps"]["filed"]),

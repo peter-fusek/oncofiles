@@ -5539,12 +5539,18 @@ async def api_documents(request: Request) -> JSONResponse:
     (``steps``, ``ready``, ``stage``, ``attention_reason``, ``curated``,
     ``uploaded_at``) and its full filename; ``?filter=`` also takes ``ready``,
     ``in_progress`` and ``attention``.
+
+    Files still waiting in a curated inbox are rows too (``inbox: true``,
+    ``id = "inbox:<drive id>"``, stage ``in_inbox`` or ``attention`` /
+    ``review_needed``), read from the curated probe's in-memory snapshot of
+    this patient: no Drive call and no DB write in this request.
     """
     err = _check_dashboard_auth(request)
     if err:
         return err
 
     try:
+        from oncofiles.tools.curated import inbox_snapshot
         from oncofiles.tools.hygiene import _build_document_matrix
 
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
@@ -5568,6 +5574,9 @@ async def api_documents(request: Request) -> JSONResponse:
             offset=offset,
             patient_id=patient_id,
             truncate_names=False,  # the dashboard shows whole filenames
+            # files waiting in a curated inbox, from the probe's in-memory
+            # snapshot of THIS patient (no Drive call here; #921 follow-up)
+            inbox_items=inbox_snapshot(patient_id),
         )
         return JSONResponse(result)
     except Exception:

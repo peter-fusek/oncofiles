@@ -474,8 +474,9 @@ def photo_of_note(head: str, written: list[str], en: bool) -> str:
 
 # ── the demo patient's pages ───────────────────────────────────────────────
 
-# IMG_2291.jpg has no text yet (it waits for extraction), so its printout is
-# described here: invented values, a 2027 sample date.
+# The phone photo of a lab printout (demo document 11): the printout is drawn
+# from these constants, which match the page text the demo detail shows
+# (invented values, a 2027 sample date).
 _PRINTOUT = {
     False: {
         "head": "Nemocnica Príkladov – Oddelenie klinickej biochémie",

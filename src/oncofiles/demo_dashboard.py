@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 
-from oncofiles import demo_thumbnails
+from oncofiles import dashboard_inbox, demo_thumbnails
 from oncofiles.document_stage import stage_of
 from oncofiles.inbound_email import INBOUND_DOMAIN, TERMS_URL
 
@@ -204,16 +204,29 @@ _EXTRA = [
     ),
     (
         11,
-        None,
-        "2027-04-14T07:58:00",
-        "other",
-        "IMG_2291.jpg",
-        "IMG_2291.jpg",
-        "",
-        "",
-        [],
-        False,
-        False,
+        "2027-04-13",
+        "2027-04-13T19:05:00",
+        "labs",
+        "20270413_JanaTestova_NemPrikladov_Labs_BloodCountPhoto.jpg",
+        "20270413_JaneDoe_ExampleHospital_Labs_BloodCountPhoto.jpg",
+        "Fotografia výsledkov krvného obrazu (mobil).",
+        "Phone photo of blood count results.",
+        [
+            (
+                "Nemocnica Príkladov – Oddelenie klinickej biochémie\nVýsledky vyšetrenia\n"
+                "Pacientka: Jana Testová (vymyslená)\nOdber: 13.04.2027 07:20\n\n"
+                "WBC    6,4    ×10⁹/L    4,0–10,0\nHGB    127    g/L    120–160\n"
+                "PLT    241    ×10⁹/L    150–400\nCRP    3,8    mg/L    < 5,0\n\n"
+                "Vymyslený výsledok pre ukážku.",
+                "Example Hospital – Clinical Biochemistry\nTest results\n"
+                "Patient: Jane Doe (invented)\nSampled: 13 Apr 2027 07:20\n\n"
+                "WBC    6.4    ×10⁹/L    4.0–10.0\nHGB    127    g/L    120–160\n"
+                "PLT    241    ×10⁹/L    150–400\nCRP    3.8    mg/L    < 5.0\n\n"
+                "Invented result for the demo.",
+            )
+        ],
+        True,
+        True,
         None,
     ),
     (
@@ -247,6 +260,19 @@ _PICTURE = {
     11: ("printout_photo", "", ""),
     12: ("note_photo", "", ""),
 }
+
+# A photo the caregiver just added, still waiting in the inbox (the shape of
+# one entry of ``tools.curated.inbox_snapshot``; invented id and time).
+_INBOX = [
+    {
+        "id": "demo-inbox-1",
+        "name": "IMG_2291.jpg",
+        "size": 2_310_000,
+        "mime": "image/jpeg",
+        "modified": "2027-04-14T07:58:00",
+        "review": False,
+    }
+]
 
 # Upload times of the six showcase documents (ids 1–6), a day or two after the
 # document date, as if the caregiver scanned them once back home.
@@ -381,6 +407,11 @@ def build(showcase_documents: list[dict], version: str) -> dict:
             }
         )
 
+    # Files still in the inbox: the same rows GET /api/documents builds from the
+    # probe's snapshot (dashboard_inbox), so they have no detail entry.
+    inbox_rows = dashboard_inbox.rows(_INBOX, set())
+    rows.extend(inbox_rows)
+
     rows.sort(key=lambda r: r["uploaded_at"], reverse=True)
     ready = sum(1 for r in rows if r["stage"] == "ready")
     attention_n = sum(1 for r in rows if r["stage"] == "attention")
@@ -389,6 +420,7 @@ def build(showcase_documents: list[dict], version: str) -> dict:
         "ready": ready,
         "attention": attention_n,
         "in_progress": len(rows) - ready - attention_n,
+        "inbox": len(inbox_rows),
         "extracted": sum(1 for r in rows if r["steps"]["extracted"]),
         "named": sum(1 for r in rows if r["steps"]["named"]),
         "filed": sum(1 for r in rows if r["steps"]["filed"]),
