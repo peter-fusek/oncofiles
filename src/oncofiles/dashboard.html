@@ -166,6 +166,12 @@
  </div>
  <div class="docs-toolbar">
  <input type="search" id="doc-search" placeholder="Hľadať v dokumentoch…" data-sk-placeholder="Hľadať v dokumentoch…" data-en-placeholder="Search documents…" data-input="renderTable" aria-label="Search documents">
+ <!-- #948: list or grid of previews, like Finder; the choice is remembered per browser -->
+ <div class="view-switch" role="group" aria-labelledby="view-switch-label">
+ <span id="view-switch-label" class="sr-only" data-sk="Zobrazenie dokumentov" data-en="Document view">Zobrazenie dokumentov</span>
+ <button type="button" class="view-btn is-active" id="view-btn-list" data-action="setDocView|list" aria-pressed="true"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2" y="3.5" width="3" height="3" rx="0.8"/><rect x="7" y="4" width="11" height="2" rx="1"/><rect x="2" y="8.5" width="3" height="3" rx="0.8"/><rect x="7" y="9" width="11" height="2" rx="1"/><rect x="2" y="13.5" width="3" height="3" rx="0.8"/><rect x="7" y="14" width="11" height="2" rx="1"/></svg><span class="view-btn-label" data-sk="Zoznam" data-en="List">Zoznam</span></button>
+ <button type="button" class="view-btn" id="view-btn-grid" data-action="setDocView|grid" aria-pressed="false"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2.5" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="2.5" y="11" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="11" width="6.5" height="6.5" rx="1.2"/></svg><span class="view-btn-label" data-sk="Mriežka" data-en="Grid">Mriežka</span></button>
+ </div>
  <button type="button" class="copy-btn" id="export-btn" data-action="downloadManifest" data-sk="Stiahnuť údaje (JSON)" data-en="Download data (JSON)">Stiahnuť údaje (JSON)</button>
  </div>
  <ol class="steps-legend" aria-label="Processing steps">
@@ -174,10 +180,11 @@
  <li><span class="legend-num">3</span><span><strong data-sk="Zaradený" data-en="Filed">Zaradený</strong> <span data-sk="– je v správnom priečinku na Drive" data-en="– sits in the right Drive folder">– je v správnom priečinku na Drive</span></span></li>
  <li class="legend-key"><span class="step-mark done" aria-hidden="true"></span><span data-sk="hotové" data-en="done">hotové</span><span class="step-mark" aria-hidden="true"></span><span data-sk="čaká" data-en="waiting">čaká</span></li>
  </ol>
- <div class="table-wrap">
+ <div class="table-wrap" id="doc-table-wrap">
  <table id="doc-table">
  <thead>
  <tr>
+ <th class="col-thumb"><span class="sr-only" data-sk="Náhľad" data-en="Preview">Náhľad</span></th>
  <th class="col-toggle"><span class="sr-only" data-sk="Rozbaliť" data-en="Expand">Rozbaliť</span></th>
  <th data-sort="filename"><span data-sk="Dokument" data-en="Document">Dokument</span> <span class="sort-arrow"></span></th>
  <th data-sort="category"><span data-sk="Kategória" data-en="Category">Kategória</span> <span class="sort-arrow"></span></th>
@@ -188,9 +195,25 @@
  </tr>
  </thead>
  <tbody id="doc-tbody">
- <tr><td colspan="7" class="table-empty" data-sk="Načítavam…" data-en="Loading…">Načítavam…</td></tr>
+ <tr><td colspan="8" class="table-empty" data-sk="Načítavam…" data-en="Loading…">Načítavam…</td></tr>
  </tbody>
  </table>
+ </div>
+ <!-- #948 grid: the same filtered and sorted list as cards with a preview -->
+ <div class="doc-grid-wrap" id="doc-grid-wrap" hidden>
+ <div class="grid-sort">
+ <label for="grid-sort-col" data-sk="Zoradené podľa" data-en="Sorted by">Zoradené podľa</label>
+ <select id="grid-sort-col" data-change="setGridSort|@value">
+ <option value="filename" data-sk="Dokument" data-en="Document">Dokument</option>
+ <option value="category" data-sk="Kategória" data-en="Category">Kategória</option>
+ <option value="institution" data-sk="Inštitúcia" data-en="Institution">Inštitúcia</option>
+ <option value="date" data-sk="Dátum dokumentu" data-en="Document date">Dátum dokumentu</option>
+ <option value="uploaded_at" selected data-sk="Nahraté" data-en="Uploaded">Nahraté</option>
+ <option value="stage_rank" data-sk="Stav" data-en="Status">Stav</option>
+ </select>
+ <button type="button" class="grid-sort-dir" id="grid-sort-dir" data-action="toggleSortDir"><span class="grid-sort-arrow" id="grid-sort-arrow" aria-hidden="true">&#9660;</span> <span id="grid-sort-dir-label">od najnovších</span></button>
+ </div>
+ <ul class="doc-grid" id="doc-grid"><li class="grid-empty" data-sk="Načítavam…" data-en="Loading…">Načítavam…</li></ul>
  </div>
  </section>
 
@@ -352,6 +375,33 @@
  </div>
  <!-- No third-party DOM capture libraries — screenshot via paste/upload only -->
  <!--/app-only-->
+
+ <!-- Large preview, "quick look" (#948): first page left, the document detail right -->
+ <div id="quicklook" class="quicklook" hidden>
+ <div class="ql-backdrop" data-action="closeQuickLook"></div>
+ <div class="ql-panel" id="ql-panel" role="dialog" aria-modal="true" aria-labelledby="ql-title" tabindex="-1">
+ <div class="ql-head">
+ <div class="ql-heading">
+ <h2 id="ql-title" class="ql-title"></h2>
+ <p id="ql-meta" class="ql-meta"></p>
+ </div>
+ <div class="ql-nav">
+ <button type="button" class="ql-btn" id="ql-prev" data-action="quickLookStep|-1"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M12.5 4.5 7 10l5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="sr-only" data-sk="Predchádzajúci dokument" data-en="Previous document">Predchádzajúci dokument</span></button>
+ <span class="ql-pos" id="ql-pos"></span>
+ <button type="button" class="ql-btn" id="ql-next" data-action="quickLookStep|1"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M7.5 4.5 13 10l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="sr-only" data-sk="Nasledujúci dokument" data-en="Next document">Nasledujúci dokument</span></button>
+ <button type="button" class="ql-btn ql-close" id="ql-close" data-action="closeQuickLook"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span class="sr-only" data-sk="Zavrieť" data-en="Close">Zavrieť</span></button>
+ </div>
+ </div>
+ <div class="ql-body">
+ <div class="ql-preview" id="ql-preview">
+ <div class="ql-page" id="ql-page"></div>
+ <div class="ql-links" id="ql-links"></div>
+ <p class="ql-hint" data-sk="Prvá strana dokumentu. Šípky doľava a doprava listujú zoznamom, Esc zavrie." data-en="First page of the document. Left and right arrows move through the list, Esc closes.">Prvá strana dokumentu. Šípky doľava a doprava listujú zoznamom, Esc zavrie.</p>
+ </div>
+ <div class="ql-detail" id="ql-detail"></div>
+ </div>
+ </div>
+ </div>
 
  <!-- Onboarding not open yet (#852): shown instead of the wizard for a caller the server gate does not admit -->
  <div id="onboarding-closed-overlay" class="wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="onboarding-closed-title">
