@@ -44,6 +44,12 @@ VIDEO_SIDE_PX = 1080
 # (`poster-{lang}.jpg`) stay as og:image / JSON-LD thumbnails.
 VIDEO_START_SECONDS = 12
 PUBLISHED = "2026-11-15"
+# Cache buster for the videos and posters (served with a month of max-age):
+# bump it whenever scripts/atlas_video/render.py replaces them, so returning
+# visitors and link-preview crawlers fetch the new files. 2 = realistic
+# re-render of 2026-11-22.
+MEDIA_VERSION = "2"
+MEDIA_QUERY = f"?v={MEDIA_VERSION}"
 
 _DAY = "public, max-age=86400"
 _MONTH = "public, max-age=2592000"
@@ -53,7 +59,9 @@ _YEAR = "public, max-age=31536000, immutable"
 _GLB = "model/gltf-binary"
 
 # Fixed allowlist: only these names are served, so no path reaches the
-# filesystem. The three.js r149 modules are vendored and never change
+# filesystem. The videos and posters are rendered from the page itself by
+# `scripts/atlas_video/render.py`. The three.js r149 modules (incl. the
+# RoomEnvironment for image-based lighting) are vendored and never change
 # (`scripts/atlas_meshes/vendor_three.py`). The meshes (#841) are rebuilt by
 # `scripts/atlas_meshes/build_meshes.py` under the same names, so they and the
 # media get a month and revalidate by ETag.
@@ -63,6 +71,7 @@ ASSETS: dict[str, tuple[str, str]] = {
     "three.module.js": (_JS, _YEAR),
     "GLTFLoader.js": (_JS, _YEAR),
     "BufferGeometryUtils.js": (_JS, _YEAR),
+    "RoomEnvironment.js": (_JS, _YEAR),
     "mesh-figure.glb": (_GLB, _MONTH),
     "mesh-spine.glb": (_GLB, _MONTH),
     "mesh-knee.glb": (_GLB, _MONTH),
@@ -439,8 +448,8 @@ def _video_json_ld(lang: str) -> str:
         "@type": "VideoObject",
         "name": c["video_name"],
         "description": c["video_alt"],
-        "thumbnailUrl": f"{SITE}{ATLAS_PATH}/poster-{lang}.jpg",
-        "contentUrl": f"{SITE}{ATLAS_PATH}/video-{lang}.mp4",
+        "thumbnailUrl": f"{SITE}{ATLAS_PATH}/poster-{lang}.jpg{MEDIA_QUERY}",
+        "contentUrl": f"{SITE}{ATLAS_PATH}/video-{lang}.mp4{MEDIA_QUERY}",
         "uploadDate": PUBLISHED,
         "duration": f"PT{VIDEO_SECONDS}S",
         "inLanguage": lang,
@@ -481,9 +490,10 @@ def use_case_page_html(lang: str) -> str:
     canonical = f"{SITE}{USE_CASE_PATHS[lang]}"
     alt_href = USE_CASE_PATHS[c["alt"]]
     home = "/" if lang == "sk" else "/?lang=en"
-    video = f"{ATLAS_PATH}/video-{lang}.mp4"
-    poster = f"{ATLAS_PATH}/poster-{lang}.jpg"  # intro card: og:image
-    start_poster = f"{ATLAS_PATH}/poster-{lang}-start.jpg"  # the frame the video starts at
+    video = f"{ATLAS_PATH}/video-{lang}.mp4{MEDIA_QUERY}"
+    poster = f"{ATLAS_PATH}/poster-{lang}.jpg{MEDIA_QUERY}"  # intro card: og:image
+    # the frame the video starts at
+    start_poster = f"{ATLAS_PATH}/poster-{lang}-start.jpg{MEDIA_QUERY}"
     sections = "\n".join(f"<h2>{h}</h2>\n{body}" for h, body in c["sections"])
     try_note = f"<small>{c['try_note']}</small>" if c["try_note"] else ""
     return f"""<!DOCTYPE html>

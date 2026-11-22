@@ -8,7 +8,7 @@ can be rebuilt from its public source.
 | Output in `src/oncofiles/atlas/` | Script | Source |
 | --- | --- | --- |
 | `mesh-figure.glb`, `mesh-spine.glb`, `mesh-knee.glb`, `mesh-shoulder.glb` | `build_meshes.py` | BodyParts3D release 4.0 |
-| `three.module.js`, `GLTFLoader.js`, `BufferGeometryUtils.js` | `vendor_three.py` | three.js r149 (npm `three@0.149.0`) |
+| `three.module.js`, `GLTFLoader.js`, `BufferGeometryUtils.js`, `RoomEnvironment.js` | `vendor_three.py` | three.js r149 (npm `three@0.149.0`) |
 
 Licence and credit of the meshes: `src/oncofiles/atlas/ATTRIBUTION.md` (it is
 served at `/movement-atlas/ATTRIBUTION.md` and linked from the page). The
@@ -58,6 +58,9 @@ python3 -I scripts/atlas_meshes/vendor_three.py tmp/three/package src/oncofiles/
 The only change to the official files is the import path (`'three'` becomes
 `'./three.module.js'`): the atlas CSP allows no inline script, so there is no
 import map.
+
+The videos of the landing section are rendered from the page by
+`scripts/atlas_video/render.py` (README there).
 
 ## After a rebuild
 

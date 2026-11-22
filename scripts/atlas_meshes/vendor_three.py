@@ -1,7 +1,8 @@
 """Vendor three.js r149 as same-origin ES modules for the movement atlas.
 
 r149 no longer ships the non-module ``examples/js`` loaders, so the atlas loads
-three and its GLTFLoader as ES modules. The atlas CSP is ``script-src 'self'``
+three, its GLTFLoader and the RoomEnvironment (image-based lighting) as ES
+modules. The atlas CSP is ``script-src 'self'``
 with no inline script, so an import map is not available: the only change made
 to the official files is the module specifier (``'three'`` and
 ``'../utils/…'`` become relative same-directory paths).
@@ -21,6 +22,8 @@ FILES = {
     "build/three.module.js": "three.module.js",
     "examples/jsm/loaders/GLTFLoader.js": "GLTFLoader.js",
     "examples/jsm/utils/BufferGeometryUtils.js": "BufferGeometryUtils.js",
+    # image-based lighting of the realistic materials (#830 follow-up)
+    "examples/jsm/environments/RoomEnvironment.js": "RoomEnvironment.js",
 }
 REWRITES = {
     "from 'three';": "from './three.module.js';",
