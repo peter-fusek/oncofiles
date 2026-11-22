@@ -839,8 +839,10 @@ async def run_pending(db, *, limit: int = MAX_JOBS_PER_RUN) -> Counter:
             await trial_funnel.send_due_ready_mails(db)
         except Exception as exc:  # noqa: BLE001 - mail never stops the queue
             logger.warning("inbound: ready mails failed (%s)", type(exc).__name__)
-    # #950 quarantine: mark old pending items expired (nothing deleted) and send
-    # the digests of items whose sender throttle has passed.
+    # #950 quarantine: mark old pending items expired, purge the encrypted files
+    # of items past the 30-day trash (rows stay, `purged`; approved copies only
+    # with QUARANTINE_PURGE_APPROVED) and send the digests of items whose
+    # sender throttle has passed.
     from oncofiles import inbound_quarantine
 
     try:

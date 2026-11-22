@@ -1,0 +1,16 @@
+-- #950 quarantine purge (maintainer decision 2026-11-22, RUNBOOK lifecycle).
+-- Additive only: one nullable column, no backfill, no row is deleted.
+--
+-- files_purged_at: when the purge removed the item's encrypted files under
+--                  DATA_DIR/quarantine/<item_uuid>/ (oncofiles.inbound_quarantine
+--                  .purge_due). NULL = the files are still on disk.
+--                  * rejected / expired items TRASH_DAYS (30) after decided_at:
+--                    the state becomes 'purged' and this is set;
+--                  * approved items whose every file was filed, only with
+--                    QUARANTINE_PURGE_APPROVED=true and
+--                    QUARANTINE_PURGE_APPROVED_AFTER_DAYS (7) after approval:
+--                    the state stays 'approved' and this is set (a second
+--                    approve answers 'already' and never reads a file).
+--                  Pending items are never purged. The row, its sender_enc
+--                  and files_enc blobs stay.
+ALTER TABLE inbound_quarantine ADD COLUMN files_purged_at TEXT;

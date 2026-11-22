@@ -4,7 +4,9 @@ Writers and readers live in ``oncofiles.inbound_quarantine``. Every helper
 takes a keyword-only ``patient_id`` and filters on it in SQL, except the
 token lookup by its keyed hash (the token IS the routing key of the e-mail
 button, like ``find_inbound_address``) and the cross-patient sweeps of the
-scheduler (expiry, due notifications). Nothing here deletes a row (#734).
+scheduler (expiry, due notifications, purge candidates). Nothing here
+deletes a row (#734): the purge (migration 102) only marks the row after
+``oncofiles.inbound_quarantine`` removed the item's encrypted files.
 """
 
 from __future__ import annotations
@@ -12,13 +14,13 @@ from __future__ import annotations
 from ._base import DatabaseBase
 from ._tenant import require_patient_id
 
-QUARANTINE_STATES = ("pending", "approved", "rejected", "expired")
+QUARANTINE_STATES = ("pending", "approved", "rejected", "expired", "purged")
 QUARANTINE_ACTIONS = ("approve", "reject")
 
 _COLS = """id, patient_id, item_uuid, source_hash, sender_hash, sender_enc, files_enc,
            refusal_reason, file_count, total_bytes, state, received_at, notified_at,
            notice_key, claimed_at, decided_at, decided_by, decided_via, filed_count,
-           restored_at"""
+           restored_at, files_purged_at"""
 
 
 class InboundQuarantineMixin(DatabaseBase):
@@ -63,10 +65,11 @@ class InboundQuarantineMixin(DatabaseBase):
 
     async def quarantine_retained_bytes_total(self) -> int:
         """Bytes still on disk in the quarantine store, all patients: every
-        state but a future 'purged' (pending, approved, rejected, expired:
-        nothing is deleted yet)."""
+        item whose files the purge has not removed (``files_purged_at`` NULL;
+        a 'purged' row always has it set)."""
         async with self.db.execute(
-            "SELECT COALESCE(SUM(total_bytes), 0) FROM inbound_quarantine WHERE state != 'purged'"
+            """SELECT COALESCE(SUM(total_bytes), 0) FROM inbound_quarantine
+               WHERE state != 'purged' AND files_purged_at IS NULL"""
         ) as cursor:
             row = await cursor.fetchone()
         return int(row[0] or 0)
@@ -419,3 +422,51 @@ class InboundQuarantineMixin(DatabaseBase):
         )
         await self.db.commit()
         return int(cursor.rowcount or 0)
+
+    # ── purge (migration 102) ────────────────────────────────────────────
+
+    async def quarantine_purge_candidates(
+        self, *, trash_before: str, approved_before: str | None, limit: int
+    ) -> list[dict]:
+        """Items whose encrypted files are due for the purge (cross-patient
+        sweep of the scheduler): rejected / expired items decided before
+        ``trash_before``, and, only when ``approved_before`` is given (the
+        QUARANTINE_PURGE_APPROVED switch), approved items approved before it
+        whose every file was filed. Never a pending item (a restored item is
+        pending). Oldest decision first."""
+        async with self.db.execute(
+            """SELECT id, patient_id, item_uuid, state, file_count, filed_count, decided_at
+               FROM inbound_quarantine
+               WHERE files_purged_at IS NULL AND decided_at IS NOT NULL
+                 AND (
+                   (state IN ('rejected', 'expired') AND decided_at < ?)
+                   OR (? IS NOT NULL AND state = 'approved' AND decided_at < ?
+                       AND filed_count >= file_count)
+                 )
+               ORDER BY decided_at, id LIMIT ?""",
+            (trash_before, approved_before, approved_before, int(limit)),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def mark_quarantine_files_purged(
+        self, item_id: int, *, patient_id: str, kind: str, at: str, before: str
+    ) -> bool:
+        """Record that the item's files are gone, under the same conditions
+        the candidate query used. ``kind`` 'trash': rejected / expired →
+        'purged'; 'approved': the state stays 'approved'. The row stays."""
+        if kind == "trash":
+            sql = """UPDATE inbound_quarantine
+                     SET state = 'purged', files_purged_at = ?, claimed_at = NULL
+                     WHERE id = ? AND patient_id = ? AND files_purged_at IS NULL
+                       AND state IN ('rejected', 'expired') AND decided_at < ?"""
+        elif kind == "approved":
+            sql = """UPDATE inbound_quarantine SET files_purged_at = ?
+                     WHERE id = ? AND patient_id = ? AND files_purged_at IS NULL
+                       AND state = 'approved' AND filed_count >= file_count
+                       AND decided_at < ?"""
+        else:
+            raise ValueError("bad purge kind")
+        cursor = await self.db.execute(sql, (at, int(item_id), patient_id, before))
+        await self.db.commit()
+        return bool(cursor.rowcount)
