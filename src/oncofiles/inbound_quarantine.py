@@ -37,7 +37,8 @@ store, since nothing is deleted); globally its OWN budget
 holding store's ``HOLDING_MAX_BYTES``, so a stranger's flood never blocks a
 trial) and the holding store's ``MIN_FREE_BYTES`` free-space guard on the
 ``DATA_DIR`` filesystem. Retained bytes of rejected / expired items are shown
-in the admin overview (``admin_overview``): what a future purge would free.
+in the admin overview (``admin_overview``): what the purge frees after the
+trash.
 
 Storage: one AES-GCM file per attachment under
 ``<DATA_DIR>/quarantine/<item_uuid>/<n>.bin`` (dirs 0700, files 0600, tmp +
@@ -68,10 +69,21 @@ nothing); journaled in ``activity_log``. A file that cannot be filed now
 (Drive, quota) leaves the item pending: the next approve skips what is
 already stored. Reject and expiry (``EXPIRE_AFTER_DAYS``) only mark the row.
 
-Retention (#734): NOTHING here deletes a row or a file. TODO(#950): removing
-the encrypted files of rejected / expired / approved items needs a RUNBOOK
-lifecycle entry and a reviewed ``tests/test_no_automatic_deletion.py``
-allowlist entry (maintainer decision).
+Retention (#734, maintainer decision 2026-11-22, RUNBOOK lifecycle): no row
+is ever deleted. The only deletion is ``purge_due`` (from ``run_maintenance``,
+the inbound queue job), allowlisted in ``tests/test_no_automatic_deletion.py``:
+it removes ONLY the encrypted ``<n>.bin`` files of one item (named by the
+row's ``file_count``) and then that item's empty directory (``os.rmdir``,
+never a recursive delete, never a glob), after checking the directory is a
+real directory directly inside the quarantine root named exactly the row's
+``item_uuid``. Rejected / expired items ``TRASH_DAYS`` after ``decided_at``
+(the restore window ends there) → state ``purged`` + ``files_purged_at``;
+approved items whose every file was filed only with
+``QUARANTINE_PURGE_APPROVED=true`` (default off)
+``QUARANTINE_PURGE_APPROVED_AFTER_DAYS`` after approval → state stays
+``approved`` + ``files_purged_at``. Pending items (a restored item is
+pending) are never touched. The row and its encrypted sender / manifest
+blobs stay.
 
 No reply ever goes to the sender (no backscatter). Logs: counts, codes and
 ``patient_id[:4]`` only; never an address, a file name or a token.
@@ -88,6 +100,7 @@ import logging
 import os
 import re
 import secrets
+import stat
 import time
 import uuid
 from collections import Counter, OrderedDict
@@ -105,15 +118,14 @@ MAX_FILES_PER_DAY = 30  # quarantined files per patient per 24 h
 MAX_PENDING_ITEMS = 20  # pending items per patient
 MAX_PENDING_BYTES = 200 * 1024 * 1024  # pending bytes per patient
 # bytes received per patient in a rolling 30 days, whatever the state (a
-# rejected or expired item keeps its encrypted file, #734)
+# rejected or expired item keeps its encrypted file through its 30-day trash)
 MAX_RECEIVED_BYTES_30D = 500 * 1024 * 1024
 # all patients' PENDING bytes; separate from the trial holding store's budget
 QUARANTINE_MAX_PENDING_BYTES = 2 * 1024 * 1024 * 1024
 # all patients' bytes still ON DISK in the quarantine store (security review
-# of 15e2ae0). Nothing deletes a quarantined file yet, so every state holds
-# its bytes: pending, rejected, expired AND approved (approval copies the
-# file into the patient's documents; the encrypted quarantine copy stays).
-# Only the future purge (state 'purged', separate PR) frees bytes.
+# of 15e2ae0): pending, rejected, expired AND approved (approval copies the
+# file into the patient's documents; the encrypted quarantine copy stays)
+# until ``purge_due`` removes the files (``files_purged_at``, migration 102).
 QUARANTINE_MAX_RETAINED_BYTES = 5 * 1024 * 1024 * 1024
 # quarantine stops accepting mail at this free space, well above the
 # holding store's MIN_FREE_BYTES (20 GB), so trials never hit disk_low first
@@ -129,6 +141,11 @@ EXPIRE_AFTER_DAYS = 30
 # 2026-11-22); the later purge removes only their encrypted files
 TRASH_DAYS = 30
 CLAIM_STALE_MIN = 30
+# purge (migration 102): at most this many items per run, committed per item
+PURGE_MAX_ITEMS = 200
+# approved copies: env QUARANTINE_PURGE_APPROVED (default false, pending the
+# maintainer's approval) and QUARANTINE_PURGE_APPROVED_AFTER_DAYS (default 7)
+PURGE_APPROVED_AFTER_DAYS = 7
 
 LINK_BASE = "https://oncofiles.com/q/"
 DASHBOARD_URL = "https://oncofiles.com/dashboard"
@@ -161,6 +178,8 @@ _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{40,64}$")
 _SENDER_SAFE = re.compile(r"[^A-Za-z0-9.!#$*+^_`{|}~@-]")
 
 _last_failed: dict[str, float] = {}
+# the last purge run that found something to do (admin overview, /readiness)
+_purge_last: dict = {}
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -702,11 +721,207 @@ async def notify_due(db, patient_id: str) -> int:
     return 1
 
 
-async def run_maintenance(db) -> dict:
-    """Scheduler sweep (from the inbound queue job): expire old pending items
-    (mark only) and send the due digests. Returns counts."""
+# ── purge of encrypted files after the trash (migration 102) ─────────────
+
+
+def purge_approved_enabled() -> bool:
+    """``QUARANTINE_PURGE_APPROVED`` (default false): only then are the
+    encrypted copies of approved, fully filed items ever removed."""
+    raw = os.environ.get("QUARANTINE_PURGE_APPROVED", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def purge_approved_after_days() -> int:
+    """``QUARANTINE_PURGE_APPROVED_AFTER_DAYS`` (default 7, at least 1)."""
+    raw = os.environ.get("QUARANTINE_PURGE_APPROVED_AFTER_DAYS", "").strip()
+    try:
+        days = int(raw) if raw else PURGE_APPROVED_AFTER_DAYS
+    except ValueError:
+        days = PURGE_APPROVED_AFTER_DAYS
+    return max(1, days)
+
+
+@dataclass
+class _ItemPurge:
+    refused: bool = False
+    removed: int = 0
+    missing: int = 0
+    bytes: int = 0
+    dir_kept: bool = False
+
+
+def _purge_item_files(item_uuid: str, file_count: int) -> _ItemPurge:
+    """Remove the encrypted files of ONE item, then its empty directory.
+
+    Blocking (``asyncio.to_thread``). Only ``<root>/<item_uuid>/<n>.bin`` for
+    ``n`` in ``range(file_count)`` and that directory itself: no glob, no
+    recursive delete. Refused (nothing removed) when the uuid is not in its
+    canonical form, the directory is a symlink or not a directory, it does
+    not resolve to a direct child of the quarantine root with that very name,
+    or one of the named files is not a regular file. Missing files are
+    counted and tolerated (a crash between the file removal and the row
+    update leaves exactly that). A leftover we did not name (e.g. the
+    ``.tmp`` of a crashed write) keeps the directory (``dir_kept``).
+    """
+    out = _ItemPurge()
+    try:
+        canonical = str(uuid.UUID(str(item_uuid)))
+    except (ValueError, TypeError, AttributeError):
+        return _ItemPurge(refused=True)
+    if canonical != item_uuid or int(file_count) < 0:
+        return _ItemPurge(refused=True)
+    root = quarantine_dir().resolve()
+    folder = root / item_uuid
+    if not os.path.lexists(folder):
+        out.missing = int(file_count)
+        return out
+    if folder.is_symlink() or not folder.is_dir():
+        return _ItemPurge(refused=True)
+    real = folder.resolve(strict=True)
+    if real.parent != root or real.name != item_uuid:
+        return _ItemPurge(refused=True)
+    targets: list[tuple[Path, int]] = []
+    for index in range(int(file_count)):
+        path = real / f"{index}.bin"
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            out.missing += 1
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            return _ItemPurge(refused=True)
+        targets.append((path, info.st_size))
+    for path, size in targets:
+        try:
+            os.remove(path)  # one named file of this item (checked above)
+        except FileNotFoundError:
+            out.missing += 1
+            continue
+        out.removed += 1
+        out.bytes += size
+    try:
+        os.rmdir(real)  # only when empty; never a recursive delete
+    except FileNotFoundError:
+        pass
+    except OSError:
+        out.dir_kept = True
+    return out
+
+
+async def purge_due(db, *, limit: int = PURGE_MAX_ITEMS) -> dict:
+    """Remove the encrypted files of items past their lifecycle (module
+    docstring) and mark each row; at most ``limit`` items, committed per
+    item. The caller holds ``inbound_email.PROCESS_LOCK`` (the scheduler
+    sweep), so approve / reject / restore never interleave; each item also
+    takes its patient lock. Files first, then the conditional row update: a
+    crash in between leaves a row the next run finds again (its missing files
+    are tolerated). Returns counts only."""
+    from oncofiles import inbound_email
+
+    counts: Counter = Counter()
     if not configured():
-        return {"expired": 0, "notices": 0}
+        return {}
+    now = _now()
+    at = _iso(now)
+    # the restore window is decided_at >= now - TRASH_DAYS: disjoint from this
+    trash_before = _iso(now - timedelta(days=TRASH_DAYS))
+    approved_on = purge_approved_enabled()
+    approved_before = (
+        _iso(now - timedelta(days=purge_approved_after_days())) if approved_on else None
+    )
+    candidates = await db.quarantine_purge_candidates(
+        trash_before=trash_before, approved_before=approved_before, limit=limit
+    )
+    for item in candidates:
+        pid = item["patient_id"]
+        item_id = int(item["id"])
+        if item["state"] == "approved":
+            if not approved_on or approved_before is None:  # belt and braces
+                continue
+            kind, before = "approved", approved_before
+        elif item["state"] in ("rejected", "expired"):
+            kind, before = "trash", trash_before
+        else:  # never a pending item, whatever the query returned
+            continue
+        async with inbound_email._state.lock(pid):
+            try:
+                res = await asyncio.to_thread(
+                    _purge_item_files, item["item_uuid"], int(item["file_count"])
+                )
+            except Exception as exc:  # noqa: BLE001 - one item never stops the sweep
+                counts["purge_failed"] += 1
+                logger.warning(
+                    "quarantine: purge failed patient %s item=%d (%s)",
+                    pid[:4],
+                    item_id,
+                    type(exc).__name__,
+                )
+                continue
+            if res.refused:
+                counts["purge_refused"] += 1
+                logger.warning(
+                    "quarantine: purge refused patient %s item=%d (path check)", pid[:4], item_id
+                )
+                continue
+            marked = await db.mark_quarantine_files_purged(
+                item_id, patient_id=pid, kind=kind, at=at, before=before
+            )
+        counts["files_removed"] += res.removed
+        counts["files_missing"] += res.missing
+        counts["purged_bytes"] += res.bytes
+        if res.dir_kept:
+            counts["dirs_kept"] += 1
+        if not marked:
+            counts["purge_not_marked"] += 1
+        elif kind == "approved":
+            counts["approved_purged_items"] += 1
+        else:
+            counts["purged_items"] += 1
+    if counts:
+        for key, value in counts.items():
+            _counters()[f"quarantine_{key}"] += value
+        _purge_last.clear()
+        _purge_last.update(
+            {
+                "at": at,
+                **{
+                    key: int(counts[key])
+                    for key in (
+                        "purged_items",
+                        "approved_purged_items",
+                        "purged_bytes",
+                        "files_removed",
+                        "files_missing",
+                        "purge_refused",
+                        "purge_failed",
+                        "purge_not_marked",
+                        "dirs_kept",
+                    )
+                },
+            }
+        )
+        logger.info("quarantine: purge %s", dict(sorted(counts.items())))
+    return dict(counts)
+
+
+def purge_overview() -> dict:
+    """The switches and the last purge run that had work (in memory, counts
+    only; admin overview and operator /readiness)."""
+    return {
+        "trash_days": TRASH_DAYS,
+        "approved_switch": purge_approved_enabled(),
+        "approved_after_days": purge_approved_after_days(),
+        "last_run": dict(_purge_last) or None,
+    }
+
+
+async def run_maintenance(db) -> dict:
+    """Scheduler sweep (from the inbound queue job, under ``PROCESS_LOCK``):
+    expire old pending items (mark only), purge the encrypted files of items
+    past their lifecycle (``purge_due``) and send the due digests. Returns
+    counts."""
+    if not configured():
+        return {"expired": 0, "notices": 0, "purge": {}}
     now = _now()
     expired = await db.expire_quarantine_items(
         before=_iso(now - timedelta(days=EXPIRE_AFTER_DAYS)),
@@ -716,13 +931,18 @@ async def run_maintenance(db) -> dict:
     if expired:
         _counters()["quarantine_expired"] += expired
         logger.info("quarantine: expired=%d", expired)
+    try:
+        purge = await purge_due(db)
+    except Exception as exc:  # noqa: BLE001 - the purge never stops the sweep
+        purge = {"purge_failed": 1}
+        logger.warning("quarantine: purge sweep failed (%s)", type(exc).__name__)
     notices = 0
     for pid in await db.quarantine_patients_due(since=_iso(now - timedelta(days=1))):
         try:
             notices += await notify_due(db, pid)
         except Exception as exc:  # noqa: BLE001 - one patient never stops the sweep
             logger.warning("quarantine: notify failed patient %s (%s)", pid[:4], type(exc).__name__)
-    return {"expired": expired, "notices": notices}
+    return {"expired": expired, "notices": notices, "purge": purge}
 
 
 # ── decisions ────────────────────────────────────────────────────────────
@@ -1040,23 +1260,31 @@ async def act_on_link(db, token: str, csrf: str) -> str:
 
 async def admin_overview(db) -> dict:
     """Counts and bytes per state over all patients (admin zone): pending
-    bytes against ``QUARANTINE_MAX_PENDING_BYTES`` and the retained bytes of
-    rejected / expired items a future lifecycle purge would free. No ids,
-    no addresses, no names."""
+    bytes against ``QUARANTINE_MAX_PENDING_BYTES``, the retained bytes of
+    rejected / expired items the purge frees after the trash, and the last
+    purge run (``purged_items``, ``purged_bytes``). No ids, no addresses,
+    no names. ``by_state['purged']`` bytes are what the row recorded; those
+    files are gone."""
     if not configured():
         return {"enabled": False}
     by_state = await db.quarantine_state_totals()
     retained = sum(by_state.get(s, {}).get("bytes", 0) for s in ("rejected", "expired"))
+    last = _purge_last
     return {
         "enabled": True,
         "by_state": by_state,
         "pending_bytes": by_state.get("pending", {}).get("bytes", 0),
         "pending_budget_bytes": QUARANTINE_MAX_PENDING_BYTES,
         "retained_bytes": retained,
-        # bytes on disk in every state (nothing is deleted yet), against
-        # QUARANTINE_MAX_RETAINED_BYTES
-        "stored_bytes": sum(v.get("bytes", 0) for k, v in by_state.items() if k != "purged"),
+        # bytes still on disk (every item whose files were not purged),
+        # against QUARANTINE_MAX_RETAINED_BYTES
+        "stored_bytes": await db.quarantine_retained_bytes_total(),
         "stored_budget_bytes": QUARANTINE_MAX_RETAINED_BYTES,
+        # the last purge run that had work (in memory; 0 before the first)
+        "purged_items": int(last.get("purged_items", 0))
+        + int(last.get("approved_purged_items", 0)),
+        "purged_bytes": int(last.get("purged_bytes", 0)),
+        "purge": purge_overview(),
     }
 
 

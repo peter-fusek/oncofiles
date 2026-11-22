@@ -23,6 +23,11 @@ removing a deletion path also removes its permission.
    allowlist, except allowlisted reachable paths. Synthetic jobs prove it fails.
 5. Machine-fact re-extraction soft-deletes ``clinical_records`` with an audit
    row; core tables are never hard-deleted or rewritten via ``REPLACE INTO``.
+6. Local files: every ``os.remove`` / ``os.unlink`` / ``os.rmdir`` /
+   ``<path>.unlink()`` / ``<path>.rmdir()`` call site is an allowlisted
+   (file, function) pair; ``shutil.rmtree`` / ``os.removedirs`` never appear.
+   The #950 quarantine purge (maintainer decision 2026-11-22, RUNBOOK
+   lifecycle) is the only one that removes stored user files.
 
 This is the single hard-DELETE allowlist; #723 (PR #732) merged its own lock
 into it: treatment_events and conversation_entries are soft-deleted and listed
@@ -539,3 +544,131 @@ async def test_replace_document_facts_soft_deletes_with_audit(db):
         (rows[0]["id"],),
     ) as cur:
         assert [r["action"] for r in await cur.fetchall()] == ["create", "delete"]
+
+
+# ── 6. Local file deletes ───────────────────────────────────────────────
+
+# (file, enclosing function) -> reason. May only shrink.
+LOCAL_DELETE_ALLOWLIST: dict[tuple[str, str], str] = {
+    ("pre_store.py", "_prune"): (
+        "pre-store DB safety copies (technical artifact): keeps the newest KEEP, removes "
+        "exact pattern-matched older copy filenames"
+    ),
+    ("pre_store.py", "make_copy"): "removes only the partial copy this call created on failure",
+    ("inbound_quarantine.py", "_purge_item_files"): (
+        "quarantine purge, maintainer decision 2026-11-22, RUNBOOK lifecycle: only the "
+        "<n>.bin files of one rejected/expired item after the 30-day trash (approved copies "
+        "only with QUARANTINE_PURGE_APPROVED) and then that item's empty directory; the row "
+        "stays 'purged'"
+    ),
+}
+
+_LOCAL_DELETE_ANY_RECEIVER = {"unlink", "rmdir"}  # os.x(...) or Path.x()
+_LOCAL_DELETE_OS = {"remove"}  # only os.remove (list.remove / set.remove are not deletes)
+_LOCAL_DELETE_NEVER = {"rmtree", "removedirs"}
+
+
+class _LocalDeletes(ast.NodeVisitor):
+    def __init__(self, rel: str) -> None:
+        self.rel = rel
+        self.stack: list[str] = []
+        self.sites: set[tuple[str, str]] = set()
+        self.never: set[tuple[str, str]] = set()
+
+    def _scope(self, node) -> None:
+        self.stack.append(node.name)
+        self.generic_visit(node)
+        self.stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._scope(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._scope(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._scope(node)
+
+    def _here(self) -> tuple[str, str]:
+        return (self.rel, ".".join(self.stack) or "<module>")
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        # Attribute, not Call: catches asyncio.to_thread(os.remove, ...) too.
+        receiver = node.value.id if isinstance(node.value, ast.Name) else None
+        if node.attr in _LOCAL_DELETE_NEVER:
+            self.never.add(self._here())
+        elif node.attr in _LOCAL_DELETE_ANY_RECEIVER or (
+            node.attr in _LOCAL_DELETE_OS and receiver == "os"
+        ):
+            self.sites.add(self._here())
+        self.generic_visit(node)
+
+
+def _local_deletes() -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    sites: set[tuple[str, str]] = set()
+    never: set[tuple[str, str]] = set()
+    for path in SRC.rglob("*.py"):
+        visitor = _LocalDeletes(path.relative_to(SRC).as_posix())
+        visitor.visit(ast.parse(path.read_text(encoding="utf-8")))
+        sites |= visitor.sites
+        never |= visitor.never
+    return sites, never
+
+
+def test_local_file_deletes_only_on_allowlist():
+    unexpected = _local_deletes()[0] - set(LOCAL_DELETE_ALLOWLIST)
+    assert not unexpected, (
+        "local file delete outside the allowlist — stored files are removed only per a "
+        f"documented lifecycle (#734): {sorted(unexpected)}"
+    )
+
+
+def test_local_delete_allowlist_no_stale_entries():
+    stale = set(LOCAL_DELETE_ALLOWLIST) - _local_deletes()[0]
+    assert not stale, f"allowlist entries no longer in the code, remove them: {sorted(stale)}"
+
+
+def test_no_recursive_local_delete_anywhere():
+    never = _local_deletes()[1]
+    assert not never, sorted(never)
+
+
+def test_quarantine_purge_helper_is_reached_only_from_purge_due():
+    """The file-removing helper is called by name from ``purge_due`` alone,
+    only ``run_maintenance`` (the inbound queue sweep) calls that, and no
+    other module names either."""
+    tree = ast.parse((SRC / "inbound_quarantine.py").read_text(encoding="utf-8"))
+    callers: dict[str, set[str]] = defaultdict(set)
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for node in ast.walk(fn):
+                if isinstance(node, ast.Name) and node.id in {"_purge_item_files", "purge_due"}:
+                    callers[node.id].add(fn.name)
+    assert callers["_purge_item_files"] == {"purge_due"}
+    assert callers["purge_due"] == {"run_maintenance"}
+    others = [
+        p.relative_to(SRC).as_posix()
+        for p in SRC.rglob("*.py")
+        if p.name != "inbound_quarantine.py"
+        and re.search(r"\b(_purge_item_files|purge_due)\b", p.read_text(encoding="utf-8"))
+    ]
+    assert not others, others
+
+
+def test_synthetic_local_delete_fails_the_lock():
+    visitor = _LocalDeletes("synth.py")
+    visitor.visit(
+        ast.parse(
+            "import os, shutil\n"
+            "from pathlib import Path\n"
+            "def tidy(p):\n"
+            "    os.remove(p)\n"
+            "    Path(p).unlink()\n"
+            "def wipe(p):\n"
+            "    shutil.rmtree(p)\n"
+            "def harmless(xs):\n"
+            "    xs.remove(1)\n"
+        )
+    )
+    assert visitor.sites == {("synth.py", "tidy")}
+    assert visitor.never == {("synth.py", "wipe")}

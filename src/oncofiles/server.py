@@ -4149,6 +4149,11 @@ async def readiness(request: Request) -> JSONResponse:
         result["inbound_alerts"] = _inbound_email.alerts_overview()
         # bad-token mails of the last hour, all addresses (enumeration watch)
         result["inbound_bad_tokens"] = _inbound_email.bad_tokens_overview()
+        # #950 quarantine purge: switches + last run with work (in memory,
+        # counts only)
+        from oncofiles import inbound_quarantine as _inbound_quarantine
+
+        result["inbound_quarantine_purge"] = _inbound_quarantine.purge_overview()
         return JSONResponse(result)
     except Exception:
         logger.exception("Readiness check failed")
@@ -7773,8 +7778,8 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
         logger.warning("API inbound-unmatched: trial funnel failed (%s)", type(exc).__name__)
         out["trial_funnel"] = None
     # #950 quarantine: items / files / bytes per state; pending bytes against
-    # the quarantine's own budget and the retained bytes of rejected / expired
-    # items (what a future lifecycle purge would free). Counts only.
+    # the quarantine's own budget, the retained bytes of rejected / expired
+    # items and the last purge run (purged_items, purged_bytes). Counts only.
     from oncofiles import inbound_quarantine
 
     try:

@@ -945,6 +945,7 @@ _LABELS: dict[str, dict[str, tuple[str, str]]] = {
         "approved": ("Schválené", "Approved"),
         "rejected": ("Odmietnuté", "Rejected"),
         "expired": ("Vypršalo", "Expired"),
+        "purged": ("Súbory vymazané po koši", "Files deleted after the trash"),
     },
     "inbound_quarantine_action": {
         "approve": ("Schváliť", "Approve"),
