@@ -168,6 +168,50 @@ def attach_redaction(handler: logging.Handler) -> None:
         handler.addFilter(RedactFilter())
 
 
+_QLINK_PATH = re.compile(r"(^|/)q/[^?#\s\"]*")
+_QUERY = re.compile(r"\?[^\s\"]*")
+
+
+def mask_request_path(path: str) -> str:
+    """A request target with the #950 quarantine link token (``/q/<token>``)
+    and the WHOLE query string masked; the path itself is kept."""
+    path = _QUERY.sub("?[redacted]", path)
+    return _QLINK_PATH.sub(lambda m: m.group(1) + "q/[redacted]", path)
+
+
+class AccessLogFilter(logging.Filter):
+    """Filter on the ``uvicorn.access`` logger (infra review of #970).
+
+    uvicorn logs every request line with the full target, query string
+    included (``GET /api/documents?…&patient_id=…``), so a ``/q/<token>``
+    action link (a seven-day capability) or an id in a query would sit in the
+    container log and the #706 file. The target argument is masked in place
+    (uvicorn's ``AccessFormatter`` reads the five-element ``args`` tuple, so
+    the tuple shape stays); a record of another shape gets its message masked.
+    The status code and the path are kept. Never drops a record.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
+            record.args = (args[0], args[1], mask_request_path(args[2]), args[3], args[4])
+            return True
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        record.msg, record.args = mask_request_path(msg), None
+        return True
+
+
+def attach_access_log_filter() -> None:
+    """Put one ``AccessLogFilter`` on the ``uvicorn.access`` logger itself,
+    so it applies before every handler (stderr and the #706 file)."""
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, AccessLogFilter) for f in access.filters):
+        access.addFilter(AccessLogFilter())
+
+
 class CappedDailyFileHandler(TimedRotatingFileHandler):
     """Daily rotation plus a per-file size cap (records past it are dropped).
     Files are created 0600 (owner only), whatever the process umask."""

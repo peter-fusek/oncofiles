@@ -210,3 +210,33 @@ def holding_store_key() -> bytes:
     if not secret:
         raise HoldingStoreSecretMissingError(HOLDING_STORE_SECRET_ENV)
     return hmac.new(secret.encode(), _HOLDING_STORE_PURPOSE, hashlib.sha256).digest()
+
+
+# #950 quarantine (maintainer decision 2026-11-22): attachments from a sender
+# other than the caregiver wait encrypted until the caregiver approves them.
+# Every key derives from the holding store key (the MANDATORY
+# ``HOLDING_STORE_SECRET``) with its own purpose string: unset = no quarantine.
+_QUARANTINE_PURPOSE = b"oncofiles.inbound_quarantine.v1"
+_QUARANTINE_TOKEN_PURPOSE = b"oncofiles.inbound_quarantine.token.v1"
+_QUARANTINE_CSRF_PURPOSE = b"oncofiles.inbound_quarantine.csrf.v1"
+_QUARANTINE_SENDER_PURPOSE = b"oncofiles.inbound_quarantine.sender.v1"
+
+
+def quarantine_key() -> bytes:
+    """32-byte AES-GCM key of quarantined files and their encrypted metadata."""
+    return hmac.new(holding_store_key(), _QUARANTINE_PURPOSE, hashlib.sha256).digest()
+
+
+def quarantine_token_key() -> bytes:
+    """HMAC key of the action-link token hashes (only the hash is stored)."""
+    return hmac.new(holding_store_key(), _QUARANTINE_TOKEN_PURPOSE, hashlib.sha256).digest()
+
+
+def quarantine_csrf_key() -> bytes:
+    """HMAC key of the confirm form's CSRF value (bound to the token)."""
+    return hmac.new(holding_store_key(), _QUARANTINE_CSRF_PURPOSE, hashlib.sha256).digest()
+
+
+def quarantine_sender_key() -> bytes:
+    """HMAC key of the quarantine sender hash (throttle per sender, dedupe)."""
+    return hmac.new(holding_store_key(), _QUARANTINE_SENDER_PURPOSE, hashlib.sha256).digest()

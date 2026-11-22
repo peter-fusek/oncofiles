@@ -163,7 +163,7 @@
  <div class="section-head">
  <h2 id="inbound-title" data-sk="Posielajte dokumenty na túto adresu" data-en="Send documents to this address">Posielajte dokumenty na túto adresu</h2>
  </div>
- <p class="section-lead" data-sk="Prepošlite sem e-mail s výsledkami alebo pošlite fotku z mobilu, zo svojej adresy, ktorou sa prihlasujete. Prílohy pôjdu bez zmeny do priečinka pacienta a spracujú sa automaticky; dostanete krátke potvrdenie. Pošta z iných adries sa zatiaľ nepridáva." data-en="Forward an e-mail with results here or send a photo from your phone, from the address you sign in with. The attachments go unchanged into the patient folder and are processed automatically; you get a short receipt. Mail from other addresses is not added yet.">Prepošlite sem e-mail s výsledkami alebo pošlite fotku z mobilu, zo svojej adresy, ktorou sa prihlasujete. Prílohy pôjdu bez zmeny do priečinka pacienta a spracujú sa automaticky; dostanete krátke potvrdenie. Pošta z iných adries sa zatiaľ nepridáva.</p>
+ <p class="section-lead" data-sk="Prepošlite sem e-mail s výsledkami alebo pošlite fotku z mobilu, zo svojej adresy, ktorou sa prihlasujete. Prílohy pôjdu bez zmeny do priečinka pacienta a spracujú sa automaticky; dostanete krátke potvrdenie. Prílohy z iných adries čakajú na vaše schválenie." data-en="Forward an e-mail with results here or send a photo from your phone, from the address you sign in with. The attachments go unchanged into the patient folder and are processed automatically; you get a short receipt. Attachments from other addresses wait for your approval.">Prepošlite sem e-mail s výsledkami alebo pošlite fotku z mobilu, zo svojej adresy, ktorou sa prihlasujete. Prílohy pôjdu bez zmeny do priečinka pacienta a spracujú sa automaticky; dostanete krátke potvrdenie. Prílohy z iných adries čakajú na vaše schválenie.</p>
  <div class="inbound-row">
  <code id="inbound-address" class="inbound-address"></code>
  <div class="inbound-actions">
@@ -176,6 +176,16 @@
  <p class="inbound-terms inbound-bcc-note" data-sk="Adresu dajte do poľa Komu (alebo Kópia). Ako skrytá kópia (Bcc) to nefunguje." data-en="Put the address in To (or Cc). It does not work as a blind copy (Bcc).">Adresu dajte do poľa Komu (alebo Kópia). Ako skrytá kópia (Bcc) to nefunguje.</p>
  <p class="inbound-terms inbound-share-note" data-sk="Adresa obsahuje časť vašej Gmail adresy, zdieľajte ju len v rodine a s ošetrujúcim tímom." data-en="The address contains part of your Gmail address; share it only within the family and the care team.">Adresa obsahuje časť vašej Gmail adresy, zdieľajte ju len v rodine a s ošetrujúcim tímom.</p>
  <p id="inbound-status" class="inbound-status" role="status" hidden></p>
+ </section>
+
+ <!-- #950 quarantine: attachments from other senders waiting for the caregiver's approval (hidden while nothing waits) -->
+ <section class="panel quarantine-card" id="quarantine-card" hidden aria-labelledby="quarantine-title">
+ <div class="section-head">
+ <h2 id="quarantine-title" data-sk="Čaká na vaše schválenie" data-en="Waiting for your approval">Čaká na vaše schválenie</h2>
+ </div>
+ <p class="section-lead" data-sk="Tieto prílohy prišli na adresu pre dokumenty z inej adresy, než je vaša. Kým ich neschválite, nič sa s nimi nedeje. Ak odosielateľa nepoznáte, odmietnite ich." data-en="These attachments came to the document address from an address other than yours. Nothing happens to them until you approve them. If you do not know the sender, reject them.">Tieto prílohy prišli na adresu pre dokumenty z inej adresy, než je vaša. Kým ich neschválite, nič sa s nimi nedeje. Ak odosielateľa nepoznáte, odmietnite ich.</p>
+ <div id="quarantine-list" class="quarantine-list"></div>
+ <p id="quarantine-status" class="inbound-status" role="status" hidden></p>
  </section>
 
  <!-- #950 phase 2: first steps of a welcome@ trial (hidden for every other patient) -->

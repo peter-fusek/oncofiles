@@ -118,6 +118,18 @@ AUTH_GATES = {"_check_dashboard_auth", "_require_admin", "_check_bearer"}
 # Custom routes without an auth gate: (path, handler) -> reason.
 PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("/", "landing"): "static landing HTML",
+    (
+        "/q/{token}",
+        "quarantine_link_page",
+    ): "#950 quarantine e-mail button: the token IS the credential (256-bit random, only a "
+    "keyed hash stored, single use, 7 days, bound to item + action + patient); a GET only "
+    "reads (token-hash lookup, one item row) and renders the confirm page; class qlink "
+    "(own per-IP and global buckets)",
+    (
+        "/q",
+        "quarantine_link_action",
+    ): "#950 quarantine decision: token + CSRF value in the body (4 KiB cap), cross-site "
+    "refused, the token checked as for the GET before anything; class qlink",
     ("/oncoteam", "oncoteam_page"): "static HTML",
     ("/privacy", "privacy_policy"): "static HTML",
     ("/terms", "terms_of_service"): "static HTML",
@@ -349,6 +361,76 @@ REACHABLE_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "#950 phase 2, only after the signature and the welcome@ admission checks: ONE "
     "holding-extraction drain task (holding_extract.kick) or one waitlist reply "
     "(at most one per sender per 24 h), never raising, logging counts only",
+    (
+        "/q",
+        "CalendarClient",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "built by _create_patient_clients alongside the Drive client, unused here",
+    (
+        "/q",
+        "GDriveClient",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "built by _create_patient_clients for that one patient (see above)",
+    (
+        "/q",
+        "GmailClient",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "built by _create_patient_clients alongside the Drive client, unused here",
+    (
+        "/q",
+        "_create_patient_clients",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "the patient's Drive client for the approved files (#935 upload)",
+    (
+        "/q",
+        "create_task",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "holding_extract.kick of a trial patient's approved, held file",
+    (
+        "/q",
+        "dedicated_copy",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "curated.inbox_upload.upload_to_inbox, the #935 inbox write",
+    (
+        "/q",
+        "module:oncofiles.curated.drive_ops",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "the #935 create-only, read-back inbox upload",
+    (
+        "/q",
+        "module:oncofiles.curated.extract",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "the local reading of an approved, held trial file",
+    (
+        "/q",
+        "module:oncofiles.curated.llm",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "llm.configured() behind curated.extract (above)",
+    (
+        "/q",
+        "module:oncofiles.curated_folder",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "the #935 curated-root check before the first file",
+    (
+        "/q",
+        "module:oncofiles.files_api",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "sanitize_filename / name_len and the #777 Drive-only store",
+    (
+        "/q",
+        "module:oncofiles.gdrive_folders",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "the #777 Drive-only upload of a non-curated patient",
+    (
+        "/q",
+        "module:oncofiles.sync",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "reached through the #777 Drive-only upload helpers",
+    (
+        "/q",
+        "to_thread",
+    ): "#950 quarantine, only after a live single-use approve token and its CSRF value: "
+    "decrypting quarantined files and the Drive calls of the #935 upload",
 }
 
 # Public handlers that touch the DB: (path, handler) -> what they do.
@@ -359,6 +441,15 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "db.ping(2 s); 24 h prompt_log SUM and the #952 inbound_jobs backlog COUNT "
     "(open/failed rows via the state index) for the operator only",
     ("/api/stats", "api_stats"): "1 + N(patients) COUNTs, at most once per 5 min (cache)",
+    (
+        "/q/{token}",
+        "quarantine_link_page",
+    ): "#950 quarantine: one token-hash lookup joined to its item, one item row; reads only",
+    (
+        "/q",
+        "quarantine_link_action",
+    ): "#950 quarantine: the token lookup, a conditional single-use UPDATE, then the "
+    "approve (phase-one filing with its caps) or reject UPDATE and one activity_log row",
     ("/api/logout", "api_logout"): "one revocation row, only for a token that verifies",
     (
         "/dashboard/verify",

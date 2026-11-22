@@ -21,6 +21,7 @@ from ._hard_facts import HardFactsMixin
 from ._inbound import InboundAddressMixin
 from ._inbound_claimed import InboundClaimedJobsMixin
 from ._inbound_jobs import InboundJobsMixin
+from ._inbound_quarantine import InboundQuarantineMixin
 from ._onboarding import OnboardingEventsMixin
 from ._operational import OperationalMixin
 from ._patients import PatientsMixin
@@ -50,6 +51,7 @@ class Database(
     InboundAddressMixin,
     InboundJobsMixin,
     InboundClaimedJobsMixin,
+    InboundQuarantineMixin,
     TrialsMixin,
     DatabaseBase,
 ):
