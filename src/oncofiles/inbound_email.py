@@ -486,8 +486,9 @@ def signature_ok(secret: str, header: str, original_to: str, auth: str, body: by
 
 @dataclass
 class InboundAttachment:
-    name: str  # as sent (may be empty); never logged
-    data: bytes
+    # #976 infra review: no address, name, text, bytes or token in a repr
+    name: str = field(repr=False)  # as sent (may be empty); never logged
+    data: bytes = field(repr=False)
     content_type: str = "application/octet-stream"
     inline: bool = False
     # Adapters whose provider delivers attachments by reference (Brevo) set
@@ -497,21 +498,24 @@ class InboundAttachment:
     declared_size: int | None = None
     # The provider's download reference (Brevo ``DownloadToken``), kept so the
     # durable queue (#952) can rebuild ``fetch`` after a restart. Never logged.
-    ref: str = ""
+    ref: str = field(default="", repr=False)
 
 
 @dataclass
 class InboundMessage:
-    recipients: list[str]  # candidates, most trusted first
-    sender: str  # the From address
+    # #976 infra review: fields holding an address, a message id, file names,
+    # a download token or the mail text are left out of the repr, so a logged
+    # or repr'd message never leaks them
+    recipients: list[str] = field(repr=False)  # candidates, most trusted first
+    sender: str = field(repr=False)  # the From address
     auth_pass: bool  # provider verdict: SPF/DKIM aligned with From
-    message_id: str = ""
+    message_id: str = field(default="", repr=False)
     auto_submitted: str = ""
     precedence: str = ""
     list_id: str = ""
-    return_path: str | None = None  # None = header absent; "<>" = bounce
+    return_path: str | None = field(default=None, repr=False)  # None = header absent; "<>" = bounce
     is_report: bool = False  # multipart/report or message/delivery-status inside
-    attachments: list[InboundAttachment] = field(default_factory=list)
+    attachments: list[InboundAttachment] = field(default_factory=list, repr=False)
     parse_skips: Counter = field(default_factory=Counter)
     # #950 phase 2: admitted through welcome@ (``inbound_welcome.admit``): the
     # reply is the welcome text instead of the receipt.
@@ -524,13 +528,13 @@ class InboundMessage:
     # ``dkim_not_aligned``; "" = worth verifying); ``delivery_id`` is Brevo's
     # per-delivery ``Uuid`` (part of the claimed dedupe key). Never logged.
     auth_mode: str = ""
-    eml_ref: str = ""
+    eml_ref: str = field(default="", repr=False)
     dkim_prefilter: str = ""
-    delivery_id: str = ""
+    delivery_id: str = field(default="", repr=False)
     # #976: the mail's plain text (``inbound_body``: text/plain preferred,
     # HTML reduced to text, capped). Read only by the quarantine, which stores
     # it encrypted for the caregiver's card; never logged, never filed.
-    body_text: str = ""
+    body_text: str = field(default="", repr=False)
 
 
 class UnparseableMessageError(ValueError):

@@ -194,13 +194,16 @@ class InboundJobsMixin(DatabaseBase):
         lease: str,
         next_attempt_at: str | None = None,
         refund_attempt: bool = False,
+        payload_enc: str | None = None,
     ) -> bool:
         """Set the job's final (or retry) ``state`` and ``reason`` code, only
         while this worker still holds it (``processing`` with ``updated_at`` =
         ``lease``; #952 infra review). ``next_attempt_at`` (a retry) is when it
         may be claimed again. ``refund_attempt`` gives back the attempt the
         claim counted (a wait for the filing quota is not an attempt, #952
-        follow-up). False = the lease was lost, nothing changed.
+        follow-up). ``payload_enc`` (#976) replaces the payload in the same
+        update (the payload without the mail text once the job ends). False =
+        the lease was lost, nothing changed.
         """
         if state not in INBOUND_JOB_STATES:
             raise ValueError("unknown inbound job state")
@@ -208,7 +211,8 @@ class InboundJobsMixin(DatabaseBase):
             """UPDATE inbound_jobs
                SET state = ?, reason = ?, updated_at = ?,
                    next_attempt_at = COALESCE(?, next_attempt_at),
-                   attempts = MAX(attempts - ?, 0)
+                   attempts = MAX(attempts - ?, 0),
+                   payload_enc = COALESCE(?, payload_enc)
                WHERE id = ? AND patient_id = ? AND state = 'processing' AND updated_at = ?""",
             (
                 state,
@@ -216,6 +220,7 @@ class InboundJobsMixin(DatabaseBase):
                 now,
                 next_attempt_at,
                 1 if refund_attempt else 0,
+                payload_enc,
                 job_id,
                 patient_id,
                 lease,

@@ -196,10 +196,10 @@ async def test_approved_with_the_switch_on_after_seven_days(
     assert out["approved_purged_items"] == 1 and "purged_items" not in out
     gone = await row(idb, old["id"])
     assert gone["state"] == "approved" and gone["files_purged_at"]
-    assert gone["body_enc"] is None  # #976: the text goes with the files
+    assert gone["body_enc"] is None  # #976: cleared at approval
     assert not item_dir(tmp_path, old["item_uuid"]).exists()
     kept = await row(idb, fresh["id"])
-    assert kept["body_enc"]
+    assert kept["body_enc"] is None  # #976: an approval already cleared the text
     assert kept["files_purged_at"] is None and item_dir(tmp_path, fresh["item_uuid"]).is_dir()
     # approving the purged item again never reads a missing file
     again = await inbound_quarantine.approve(idb, PID, old["id"], decided_by="h", via="x")

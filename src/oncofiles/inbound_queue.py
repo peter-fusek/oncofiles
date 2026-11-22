@@ -342,6 +342,22 @@ def decrypt_payload(blob: str, *, patient_id: str, token_hash: str, job_uuid: st
     return payload
 
 
+def without_body(payload: dict | None, blob: str, **aad) -> str | None:
+    """The re-encrypted payload without its mail text (#976), or None when
+    there is nothing to drop (no text, or the blob does not decrypt).
+    ``payload`` is the decrypted payload when the caller has it; otherwise
+    ``blob`` is decrypted with ``aad`` (patient_id, token_hash, job_uuid)."""
+    if payload is None:
+        try:
+            payload = decrypt_payload(blob, **aad)
+        except UndecryptablePayloadError:
+            return None
+    if "body_text" not in payload:
+        return None
+    rest = {k: v for k, v in payload.items() if k != "body_text"}
+    return encrypt_payload(rest, **aad)
+
+
 def payload_digest(payload: dict) -> str:
     """sha256 of the payload's canonical JSON without its progress."""
     body = {k: v for k, v in payload.items() if k != "progress"}
@@ -439,12 +455,14 @@ def to_payload(msg: inbound_email.InboundMessage, token: str, *, keep_body: bool
     review: a bounded payload); the rest are counted as ``too_many_files``, so
     the receipt still reports them.
 
-    ``keep_body`` (#976): only for a mail the sender rule already refuses at
-    enqueue (an untrusted row, which the quarantine will hold) the capped
-    plain text travels along, so the quarantine can keep it for the
-    caregiver's card. A trusted or claimed row never carries a body, and the
-    worker drops it from the payload as soon as the job ends (``done`` /
-    ``failed``).
+    ``keep_body`` (#976): only for a mail the sender rule refuses at enqueue
+    (an untrusted row, which the quarantine will hold) or cannot decide yet
+    (a claimed row, verdict still open: a forged caregiver claim ends in
+    quarantine as ``auth_failed``) the capped plain text travels along, so
+    the quarantine can keep it for the caregiver's card. A trusted row never
+    carries a body (also not after a claimed row's verification), and the
+    worker drops it from every payload as soon as the row ends (``done`` /
+    ``failed``, also before decryption-dependent early exits).
     """
     refs = [a for a in msg.attachments if a.ref]
     skips = Counter(msg.parse_skips)
@@ -587,7 +605,10 @@ async def _enqueue_claimed(
     batch is committed the batch answers 503 (:func:`_refuse_over_bound`)."""
     rows = []
     for bucket, msg in claimed:
-        payload = to_payload(msg, inbound_email._find_token(msg) or "")
+        # #976: unverified at enqueue, so the text travels along (encrypted,
+        # dropped when the row ends); after verification a trusted caregiver
+        # row never carries it (``enqueue(verified=True)``: keep_body=not trusted)
+        payload = to_payload(msg, inbound_email._find_token(msg) or "", keep_body=True)
         job_uuid = str(uuid.uuid4())
         rows.append(
             {
@@ -882,6 +903,17 @@ async def _verify_one(db) -> str | None:
         return "lease_lost"
 
     async def finish(state: str, reason: str, *, retry_in: timedelta | None = None) -> str:
+        stripped = None
+        if state != "pending" and ctx.get("job") is not None:
+            # #976: the mail text is not kept once the row ends
+            job_row = ctx["job"]
+            stripped = without_body(
+                ctx.get("payload"),
+                job_row["payload_enc"],
+                patient_id=_CLAIMED_SCOPE,
+                token_hash=job_row["bucket"],
+                job_uuid=job_row["job_uuid"],
+            )
         at = _now()
         ok = await db.finish_inbound_claimed_job(
             ctx["id"],
@@ -890,6 +922,7 @@ async def _verify_one(db) -> str | None:
             now=_iso(at),
             lease=lease["value"],
             next_attempt_at=_iso(at + retry_in) if retry_in is not None else None,
+            payload_enc=stripped,
         )
         if not ok:
             return lease_lost()
@@ -927,7 +960,9 @@ async def _verify_one(db) -> str | None:
         lease["value"] = _iso(now)
         if not await db.claim_inbound_claimed_job(job, now=lease["value"]):
             return "lost_claim"
-        ctx.update(id=job["id"], bucket=job["bucket"], attempts=job["attempts"] + 1)
+        ctx.update(
+            id=job["id"], bucket=job["bucket"], attempts=job["attempts"] + 1, job=job, payload=None
+        )
         if job["attempts"] >= MAX_ATTEMPTS:
             return await finish("failed", "max_attempts")
         try:
@@ -939,6 +974,7 @@ async def _verify_one(db) -> str | None:
             )
         except UndecryptablePayloadError:
             return await finish("failed", "undecryptable")
+        ctx["payload"] = payload
         if (now - _parse_iso(job["created_at"])).total_seconds() > BREVO_ATTACHMENT_RETENTION_S:
             return await finish("failed", "download_expired")
         msg = from_payload(payload)
@@ -1018,25 +1054,18 @@ async def _run_one(db) -> str | None:
     async def finish(
         state: str, reason: str, *, retry_in: timedelta | None = None, refund: bool = False
     ) -> str:
-        if state != "pending" and (held["payload"] or {}).get("body_text") is not None:
-            # #976: the mail text is not kept once the job ends (the
-            # quarantine holds its own encrypted copy)
-            held["payload"].pop("body_text", None)
-            new = _iso(_now())
-            if not await db.update_inbound_job_payload(
-                jid,
+        stripped = None
+        if state != "pending":
+            # #976: the mail text is not kept once the job ends (the quarantine
+            # holds its own encrypted copy); also when the job ends before its
+            # payload was decrypted (max_attempts)
+            stripped = without_body(
+                held["payload"],
+                job["payload_enc"],
                 patient_id=pid,
-                payload_enc=encrypt_payload(
-                    held["payload"],
-                    patient_id=pid,
-                    token_hash=job["token_hash"],
-                    job_uuid=job["job_uuid"],
-                ),
-                lease=lease["value"],
-                now=new,
-            ):
-                return lease_lost()
-            lease["value"] = new
+                token_hash=job["token_hash"],
+                job_uuid=job["job_uuid"],
+            )
         at = _now()
         ok = await db.finish_inbound_job(
             jid,
@@ -1047,6 +1076,7 @@ async def _run_one(db) -> str | None:
             lease=lease["value"],
             next_attempt_at=_iso(at + retry_in) if retry_in is not None else None,
             refund_attempt=refund,
+            payload_enc=stripped,
         )
         if not ok:
             return lease_lost()

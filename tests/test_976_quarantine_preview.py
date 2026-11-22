@@ -496,3 +496,67 @@ def test_demo_twin_has_text_and_previews():
     [item] = built["inbound_quarantine"]["items"]
     assert item["body_text"] and item["body_text_en"] and item["files"][0]["preview"] is True
     assert built["inbound_quarantine_previews"]["1:0"]["src"].startswith("data:image/svg+xml")
+
+
+# ── security review of #977 ──────────────────────────────────────────────
+
+
+async def test_approve_clears_the_text_reject_keeps_it_for_restore(idb, drive, mails):
+    first = await _quarantine(idb)
+    out = await inbound_quarantine.approve(idb, PID, first["id"], decided_by="h", via="dashboard")
+    assert out["result"] == "approved"
+    [row] = await rows(idb, "SELECT body_enc FROM inbound_quarantine WHERE id = ?", first["id"])
+    assert row["body_enc"] is None
+    second = await _quarantine(idb, files=[(PNG_NAME, _png(7), "image/png")])
+    await inbound_quarantine.reject(idb, PID, second["id"], decided_by="h", via="dashboard")
+    [row] = await rows(idb, "SELECT body_enc FROM inbound_quarantine WHERE id = ?", second["id"])
+    assert row["body_enc"]  # the trash may be restored
+    restored = await inbound_quarantine.restore(idb, PID, second["id"], decided_by="h")
+    assert restored["result"] == "restored"
+    view = await inbound_quarantine.dashboard_view(idb, PID, caregiver=True)
+    [item] = view["items"]
+    assert item["id"] == second["id"] and item["body_text"] == BODY
+
+
+async def test_job_failed_before_decryption_drops_the_text(idb, drive, mails, brevo, no_kick):
+    addr = await address_of(idb)
+    item = brevo_item(addr, sender=STRANGER, files=[])
+    item["RawTextBody"] = BODY
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [item]}))
+    [(_state, payload)] = await _job_payloads(idb)
+    assert payload["body_text"] == BODY
+    await idb.db.execute("UPDATE inbound_jobs SET attempts = ?", (inbound_queue.MAX_ATTEMPTS,))
+    await idb.db.commit()
+    await inbound_queue.run_pending(idb)
+    [(state, payload)] = await _job_payloads(idb)
+    assert state == "failed" and "body_text" not in payload
+
+
+def test_repr_of_a_message_leaks_no_text_address_or_name():
+    att = inbound_email.InboundAttachment(name=PDF_NAME, data=b"%PDF-synthetic", ref="tok-976")
+    msg = inbound_email.InboundMessage(
+        recipients=["x-abcdef@docs.oncofiles.com"],
+        sender=STRANGER,
+        auth_pass=False,
+        message_id="<repr-976-2027@example.test>",
+        return_path=STRANGER,
+        attachments=[att],
+        eml_ref="eml-976",
+        delivery_id="00000000-0000-4000-8000-000000000976",
+        body_text=BODY,
+    )
+    text = repr(msg) + str(msg) + repr(att)
+    for secret in (BODY, STRANGER, "x-abcdef", PDF_NAME, "repr-976", "tok-976", "eml-976"):
+        assert secret not in text
+    assert "auth_pass=False" in text  # the repr still says something useful
+
+
+def test_which_rows_carry_the_text_is_pinned():
+    """Untrusted rows and claimed (unverified) rows carry the text; a row the
+    sender rule trusts never does (also after a claimed row's verification)."""
+    src = (SRC / "inbound_queue.py").read_text()
+    calls = [ln.strip() for ln in src.splitlines() if "= to_payload(msg" in ln]
+    assert calls == [
+        'payload = to_payload(msg, inbound_email._find_token(msg) or "", keep_body=True)',
+        "payload = to_payload(msg, token, keep_body=not trusted)",
+    ]

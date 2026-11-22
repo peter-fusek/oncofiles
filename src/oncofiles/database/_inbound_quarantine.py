@@ -354,7 +354,9 @@ class InboundQuarantineMixin(DatabaseBase):
         without it (reject) only while no fresh approval claim holds the item.
         ``filed_count`` None keeps the stored count (a reject after a partial
         approve). A decided item's unused e-mail links are voided in the same
-        transaction (#976 infra tidy-up)."""
+        transaction (#976 infra tidy-up). An approval also clears the mail text
+        (``body_enc``, #976): the files are filed and nothing is restorable, so
+        the text is not kept; a reject keeps it for the trash (restore)."""
         if state not in ("approved", "rejected"):
             raise ValueError("bad decision state")
         if lease is not None:
@@ -364,7 +366,8 @@ class InboundQuarantineMixin(DatabaseBase):
         cursor = await self.db.execute(
             f"""UPDATE inbound_quarantine
                 SET state = ?, decided_at = ?, decided_by = ?, decided_via = ?,
-                    filed_count = COALESCE(?, filed_count), claimed_at = NULL
+                    filed_count = COALESCE(?, filed_count), claimed_at = NULL,
+                    body_enc = CASE WHEN ? = 'approved' THEN NULL ELSE body_enc END
                 WHERE id = ? AND patient_id = ? AND state = 'pending' AND {cond}""",
             (
                 state,
@@ -372,6 +375,7 @@ class InboundQuarantineMixin(DatabaseBase):
                 decided_by,
                 decided_via,
                 None if filed_count is None else int(filed_count),
+                state,
                 int(item_id),
                 patient_id,
                 *extra,
