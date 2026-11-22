@@ -167,6 +167,23 @@ def run_active() -> bool:
     )
 
 
+def _confirm_blocked(pid: str) -> bool:
+    """Does write-capable work for THIS patient block a caregiver's "Confirm
+    as is" (#919)? A curated run, a restore/confirm slot, a held patient lock
+    or a job that can write. A dry job (``_NO_WRITE_KINDS``: scorecards,
+    previews, a re-OCR compare) writes nothing and never takes the lock, so it
+    does not block one sidecar line (a classification scorecard runs for
+    hours)."""
+    if (_runs.get(pid) or {}).get("state") == "running":
+        return True
+    if (_restoring.get(pid) or {}).get("state") == "running":
+        return True
+    job = _reocr_jobs.get(pid) or {}
+    if job.get("state") == "running" and job.get("kind") not in _NO_WRITE_KINDS:
+        return True
+    return patient_lock(pid).locked()
+
+
 def run_block_reason(pid: str) -> str | None:
     """Why a new run for THIS patient must wait, or None (#665 starvation fix).
 
@@ -5066,7 +5083,7 @@ async def confirm_review_for(
     codes = document_stage.review_reason_codes(meta)
     if confirm_review.hard_codes(codes):
         return 409, {"error": "hard_check", "codes": confirm_review.hard_codes(codes)}
-    if _busy(pid) or run_block_reason(pid) or (_restoring.get(pid) or {}).get("state") == "running":
+    if _confirm_blocked(pid):
         return 409, {"error": "busy"}
     # the slot is reserved before any await: two calls can never both start,
     # and run_active() counts it (CI deploys wait for the write + index)

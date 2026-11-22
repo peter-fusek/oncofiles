@@ -303,6 +303,36 @@ async def test_busy_patient_is_refused(db, drive_env):
         assert env["d"].writes == []
 
 
+@pytest.mark.parametrize("kind", sorted(tool._NO_WRITE_KINDS))
+async def test_a_dry_job_does_not_block_a_confirm(db, drive_env, kind):
+    """A scorecard / preview / compare writes nothing and never takes the
+    lock: it must not hold a caregiver's confirm for hours."""
+    with drive_env() as env:
+        await tool.index_patient(db, PRIMARY_TEST_UUID)
+        doc = await _doc(db, env["src"])
+        tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": kind}
+        try:
+            status, _body = await tool.confirm_review_for(db, PRIMARY_TEST_UUID, doc.id)
+        finally:
+            tool._reocr_jobs.pop(PRIMARY_TEST_UUID, None)
+        assert status == 200
+
+
+@pytest.mark.parametrize("kind", ["reocr", "reread", "clinical_extract", "lab_extract"])
+async def test_a_write_capable_job_still_blocks_a_confirm(db, drive_env, kind):
+    with drive_env() as env:
+        await tool.index_patient(db, PRIMARY_TEST_UUID)
+        doc = await _doc(db, env["src"])
+        env["d"].writes.clear()
+        tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": kind}
+        try:
+            status, body = await tool.confirm_review_for(db, PRIMARY_TEST_UUID, doc.id)
+        finally:
+            tool._reocr_jobs.pop(PRIMARY_TEST_UUID, None)
+        assert (status, body) == (409, {"error": "busy"})
+        assert env["d"].writes == []
+
+
 async def test_drive_failure_fails_closed(db, drive_env):
     with drive_env() as env:
         d = env["d"]
