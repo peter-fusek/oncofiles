@@ -5782,6 +5782,8 @@ async def api_doc_detail(request: Request) -> JSONResponse:
             except Exception:
                 ai_tags = []
 
+        from oncofiles import document_stage
+
         # Parse structured_metadata (JSON string)
         structured_metadata: dict = {}
         if doc.structured_metadata:
@@ -5814,7 +5816,15 @@ async def api_doc_detail(request: Request) -> JSONResponse:
                 "gdrive_url": gdrive_url,
                 "preview_url": preview_url,
                 "category": doc.category.value if doc.category else "other",
-                "document_date": doc.document_date.isoformat() if doc.document_date else "",
+                # #919: a curated document dated by month only → "YYYY-MM"
+                "document_date": (
+                    doc.document_date.isoformat()
+                    if doc.document_date
+                    else document_stage.document_month(
+                        doc.file_id, structured_metadata, doc.filename
+                    )
+                    or ""
+                ),
                 "institution": doc.institution or "",
                 "ai_summary": doc.ai_summary or "",
                 "ai_tags": ai_tags,

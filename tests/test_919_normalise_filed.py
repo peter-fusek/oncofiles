@@ -160,17 +160,17 @@ def test_no_validated_printed_date_means_review_code_never_a_rename(front_date, 
     assert r.normalise["counts"]["review"] == 1
 
 
-def test_month_only_note_is_left_alone_with_its_code():
+def test_month_only_note_is_renamed_to_a_month_precision_name():
+    # #919 maintainer decision 2026-11-21 (was: skipped with month_only_date);
+    # the full behaviour is locked in tests/test_919_month_precision.py
     d = FakeDrive()
     note = d.add("2027-03-Advocate-Poznamky.md", d.folder[REPORT], b"Marec 2027: poznamky")
     d.items[note]["mime"] = "text/markdown"
     r = run(d, dry_run=False)
     assert r.status == "ok", r.message
-    assert d.items[note]["name"] == "2027-03-Advocate-Poznamky.md"
-    assert r.normalise["skipped"] == [
-        {"source": f"{REPORT}/2027-03-Advocate-Poznamky.md", "code": "month_only_date"}
-    ]
-    assert r.normalise["planned"] == []
+    assert d.items[note]["name"] == "20270300-JanaNovakova-Unknown-Report-Unknown-Unknown.md"
+    assert r.normalise["skipped"] == []
+    assert r.normalise["counts"]["month_precision"] == 1
 
 
 def test_text_source_with_a_printed_date_is_renamed_alone():

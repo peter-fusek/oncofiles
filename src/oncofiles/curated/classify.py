@@ -8,6 +8,9 @@ can never rename a real medical record into a wrong place:
 * ``doc_type`` must be one of the contract's DocumentTypes;
 * the date must be a real calendar date, not in the future, not before 1900,
   never a birth date from the README, and must literally appear in the text;
+  a month-precision date (``YYYY-MM``, #919) must have that month and year
+  printed on its own (not as part of a full date), outside a birth context,
+  and must not be the README birth month; it is filed as ``YYYYMM00``;
 * a suspected multi-document bundle, low confidence, or a missing date /
   type / institution → ``review_needed`` (stays in the inbox, README §6);
 * an OCR-misspelled vocabulary token is snapped back to the README spelling,
@@ -47,6 +50,7 @@ from oncofiles.curated.naming import (
     camel,
     doctor_surname,
     has_title,
+    month_token,
     subject_token,
     surname_text,
     surname_token,
@@ -69,7 +73,8 @@ date rules are binding.
 Classify ONE document from its extracted TEXT. Never use the original filename. Answer with a \
 single JSON object and nothing else:
 {{
-  "doc_date": "YYYY-MM-DD or null: clinical (exam/report/sample) date, never birth/print/scan",
+  "doc_date": "YYYY-MM-DD, or YYYY-MM only when the text prints just a month and year \
+(no day), or null: clinical (exam/report/sample) date, never birth/print/scan",
   "date_evidence": "the exact text snippet the date was read from",
   "doc_type": "one of: {doc_types}",
   "institution": "Institution token from the contract, or a new CamelCase token, or Unknown",
@@ -122,6 +127,54 @@ def date_in_text(iso: str, text: str) -> bool:
     }
     compact = re.sub(r"[ \t]+", " ", text)
     return any(re.search(r"(?<!\d)" + re.escape(v) + r"(?!\d)", compact) for v in variants)
+
+
+def _month_number(word: str) -> int | None:
+    from oncofiles.curated.verifier_clinical import _month_number as month_number
+
+    return month_number(word)
+
+
+# A day right before a month ("5.3.2027", "5. marca 2027"): then the month is
+# part of a full date, not a printed month on its own.
+_DAY_BEFORE_RE = re.compile(r"\d{1,2}\s?[./]\s?$|\d{1,2}\.\s*$")
+
+
+def month_in_text(year_month: str, text: str) -> bool:
+    """A month and year (``2027-03``) printed ON ITS OWN in ``text`` (#919):
+    ``03/2027``, ``3.2027``, ``2027-03``, ``marec 2027`` / ``brezen 2027``;
+    not as part of a full date (``15.03.2027``, ``2027-03-15``, ``5. marca 2027``)
+    and at least once outside a birth context ("narodená 03/2027")."""
+    m = re.fullmatch(r"(\d{4})-(\d{2})", year_month or "")
+    if not m or not 1 <= int(m.group(2)) <= 12:
+        return False
+    y, mm = m.group(1), m.group(2)
+    hay = _norm(text)
+    found = []
+    numeric = rf"(?<![\d.,/-])0?{int(mm)}\s?[./]\s?{y}(?!\d|[./-]\d)"
+    found += [x.span() for x in re.finditer(numeric, hay)]
+    found += [x.span() for x in re.finditer(rf"(?<![\d./-]){y}-{mm}(?!\d|-\d)", hay)]
+    for x in re.finditer(rf"(?<![a-z0-9])([a-z]+)\.?\s+{y}(?!\d)", hay):
+        if _month_number(x.group(1)) == int(mm):
+            found.append(x.span())
+    for start, end in found:
+        if _DAY_BEFORE_RE.search(hay[max(0, start - 4) : start]):
+            continue  # part of a full date
+        window = hay[max(0, start - BIRTH_WINDOW) : end + BIRTH_WINDOW]
+        if _BIRTH_CONTEXT_RE.search(window):
+            continue
+        return True
+    return False
+
+
+def _parse_month(value) -> str | None:
+    """``YYYY-MM`` (or ``YYYY-MM-00``) with a month 01–12 → ``YYYY-MM`` (#919)."""
+    if not isinstance(value, str):
+        return None
+    m = re.fullmatch(r"(\d{4})-(\d{2})(?:-00)?", value.strip())
+    if not m or not 1 <= int(m.group(2)) <= 12 or int(m.group(1)) < 1:
+        return None
+    return f"{m.group(1)}-{m.group(2)}"
 
 
 def _parse_iso(value) -> str | None:
@@ -372,13 +425,22 @@ def verify_metadata(raw: dict, text: str, iso_date: str | None) -> tuple[dict, l
         ok = (
             iso_date is not None
             and _printed_plain(evidence, text)
-            and date_in_text(iso_date, evidence)
+            and _date_printed_in(iso_date, evidence)
         )
         out["date_evidence"] = evidence if ok else None
         codes += [] if ok else ["unverified_date_evidence"]
     else:
         out["date_evidence"] = None
     return out, codes
+
+
+def _date_printed_in(iso_date: str, text: str) -> bool:
+    """``date_in_text`` for a day; for a month-precision date (``YYYY-MM`` or
+    ``YYYY-MM-00``, #919) the month and year printed in ``text``."""
+    month = _parse_month(iso_date)
+    if month is not None:
+        return month_in_text(month, text)
+    return date_in_text(iso_date, text)
 
 
 def names_patient(value: str, contract: Contract) -> bool:
@@ -492,7 +554,27 @@ def validate(
         doc_type = "Other"
 
     iso = _parse_iso(raw.get("doc_date"))
-    if iso is None:
+    month = None if iso else _parse_month(raw.get("doc_date"))
+    if month is not None:
+        # #919: a printed month and year without a day → YYYYMM00
+        y, mo = int(month[:4]), int(month[5:])
+        births = {b[:6] for b in contract.birth_dates}
+        if f"{month[:4]}{month[5:]}" in births:
+            reasons.append(f"date {month} is the patient's birth month")
+            month = None
+        elif (y, mo) > (today.year, today.month):
+            reasons.append(f"date {month} is in the future")
+            month = None
+        elif y < 1900:
+            reasons.append(f"date {month} is implausible")
+            month = None
+        elif not month_in_text(month, text or ""):
+            reasons.append(f"month {month} is not printed on its own in the document text")
+            month = None
+        elif max_age_days is not None and (today - date(y, mo, 1)).days > max_age_days:
+            reasons.append(f"date {month} is more than {max_age_days // 365} years old — suspect")
+            month = None
+    elif iso is None:
         reasons.append("no valid clinical date")
     else:
         compact = iso.replace("-", "")
@@ -581,9 +663,12 @@ def validate(
         flags.append(f"new {a.label} {a.token!r} added to README vocabulary (printed in the text)")
 
     fields = None
-    if iso is not None:
+    token = iso.replace("-", "") if iso is not None else None
+    if month is not None:
+        token = month_token(month)
+    if token is not None:
         fields = NameFields(
-            date=iso.replace("-", ""),
+            date=token,
             patient=contract.patient_token,
             institution=institution,
             doc_type=doc_type,

@@ -3303,6 +3303,9 @@
     }
 
     function fmtDate(value) {
+      // #919: a document dated by month only comes as "YYYY-MM": show "03/2027", never a day
+      var month = /^(\d{4})-(\d{2})$/.exec(value == null ? '' : String(value));
+      if (month) return month[2] + '/' + month[1];
       var d = parseTs(value);
       if (!d) return '–';
       return d.toLocaleDateString(dashLang === 'sk' ? 'sk-SK' : 'en-GB', { day: 'numeric', month: 'short', year: 'numeric' });

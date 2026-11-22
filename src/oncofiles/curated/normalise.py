@@ -19,13 +19,22 @@ Rules:
   near-standard name, else ``Unknown``; a new token is never invented here
   (the README vocabulary only grows through inbox filing, #854);
 * DocumentType is the folder's: a rename never moves a document;
-* a month-only note (``YYYY-MM-…``) is left alone with code
-  ``month_only_date`` (maintainer decision pending, #919 item 4);
+* a month-precision date (#919, maintainer decision 2026-11-21): a sidecar
+  ``doc_date: "YYYY-MM"``, a month-only note (``YYYY-MM-…``) or a ``YYYYMM00``
+  name gets the date token ``YYYYMM00`` when that month and year is printed on
+  its own in the text and passes ``classify.validate``'s month checks (not the
+  README birth month, not in the future, not before 1900). After the rename
+  a SIDECAR's front matter gets ``doc_date: "YYYY-MM"`` and
+  ``doc_date_precision: month`` (key-only edit, body byte for byte;
+  ``with_month_keys``); an original (a text note without a sidecar) is never
+  written: its ``YYYYMM00`` name means month precision. A full printed day
+  always wins over a month;
 * a Google-native file keeps no extension (#922 rule); one whose title ends in
   an extension (``….docx``) keeps that one;
-* hard guards (#946 dry run): a target the checker refuses is skipped with
-  ``target_not_standard``, one whose extension differs from the source's with
-  ``extension_changed`` (an extensionless binary included); never planned.
+* hard guards (#946 dry run), month-precision targets included: a target the
+  checker refuses is skipped with ``target_not_standard``, one whose extension
+  differs from the source's with ``extension_changed`` (an extensionless
+  binary included); never planned.
 
 Pure functions, no I/O. Env (runtime, read at call time):
 ``CURATED_NORMALISE_FILED`` (default **false**: a missing env never renames;
@@ -35,22 +44,27 @@ and ``CURATED_NORMALISE_MAX`` (renames per real run, default 10).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
 from datetime import date
 
-from oncofiles.curated.classify import date_in_text
+from oncofiles.curated.classify import _parse_month, date_in_text, month_in_text
 from oncofiles.curated.contract import Contract
 from oncofiles.curated.naming import (
     NATIVE_EXT,
+    PRECISION_KEY,
+    PRECISION_MONTH,
     UNKNOWN,
     NameFields,
     build_filename,
     camel,
+    date_precision,
     has_title,
     is_google_native,
     is_standard,
+    month_token,
     subject_token,
     surname_token,
     with_collision_suffix,
@@ -60,7 +74,6 @@ DEFAULT_MAX = 10
 
 # Codes (report only; never document content).
 CODE_NAME_NOT_STANDARD = "name_not_standard"  # review: no rename possible
-CODE_MONTH_ONLY = "month_only_date"  # skipped: maintainer decision pending
 CODE_NO_SIDECAR = "no_sidecar"  # skipped: the backfill adds one first
 # Hard guards of the planner (#946 dry-run finding), skipped with these codes:
 CODE_TARGET_NOT_STANDARD = "target_not_standard"  # naming.is_standard(target) False
@@ -74,6 +87,8 @@ WHY_NO_FREE_NAME = "no_free_name"
 # ``2027-03-…`` without a day: a month-precision note. A dashed full date
 # (``2027-03-15_…``) is not month-only.
 _MONTH_ONLY_RE = re.compile(r"^\d{4}-\d{2}(?!\d)(?!-\d{2}(?!\d))")
+_COMPACT_MONTH_RE = re.compile(r"^(\d{4})(\d{2})00(?!\d)")  # a YYYYMM00 name
+_FRONT_BLOCK_RE = re.compile(r"\A---\n(.*?)\n---(?=\n|\Z)", re.S)
 _COMPACT_DATE_RE = re.compile(r"^(\d{4})(\d{2})(\d{2})(?!\d)")
 _DASHED_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?!\d)")
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9]+$")
@@ -179,6 +194,57 @@ def validated_date(candidates, text: str, contract: Contract, today: date) -> st
     return None
 
 
+def name_month(name: str) -> str | None:
+    """``YYYY-MM`` of a month-only name (``2027-03-…``) or a ``YYYYMM00`` name."""
+    if is_month_only(name):
+        return name[:7]
+    m = _COMPACT_MONTH_RE.match(name or "")
+    return f"{m.group(1)}-{m.group(2)}" if m else None
+
+
+def validated_month(candidates, text: str, contract: Contract, today: date) -> str | None:
+    """The first candidate month (``YYYY-MM`` / ``YYYY-MM-00``) printed on its own
+    in ``text`` that passes ``classify.validate``'s month checks, as ``YYYYMM00``."""
+    births = {b[:6] for b in contract.birth_dates}
+    for value in candidates:
+        month = _parse_month(value)
+        if month is None:
+            continue
+        y, mo = int(month[:4]), int(month[5:])
+        if f"{y:04d}{mo:02d}" in births or (y, mo) > (today.year, today.month) or y < 1900:
+            continue
+        if month_in_text(month, text):
+            return month_token(month)
+    return None
+
+
+def with_month_keys(text: str, year_month: str) -> str | None:
+    """``text`` with ``doc_date: "YYYY-MM"`` and ``doc_date_precision: "month"``
+    in its front matter (#919), or None when nothing needs to change or the
+    front matter cannot be edited safely (an unclosed ``---`` block).
+
+    Only those two keys change; everything after the front matter stays byte
+    for byte. A text without front matter gets a new block in front of it.
+    """
+    want = {"doc_date": year_month, PRECISION_KEY: PRECISION_MONTH}
+    m = _FRONT_BLOCK_RE.match(text)
+    if m is None:
+        if text.startswith("---"):
+            return None  # looks like front matter but is not closed: never guess
+        block = "\n".join(f"{k}: {json.dumps(v)}" for k, v in want.items())
+        return f"---\n{block}\n---\n{text}"
+    front, rest = m.group(1), text[m.end() :]
+    new = front
+    for key, value in want.items():
+        line = f"{key}: {json.dumps(value)}"
+        pattern = re.compile(rf"^{re.escape(key)}:.*$", re.M)
+        if pattern.search(new):
+            new = pattern.sub(lambda _m, line=line: line, new, count=1)
+        else:
+            new = f"{new}\n{line}"
+    return None if new == front else f"---\n{new}\n---{rest}"
+
+
 def _known(contract: Contract) -> dict[str, str]:
     banned = {contract.patient_token.lower(), UNKNOWN.lower()}
     return {t.lower(): t for t in contract.known_tokens if t.lower() not in banned}
@@ -205,6 +271,7 @@ class Plan:
     code: str | None = None
     why: str | None = None
     date_source: str | None = None  # "front_matter" | "filename"
+    precision: str | None = None  # "day" | "month" (#919)
 
 
 def plan_name(
@@ -222,8 +289,6 @@ def plan_name(
 
     ``taken``: names already in the folder, the document's own pair excluded.
     """
-    if is_month_only(name):
-        return Plan(code=CODE_MONTH_ONLY)
     native = is_google_native(mime)
     parts = near_standard_parts(name, contract, native=native)
     name_date = _DASHED_DATE_RE.match(name) or _COMPACT_DATE_RE.match(name)
@@ -233,6 +298,12 @@ def plan_name(
     if day is None and name_date:
         day = validated_date([name_date.group(0)], text, contract, today)
         source = "filename"
+    if day is None:  # #919: a month and year printed without a day
+        day = validated_month([front_date], text, contract, today)
+        source = "front_matter"
+        if day is None and (month := name_month(name)):
+            day = validated_month([month], text, contract, today)
+            source = "filename"
     if day is None:
         return Plan(code=CODE_NAME_NOT_STANDARD, why=WHY_NO_PRINTED_DATE)
 
@@ -285,4 +356,4 @@ def plan_name(
         return Plan(code=CODE_EXTENSION_CHANGED)
     if final == name:
         return Plan(code=CODE_NAME_NOT_STANDARD, why=WHY_BUILT_NOT_STANDARD)
-    return Plan(target=final, date_source=source)
+    return Plan(target=final, date_source=source, precision=date_precision(day))
