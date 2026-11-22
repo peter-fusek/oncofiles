@@ -1069,7 +1069,8 @@
       // #950 phase 2: welcome@ mail that did not start a trial
       welcome_auth_failed: ['welcome@: overenie odosielateľa neprešlo', 'welcome@: sender check failed'],
       welcome_not_gmail: ['welcome@: odosielateľ nie je z Gmailu', 'welcome@: sender is not on Gmail'],
-      caregiver_multiple_patients: ['welcome@: opatrovateľ viacerých pacientov', 'welcome@: caregiver of several patients']
+      caregiver_multiple_patients: ['welcome@: opatrovateľ viacerých pacientov', 'welcome@: caregiver of several patients'],
+      not_live: ['welcome@: ešte nie je spustené (INBOUND_GO_LIVE)', 'welcome@: not live yet (INBOUND_GO_LIVE)']
     };
 
     // ── First steps of a welcome@ trial (#950 phase 2) ──────────────────

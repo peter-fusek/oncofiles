@@ -33,6 +33,8 @@ INBOUND_WELCOME_ENVS = (
 # Non-secret runtime switch (#950): the e-mail CTA turns on only when infra
 # sets ``INBOUND_GO_LIVE=true``, even with every variable above already set
 # (they are, in production), so infra decides the moment. Default off.
+# It also gates welcome@ trial creation itself (``inbound_welcome.admit``,
+# reason ``not_live``), not only the CTA; existing patients are not affected.
 GO_LIVE_ENV = "INBOUND_GO_LIVE"
 
 # Short browser/proxy cache: a mode flip shows up on the landing within a minute.
