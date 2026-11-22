@@ -242,20 +242,58 @@ EXAMPLES_BLOCK = _examples_block()
 
 # Identifies the request ``propose`` builds around the README and the text; any
 # edit to the prompt, the examples or the text cut rotates it, so cached
-# proposals (#936, ``tools.curated.propose_cache_key``) miss.
-PROMPT_VERSION = hashlib.sha256(
+# proposals (#936, ``tools.curated.propose_cache_key``) miss. ``PROMPT_VERSION``
+# is the v1 request (template + text cut, the formula of #936/#965);
+# ``PROMPT_VERSION_V2`` the #926 request (template + worked examples + cut).
+PROMPT_VERSION = hashlib.sha256(f"{SYSTEM_TEMPLATE}\n{MAX_TEXT_CHARS}".encode()).hexdigest()[:16]
+PROMPT_VERSION_V2 = hashlib.sha256(
     f"{SYSTEM_TEMPLATE}\n{EXAMPLES_BLOCK}\n{MAX_TEXT_CHARS}".encode()
 ).hexdigest()[:16]
 
-# CURATED_CLASSIFY_SAMPLING → llm.SAMPLING_PROFILES (#926)
+# CURATED_CLASSIFY_PROMPT (#926, merged switched off): ``v1`` (default) = the
+# request before #926 (template only, the model's default reasoning,
+# temperature 0, ``/no_think`` in the system prompt); ``v2`` = reasoning on,
+# the sampling profile of ``sampling_mode``, the worked examples.
+PROMPT_VARIANTS = ("v1", "v2")
+_warned_variants: set[str] = set()
+
+# CURATED_CLASSIFY_SAMPLING → llm.SAMPLING_PROFILES (#926; v2 only)
 SAMPLING_MODES: dict[str, str] = {"thinking": "qwen_thinking", "greedy": "greedy"}
 _warned_modes: set[str] = set()
 
 
+def prompt_variant(override: str | None = None) -> str:
+    """The effective classification request: ``override`` (a scorecard job,
+    validated by the caller) or ``CURATED_CLASSIFY_PROMPT``; an unknown env
+    value is ``v1`` with one warning per value."""
+    variant = (override or config.CURATED_CLASSIFY_PROMPT or "v1").strip().lower()
+    if variant in PROMPT_VARIANTS:
+        return variant
+    if variant not in _warned_variants:
+        _warned_variants.add(variant)
+        logger.warning("CURATED_CLASSIFY_PROMPT=%r unknown: using 'v1'", variant[:20])
+    return "v1"
+
+
+def prompt_version(variant: str | None = None) -> str:
+    """The prompt hash of the effective (or the given) variant."""
+    return PROMPT_VERSION_V2 if prompt_variant(variant) == "v2" else PROMPT_VERSION
+
+
+def cache_version() -> str:
+    """What the #936 proposal cache keys on: v1 = ``PROMPT_VERSION`` exactly (the
+    key is byte-identical to before the switch); v2 = its prompt hash plus the
+    sampling mode, so neither a variant switch nor a sampling rollback reuses
+    another request's proposals."""
+    if prompt_variant() == "v2":
+        return f"{PROMPT_VERSION_V2}:{sampling_mode()}"
+    return PROMPT_VERSION
+
+
 def sampling_mode(override: str | None = None) -> str:
-    """The effective classification sampling mode: ``override`` (a scorecard
-    job, validated by the caller) or ``CURATED_CLASSIFY_SAMPLING``; an unknown
-    env value is ``thinking`` with one warning per value."""
+    """The effective classification sampling mode (v2 only): ``override`` (a
+    scorecard job, validated by the caller) or ``CURATED_CLASSIFY_SAMPLING``;
+    an unknown env value is ``thinking`` with one warning per value."""
     mode = (override or config.CURATED_CLASSIFY_SAMPLING or "thinking").strip().lower()
     if mode in SAMPLING_MODES:
         return mode
@@ -265,13 +303,12 @@ def sampling_mode(override: str | None = None) -> str:
     return "thinking"
 
 
-def system_prompt(contract: Contract) -> str:
-    return (
-        SYSTEM_TEMPLATE.format(
-            readme=contract.readme_text, doc_types=", ".join(sorted(contract.doc_types))
-        )
-        + EXAMPLES_BLOCK
+def system_prompt(contract: Contract, variant: str | None = None) -> str:
+    """v1: the template; v2: the template plus the worked examples."""
+    system = SYSTEM_TEMPLATE.format(
+        readme=contract.readme_text, doc_types=", ".join(sorted(contract.doc_types))
     )
+    return system + EXAMPLES_BLOCK if prompt_variant(variant) == "v2" else system
 
 
 @dataclass
@@ -368,20 +405,32 @@ _STAT_KEYS = ("finish_reason", "prompt_tokens", "completion_tokens", "reasoning_
 
 
 def propose(
-    contract: Contract, text: str, *, sampling: str | None = None, stats: dict | None = None
+    contract: Contract,
+    text: str,
+    *,
+    variant: str | None = None,
+    sampling: str | None = None,
+    stats: dict | None = None,
 ) -> dict:
     """Ask the local model for the fields (blocking).
 
-    Reasoning is explicitly on (#926) with the sampling profile of
-    ``sampling_mode(sampling)``. ``stats`` (optional) receives counts only:
-    ``finish_reason``, token counts of the last call, ``retried``, ``sampling``."""
-    system = system_prompt(contract)
+    ``prompt_variant(variant)`` = ``v1`` (default): the pre-#926 request, byte
+    for byte (template only, ``llm.chat`` defaults). ``v2`` (#926): reasoning
+    explicitly on, the sampling profile of ``sampling_mode(sampling)``, the
+    worked examples; ``sampling`` is ignored under v1. ``stats`` (optional)
+    receives counts only: ``finish_reason``, token counts of the last call,
+    ``retried``, ``prompt_variant``, ``sampling`` (``legacy`` under v1)."""
+    chosen = prompt_variant(variant)
+    system = system_prompt(contract, chosen)
     user = f"TEXT:\n{text[:MAX_TEXT_CHARS]}"
-    mode = sampling_mode(sampling)
-    kwargs = {"thinking": True, **llm.sampling_profile(SAMPLING_MODES[mode])}
+    if chosen == "v2":
+        mode = sampling_mode(sampling)
+        kwargs = {"thinking": True, **llm.sampling_profile(SAMPLING_MODES[mode])}
+    else:
+        mode, kwargs = "legacy", {}
     info: dict = {}
     if stats is not None:
-        stats.update(sampling=mode, retried=False)
+        stats.update(prompt_variant=chosen, sampling=mode, retried=False)
     try:
         answer = llm.chat(system, user, info=info, **kwargs)
     except llm.LocalLLMError as exc:

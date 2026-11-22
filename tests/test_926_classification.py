@@ -9,6 +9,7 @@ documents are the invented worked examples of ``classify.EXAMPLES`` (dates
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import UTC, date, datetime
@@ -33,6 +34,16 @@ CONTRACT = parse_contract(README.replace(
 ))  # fmt: skip
 TODAY = date(2028, 1, 10)  # after every invented example date
 URL = "http://llm.test/v1"
+# classify.PROMPT_VERSION on main after #965 (template + text cut). The v1
+# request must keep it: change it only together with a deliberate v1 change.
+MAIN_PROMPT_VERSION = "0b63a86cd73d24c3"
+
+
+@pytest.fixture(autouse=True)
+def _v2(monkeypatch):
+    """This module tests the #926 request: CURATED_CLASSIFY_PROMPT=v2 unless a
+    test sets v1 (the production default) itself."""
+    monkeypatch.setattr(config, "CURATED_CLASSIFY_PROMPT", "v2")
 
 
 @pytest.fixture
@@ -210,6 +221,97 @@ def test_sidecar_stores_only_verified_metadata_and_never_a_review_reason():
     assert "C18.7" not in rec.tags and "C50.4" in rec.tags
 
 
+# ── 0. the switch: v1 (default) is main's request byte for byte ──────────
+
+
+@pytest.mark.parametrize("env", ["v1", "", "v3"])
+def test_v1_request_and_prompt_version_are_mains(local_llm, bodies, monkeypatch, env):
+    """With CURATED_CLASSIFY_PROMPT unset (config default v1), empty or unknown,
+    ``propose`` sends exactly what main's ``propose`` sent after #965:
+    ``llm.chat(SYSTEM_TEMPLATE.format(...), "TEXT:\\n" + text[:cut])`` with the
+    chat defaults (no reasoning flag, temperature 0, ``/no_think``), and the
+    cache key and PROMPT_VERSION are main's."""
+    monkeypatch.setattr(config, "CURATED_CLASSIFY_PROMPT", env)
+    text = classify.EXAMPLES[0][0]
+    classify.propose(CONTRACT, text, sampling="thinking")  # sampling ignored under v1
+    main_system = classify.SYSTEM_TEMPLATE.format(
+        readme=CONTRACT.readme_text, doc_types=", ".join(sorted(CONTRACT.doc_types)))  # fmt: skip
+    llm.chat(main_system, f"TEXT:\n{text[: classify.MAX_TEXT_CHARS]}")
+    via_propose, via_main = bodies  # exactly two requests
+    assert via_propose == via_main
+    body = json.loads(bodies[0])
+    assert "chat_template_kwargs" not in body and body["temperature"] == 0.0
+    assert body["messages"][0]["content"].endswith("\n/no_think")
+    assert "WORKED EXAMPLES" not in bodies[0].decode()
+    assert classify.prompt_variant() == "v1"
+    assert classify.PROMPT_VERSION == MAIN_PROMPT_VERSION
+    assert classify.prompt_version() == classify.cache_version() == MAIN_PROMPT_VERSION
+    readme_sha = hashlib.sha256(CONTRACT.readme_text.encode("utf-8")).hexdigest()
+    main_key = hashlib.sha256(
+        f"{MAIN_PROMPT_VERSION}\n{CONTRACT.version}\n{CONTRACT.patient_token}\n"
+        f"{readme_sha}\n{text}".encode()
+    ).hexdigest()
+    assert tool.propose_cache_key(CONTRACT, text) == main_key
+
+
+def test_unknown_variant_warns_once(monkeypatch, caplog):
+    monkeypatch.setattr(config, "CURATED_CLASSIFY_PROMPT", "v9-unknown")
+    classify._warned_variants.discard("v9-unknown")
+    with caplog.at_level("WARNING"):
+        assert classify.prompt_variant() == "v1"
+        assert classify.prompt_variant() == "v1"
+    assert sum("CURATED_CLASSIFY_PROMPT" in r.message for r in caplog.records) == 1
+    assert classify.prompt_variant("v2") == "v2"
+
+
+def test_v2_prompt_version_and_cache_key_differ(monkeypatch):
+    assert classify.prompt_version() == classify.PROMPT_VERSION_V2 != MAIN_PROMPT_VERSION
+    key_v2 = tool.propose_cache_key(CONTRACT, "x")
+    monkeypatch.setattr(config, "CURATED_CLASSIFY_SAMPLING", "greedy")
+    assert tool.propose_cache_key(CONTRACT, "x") != key_v2  # a sampling rollback misses
+    monkeypatch.setattr(config, "CURATED_CLASSIFY_PROMPT", "v1")
+    assert tool.propose_cache_key(CONTRACT, "x") != key_v2
+
+
+def test_v1_sidecar_is_the_pre_926_front_matter(monkeypatch):
+    """Under v1 the verified-metadata block is off: raw classifier fields, no
+    date_evidence / metadata_unverified / summary_source keys."""
+    monkeypatch.setattr(config, "CURATED_CLASSIFY_PROMPT", "v1")
+    raw = {**classify.EXAMPLES[0][1], "diagnoses": ["C50.4", "C18.7"],
+           "doctor": "MUDr. Peter Javor"}  # fmt: skip
+    text = classify.EXAMPLES[0][0]
+    cls = classify.validate(CONTRACT, raw, text, today=TODAY)
+    ex = extract.Extraction(text, "text_layer", 1, "pymupdf")
+    item = Item(id="f1", name="scan.pdf", mime="application/pdf", parent="p")
+    side = runner.render_sidecar(source_name="scan.pdf", contract=CONTRACT, item=item,
+                                 extraction=ex, cls=cls,
+                                 now=datetime(2028, 1, 10, tzinfo=UTC))  # fmt: skip
+    front, _ = indexer.parse_sidecar(side)
+    assert front["diagnoses"] == ["C50.4", "C18.7"] and front["doctor"] == "MUDr. Peter Javor"
+    assert front["hospital_unit"] == "Onkologická ambulancia"
+    for key in ("date_evidence", "metadata_unverified", "summary_source"):
+        assert key not in front
+    keys = list(front)
+    assert keys.index("doc_date") < keys.index("institution") < keys.index("doctor")
+
+
+def test_v2_propose_retries_with_the_same_reasoning_request(monkeypatch):
+    calls = []
+
+    def fake_chat(system, user, **k):
+        calls.append({key: v for key, v in k.items() if key != "info"})
+        if len(calls) == 1:
+            raise llm.LocalLLMAnswerError("local LLM answer truncated: reasoning budget")
+        return json.dumps(classify.EXAMPLES[0][1])
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    classify.propose(CONTRACT, classify.EXAMPLES[0][0])
+    first, retry = calls
+    assert "max_tokens" not in first and retry["max_tokens"] == 2 * llm.REASONING_BUDGET
+    assert first["thinking"] is True and retry["thinking"] is True
+    assert first["temperature"] == retry["temperature"] == 1.0
+
+
 # ── 4. the scorecard measures the step-2 request ─────────────────────────
 # (fixtures and data of the step-1 scorecard tests)
 from tests.test_926_classify_scorecard import (  # noqa: E402
@@ -226,13 +328,20 @@ async def test_scorecard_sends_the_step2_request_and_echoes_the_override(
     seeded,  # noqa: F811
     scorecard_env,  # noqa: F811
 ):
-    status = await _run(seeded, label="after-926", sampling="greedy")
+    monkeypatch_env = config.CURATED_CLASSIFY_PROMPT
+    config.CURATED_CLASSIFY_PROMPT = "v1"  # the env is the default; the job overrides it
+    try:
+        status = await _run(seeded, label="after-926", prompt_variant="v2", sampling="greedy")
+    finally:
+        config.CURATED_CLASSIFY_PROMPT = monkeypatch_env
     report = status["report"]
+    assert report["settings"]["prompt_variant"] == "v2"
     assert report["settings"]["sampling"] == "greedy"
     assert report["settings"]["thinking"] == "on"
-    assert report["settings"]["overrides"] == {"sampling": "greedy"}
+    assert report["settings"]["overrides"] == {"prompt_variant": "v2", "sampling": "greedy"}
     assert report["versions"]["sampling"] == "greedy"
-    assert report["versions"]["prompt_version"] == classify.PROMPT_VERSION
+    assert report["versions"]["prompt_variant"] == "v2"
+    assert report["versions"]["prompt_version"] == classify.PROMPT_VERSION_V2
     assert SEEN_KWARGS
     assert all(kw == {"thinking": True, "temperature": 0.0} for kw in SEEN_KWARGS)
     # token counts come from propose's stats (counts only, never the answer)
@@ -243,3 +352,42 @@ async def test_scorecard_sends_the_step2_request_and_echoes_the_override(
 async def test_scorecard_refuses_an_unknown_sampling(seeded, scorecard_env):  # noqa: F811
     out = json.loads(await tool.curated_classify_scorecard(_ctx(seeded), [DOC_A], sampling="hot"))
     assert "sampling" in out["error"]
+
+
+async def test_scorecard_refuses_sampling_under_v1_and_an_unknown_variant(
+    seeded,  # noqa: F811
+    scorecard_env,  # noqa: F811
+    monkeypatch,
+):
+    ctx = _ctx(seeded)
+    out = json.loads(await tool.curated_classify_scorecard(
+        ctx, [DOC_A], prompt_variant="v1", sampling="greedy"))  # fmt: skip
+    assert "v2" in out["error"]
+    monkeypatch.setattr(config, "CURATED_CLASSIFY_PROMPT", "v1")
+    out = json.loads(await tool.curated_classify_scorecard(ctx, [DOC_A], sampling="greedy"))
+    assert "v2" in out["error"]
+    out = json.loads(await tool.curated_classify_scorecard(ctx, [DOC_A], prompt_variant="v3"))
+    assert "prompt_variant" in out["error"]
+
+
+async def test_before_v1_after_v2_on_the_same_code_shows_the_definition_change(
+    seeded,  # noqa: F811
+    scorecard_env,  # noqa: F811
+    monkeypatch,
+):
+    """Infra's measurement: before = v1, after = v2, same deployed code."""
+    monkeypatch.setattr(config, "CURATED_CLASSIFY_PROMPT", "v1")
+    before = (await _run(seeded, label="before-926", prompt_variant="v1"))["report"]
+    assert before["versions"]["prompt_variant"] == "v1"
+    assert before["versions"]["prompt_version"] == MAIN_PROMPT_VERSION
+    assert before["settings"]["sampling"] == "legacy"
+    assert all(kw == {} for kw in SEEN_KWARGS)
+    SEEN_KWARGS.clear()
+    after = (await _run(seeded, label="after-926", compare_to_label="before-926",
+                        prompt_variant="v2"))["report"]  # fmt: skip
+    assert all(kw.get("thinking") is True for kw in SEEN_KWARGS)
+    assert after["baseline_comparable"] is True and after["delta"] is not None
+    changed = after["definition_changed"]
+    assert changed["prompt_variant"] == ["v1", "v2"]
+    assert changed["prompt_version"] == [MAIN_PROMPT_VERSION, classify.PROMPT_VERSION_V2]
+    assert changed["sampling"] == ["legacy", "thinking"]

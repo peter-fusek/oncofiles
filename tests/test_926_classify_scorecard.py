@@ -75,6 +75,7 @@ def local_llm(monkeypatch):
     monkeypatch.setattr(config, "LOCAL_LLM_MODEL", "test-model")
     monkeypatch.setattr(config, "LOCAL_LLM_API_KEY", "")
     monkeypatch.setattr(config, "LLM_REASONING_MARKER", False)
+    monkeypatch.setattr(config, "CURATED_CLASSIFY_PROMPT", "v1")  # the production default
 
 
 # ── verify_metadata (pure; not wired into the sidecar in step 1) ─────────
@@ -257,12 +258,12 @@ async def test_scorecard_counts_only_and_writes_nothing_but_its_row(seeded, scor
 
 async def test_scorecard_sends_todays_production_request(seeded, scorecard_env):
     """The scorecard's model calls are exactly what a curated run's
-    ``propose`` sends (step 2: reasoning on, the env's sampling profile)."""
+    ``propose`` sends; with CURATED_CLASSIFY_PROMPT unset that is the v1
+    (pre-#926) request: no extra kwargs. v2: test_926_classification."""
     await _run(seeded, label="baseline")
-    mode = classify.sampling_mode()
-    expected = {"thinking": True, **llm.sampling_profile(classify.SAMPLING_MODES[mode])}
-    assert SEEN_KWARGS and all(kw == expected for kw in SEEN_KWARGS)
-    assert csc.request_settings() == {"sampling": mode, "thinking": "on"}
+    assert SEEN_KWARGS and all(kw == {} for kw in SEEN_KWARGS)
+    assert csc.request_settings() == {"prompt_variant": "v1", "sampling": "legacy",
+                                      "thinking": "default"}  # fmt: skip
 
 
 async def test_second_scorecard_compares_with_the_first(seeded, scorecard_env):

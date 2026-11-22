@@ -407,12 +407,13 @@ def test_propose_retries_once_with_double_budget_when_truncated(monkeypatch):
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     assert classify.propose(CONTRACT, TEXT)["doc_type"] == "Report"
-    first, retry = calls
-    assert "max_tokens" not in first and retry["max_tokens"] == 2 * llm.REASONING_BUDGET
-    # #926: both calls reason explicitly with the same sampling profile
-    assert first["thinking"] is True and retry["thinking"] is True
-    assert first["temperature"] == retry["temperature"]
-    assert retry["timeout"] > 0
+    # CURATED_CLASSIFY_PROMPT=v1 (default): the pre-#926 request, no extra kwargs
+    # (v2's retry: tests/test_926_classification.py)
+    # (``info`` is an output dict for token counts, never part of the request)
+    sent = [{k: v for k, v in c.items() if k != "info"} for c in calls]
+    first, retry = sent
+    assert first == {} and retry["max_tokens"] == 2 * llm.REASONING_BUDGET
+    assert calls[1]["timeout"] > 0
 
 
 def test_propose_does_not_retry_other_llm_errors(monkeypatch):
