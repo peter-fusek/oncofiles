@@ -9,7 +9,10 @@ The model "thinks" by default; ``/no_think`` is sent in the system prompt
 (and, with ``thinking=False``, in the last user message, #689) and any
 ``<think>`` block or echoed ``/no_think`` is stripped from the answer.
 With ``LLM_REASONING_MARKER`` (#770) no ``/no_think`` is sent; thinking-off
-calls end the system message with ``REASONING_OFF_MARKER`` instead.
+calls end the system message with ``REASONING_OFF_MARKER`` instead. An
+explicit ``thinking=True`` call (#926, classification) never carries
+``/no_think`` nor the off-marker: its reasoning must not hang on a template
+that might one day honour the soft switch.
 """
 
 from __future__ import annotations
@@ -49,6 +52,21 @@ CONTEXT_MARGIN = 1_024  # chat template, tokeniser drift
 CHARS_PER_TOKEN = 3.0  # Slovak/Czech medical text, measured ~3.0-3.5 (2026-11-09)
 IMAGE_TOKENS = 3_000  # one page PNG at 150 dpi (vision models tile ~28 px patches)
 MIN_ANSWER_TOKENS = 1_500  # below this the model cannot reason and answer
+
+# Named sampling profiles (#767, #926). The Qwen3.8 model card: thinking
+# T 1.0 / top_p 0.95 / top_k 20, non-thinking T 0.7 / top_p 0.8 / top_k 20 /
+# presence_penalty 1.5; greedy decoding (T 0) makes Qwen3-family models loop,
+# worst with thinking off. ``greedy`` is the request every caller sent before.
+SAMPLING_PROFILES: dict[str, dict] = {
+    "greedy": {"temperature": 0.0},
+    "qwen_thinking": {"temperature": 1.0, "top_p": 0.95, "top_k": 20},
+    "qwen_non_thinking": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5},
+}
+
+
+def sampling_profile(name: str) -> dict:
+    """A copy of one named profile's request parameters (``chat`` kwargs)."""
+    return dict(SAMPLING_PROFILES[name])
 
 
 def estimate_prompt_tokens(system: str, user_content: list[dict] | str) -> int:
@@ -226,8 +244,11 @@ def _with_no_think(user_content: list[dict] | str) -> list[dict] | str:
 
 
 def _system_content(system: str, thinking: bool | None, marker: bool) -> str:
-    """System message text. Marker off (default): ``/no_think`` appended, as
-    before #770. Marker on: the marker only with ``thinking=False``, else bare."""
+    """System message text. ``thinking=True`` (#926): always bare. Marker off
+    (default): ``/no_think`` appended, as before #770. Marker on: the marker
+    only with ``thinking=False``, else bare."""
+    if thinking is True:
+        return system
     if not marker:
         return system + "\n" + NO_THINK
     if thinking is False:

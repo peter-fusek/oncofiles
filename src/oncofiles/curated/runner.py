@@ -410,21 +410,37 @@ def render_sidecar(
 ) -> str:
     raw = cls.raw if cls else {}
     fields = cls.fields if cls else None
+    # a day (2027-03-05) or, for a month-precision date (#919), 2027-03
+    iso = naming_mod.iso_of(fields.date) if fields else None
+    # #926 (CURATED_CLASSIFY_PROMPT=v2 only): classifier metadata only as far as
+    # it is printed in the text. Under v1 (default) the front matter is exactly
+    # the pre-#926 one: raw fields, no date_evidence / metadata_unverified /
+    # summary_source keys.
+    verified = classify_mod.prompt_variant() == "v2"
+    if verified:
+        checked, unverified = classify_mod.verify_metadata(
+            raw, extraction.text if extraction else "", iso
+        )
+    else:
+        checked = {"doctor": raw.get("doctor"), "hospital_unit": raw.get("hospital_unit"),
+                   "diagnoses": raw.get("diagnoses") or []}  # fmt: skip
+        unverified = []
     meta = {
         "source_file": source_name,
         "patient": contract.patient_display,
-        "doc_date": naming_mod.iso_of(fields.date) if fields else None,
+        "doc_date": iso,
         # #919: only a month-precision date carries the key (day sidecars unchanged)
         **(
             {naming_mod.PRECISION_KEY: naming_mod.PRECISION_MONTH}
             if fields and naming_mod.date_precision(fields.date) == naming_mod.PRECISION_MONTH
             else {}
         ),
+        **({"date_evidence": checked["date_evidence"]} if verified else {}),
         "institution": fields.institution if fields else raw.get("institution"),
         "doc_type": cls.doc_type if cls else None,
-        "doctor": raw.get("doctor"),
-        "hospital_unit": raw.get("hospital_unit"),
-        "diagnoses": raw.get("diagnoses") or [],
+        "doctor": checked["doctor"],
+        "hospital_unit": checked["hospital_unit"],
+        "diagnoses": checked["diagnoses"],
         "language": raw.get("language"),
         "pages": extraction.pages if extraction else None,
         "extraction": extraction.method if extraction else None,
@@ -438,7 +454,11 @@ def render_sidecar(
         "review_needed": bool(cls.review_needed) if cls else True,
         "review_reasons": (cls.reasons if cls else []) + ([note] if note else []),
         "flags": cls.flags if cls else [],
+        # #926 v2: dropped fields, never a review reason
+        **({"metadata_unverified": unverified} if verified else {}),
         "summary": raw.get("summary"),
+        # #926 v2: written by the local model, not checked against the text
+        **({"summary_source": "local_model" if raw.get("summary") else None} if verified else {}),
         "processed_by": "oncofiles curated pipeline (#562)",
     }
     meta.update(extra or {})

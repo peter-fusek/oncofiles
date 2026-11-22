@@ -156,6 +156,18 @@ LLM_EXTRACT_THINKING: str = os.environ.get("LLM_EXTRACT_THINKING", "off").strip(
 # models loop, especially with thinking off). Any other value is treated as
 # "qwen". Re-OCR and classification are not affected.
 LLM_EXTRACT_SAMPLING: str = os.environ.get("LLM_EXTRACT_SAMPLING", "qwen").strip().lower()
+# Curated classification request (#926, merged switched off): "v1" (default,
+# the request before #926: no explicit reasoning, temperature 0, /no_think, no
+# worked examples) or "v2" (reasoning on + CURATED_CLASSIFY_SAMPLING + worked
+# examples). Unknown values → "v1" + a warning. Runtime env only.
+CURATED_CLASSIFY_PROMPT: str = os.environ.get("CURATED_CLASSIFY_PROMPT", "v1").strip().lower()
+# Sampling of the curated classification call under CURATED_CLASSIFY_PROMPT=v2
+# (#926, which asks with thinking on): "thinking" (default, the Qwen3.8 model-card
+# thinking profile T 1.0 / top_p 0.95 / top_k 20) or "greedy" (temperature 0,
+# the pre-#926 request; rollback only). Unknown values → "thinking" + a warning.
+CURATED_CLASSIFY_SAMPLING: str = (
+    os.environ.get("CURATED_CLASSIFY_SAMPLING", "thinking").strip().lower()
+)
 # Answer budget (max_tokens) per page with thinking OFF (#767). A long lab
 # page (~40 items) needs well under 4000 tokens. Re-derive it from measured
 # data: p95 completion_tokens of the preview reports x 1.5. With thinking ON

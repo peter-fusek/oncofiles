@@ -60,14 +60,15 @@ def bodies(monkeypatch):
 
 
 def _legacy_body(system, user, *, thinking=None, max_tokens=llm.REASONING_BUDGET, **extra):
-    """The request body exactly as llm.chat built it before #770."""
+    """The request body exactly as llm.chat built it before #770 — except that
+    an explicit ``thinking=True`` call has carried no ``/no_think`` since #926."""
     payload = {
         "model": "test-model",
         "temperature": extra.pop("temperature", 0.0),
         "max_tokens": llm.clamp_budget(max_tokens, llm.estimate_prompt_tokens(system, user)),
         "reasoning_effort": "low",
         "messages": [
-            {"role": "system", "content": system + "\n/no_think"},
+            {"role": "system", "content": system if thinking is True else system + "\n/no_think"},
             {"role": "user", "content": user},
         ],
     }
@@ -251,6 +252,8 @@ def test_default_extractor_request_has_marker_while_other_callers_stay_legacy(
     assert body["temperature"] == 0.7 and body["top_p"] == 0.8 and body["top_k"] == 20
     classify.propose(CONTRACT, TEXT)
     assert len(bodies) == 2 and MARKER not in bodies[1].decode()
+    # CURATED_CLASSIFY_PROMPT=v1 (default): legacy classification request; the
+    # v2 request (reasoning on, no /no_think) is tested in test_926_classification
     assert _messages(bodies[1])[0]["content"].endswith("\n/no_think")
 
 
