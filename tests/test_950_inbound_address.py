@@ -227,7 +227,8 @@ def signed_headers(body: bytes, original_to: str = "", auth: str = "pass") -> di
 def test_token_is_derived_deterministic_and_unambiguous():
     first_tok = inbound_email.derive_token(PID, 1)
     assert first_tok == inbound_email.derive_token(PID, 1)
-    assert len(first_tok) == 10 and set(first_tok) <= set(inbound_email.TOKEN_ALPHABET)
+    assert len(first_tok) == 6 and set(first_tok) <= set(inbound_email.TOKEN_ALPHABET)
+    assert inbound_email.TOKEN_LEN == 6
     assert not set(first_tok) & set("ilou")
     assert inbound_email.derive_token(PID, 2) != first_tok
     assert inbound_email.derive_token(OTHER_PID, 1) != first_tok

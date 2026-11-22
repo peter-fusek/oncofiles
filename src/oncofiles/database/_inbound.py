@@ -1,7 +1,10 @@
 """Patient document e-mail addresses (#950 phase 1, migration 095).
 
-One active row per patient: ``token_hash`` = sha256 hex of the derived token,
-never the token or the address. Writers and readers live in
+One active row per patient: ``token_hash`` = keyed HMAC hex of the derived
+token, never the token or the address. Migration 100 (short tokens) adds
+``token_length`` (NULL = a legacy 10-character token) and ``grace_ends_at``
+(an inactive legacy row that still routes until then, see
+``inbound_email.address_routes``). Writers and readers live in
 ``oncofiles.inbound_email``; every helper takes a keyword-only ``patient_id``
 except the webhook's lookup by hash, which is how a mail finds its patient.
 """
@@ -16,8 +19,9 @@ class InboundAddressMixin(DatabaseBase):
     async def get_active_inbound_address(self, *, patient_id: str) -> dict | None:
         """The patient's active row (id, version, created_at), or None."""
         async with self.db.execute(
-            """SELECT id, patient_id, version, active, created_at FROM inbound_addresses
-               WHERE patient_id = ? AND active = 1""",
+            """SELECT id, patient_id, version, active, created_at, token_length,
+                      grace_ends_at
+               FROM inbound_addresses WHERE patient_id = ? AND active = 1""",
             (patient_id,),
         ) as cursor:
             row = await cursor.fetchone()
@@ -32,24 +36,45 @@ class InboundAddressMixin(DatabaseBase):
         return int(row[0] or 0)
 
     async def activate_inbound_address(
-        self, *, patient_id: str, version: int, token_hash: str
+        self,
+        *,
+        patient_id: str,
+        version: int,
+        token_hash: str,
+        token_length: int | None = None,
+        keep_previous_until: str | None = None,
     ) -> None:
         """Make ``version`` the patient's only active address (one transaction).
 
         Any earlier active row is set inactive first, then the new row is
-        inserted; a failure rolls both back, so a patient never ends up with
-        two active addresses or none half-written.
+        inserted; a failure (e.g. a ``token_hash`` collision on the UNIQUE
+        constraint) rolls both back, so a patient never ends up with two active
+        addresses or none half-written.
+
+        ``keep_previous_until`` (ISO instant) is the short-token upgrade (#950):
+        the previously active row keeps routing until then (``grace_ends_at``).
+        Without it (creation, rotation) every earlier row stops at once, an
+        upgrade's grace included.
         """
         pid = require_patient_id(patient_id)
         try:
+            if keep_previous_until is None:
+                await self.db.execute(
+                    """UPDATE inbound_addresses SET active = 0, grace_ends_at = NULL
+                       WHERE patient_id = ? AND (active = 1 OR grace_ends_at IS NOT NULL)""",
+                    (pid,),
+                )
+            else:
+                await self.db.execute(
+                    """UPDATE inbound_addresses SET active = 0, grace_ends_at = ?
+                       WHERE patient_id = ? AND active = 1""",
+                    (keep_previous_until, pid),
+                )
             await self.db.execute(
-                "UPDATE inbound_addresses SET active = 0 WHERE patient_id = ? AND active = 1",
-                (pid,),
-            )
-            await self.db.execute(
-                """INSERT INTO inbound_addresses (patient_id, token_hash, version, active)
-                   VALUES (?, ?, ?, 1)""",
-                (pid, token_hash, int(version)),
+                """INSERT INTO inbound_addresses
+                       (patient_id, token_hash, version, active, token_length)
+                   VALUES (?, ?, ?, 1, ?)""",
+                (pid, token_hash, int(version), token_length),
             )
             await self.db.commit()
         except Exception:
@@ -62,8 +87,9 @@ class InboundAddressMixin(DatabaseBase):
         The only lookup without a patient filter: the token IS the routing key.
         """
         async with self.db.execute(
-            """SELECT id, patient_id, version, active FROM inbound_addresses
-               WHERE token_hash = ?""",
+            """SELECT id, patient_id, version, active, created_at, token_length,
+                      grace_ends_at
+               FROM inbound_addresses WHERE token_hash = ?""",
             (token_hash,),
         ) as cursor:
             row = await cursor.fetchone()

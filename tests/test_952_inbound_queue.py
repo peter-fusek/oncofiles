@@ -151,6 +151,7 @@ async def test_unknown_token_is_not_queued(idb, brevo, no_kick):
     resp = await server.inbound_brevo_webhook(brevo_request(idb, {"items": [item]}))
     assert resp.status_code == 202 and await _jobs(idb) == []
     assert inbound_email._state.counters["unknown_token"] == 1
+    assert inbound_email.bad_tokens_overview()["last_hour"] == 1  # counted once
 
 
 async def test_enqueue_is_one_transaction(idb, brevo, monkeypatch):
