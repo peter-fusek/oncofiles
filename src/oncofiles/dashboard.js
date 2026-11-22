@@ -48,7 +48,7 @@
     var DEMO_BLOCKED_ACTIONS = {
       showOnboarding: 1, showGdriveSetup: 1, showGdriveSetupAndToggle: 1, triggerManualSync: 1,
       generateShareCode: 1, togglePatientArchive: 1, logout: 1, rotateInboundAddress: 1,
-      approveQuarantine: 1, rejectQuarantine: 1, restoreQuarantine: 1
+      approveQuarantine: 1, rejectQuarantine: 1, restoreQuarantine: 1, confirmReviewAsIs: 1
     };
 
     window._dispatch = function (spec, target) {
@@ -3960,6 +3960,108 @@
       return box;
     }
 
+    // #919: the caregiver confirms a filed document in review "as is". Only for
+    // soft reason codes (same list as curated/confirm_review.CONFIRMABLE_CODES);
+    // anything else must be fixed in Drive. Hidden in an admin's read-only view.
+    var CONFIRMABLE_REVIEW_CODES = ['no_date', 'low_confidence', 'rotated_region', 'orientation_unsure', 'chart_page'];
+    var CONFIRM_REVIEW_ERRORS = {
+      busy: ['Práve prebieha spracovanie priečinka. Skúste to o niekoľko minút znova.', 'The folder is being processed right now. Try again in a few minutes.'],
+      hard_check: ['Tento dôvod kontroly sa nedá len potvrdiť; dokument treba opraviť v Google Drive.', 'This review reason cannot just be confirmed; the document needs to be fixed in Google Drive.'],
+      override_blocked: ['Skoršie potvrdenie zablokovala kontrola; dokument treba opraviť v Google Drive.', 'An earlier confirmation was blocked by a check; the document needs to be fixed in Google Drive.'],
+      override_present: ['Prepis už obsahuje rozhodnutie o kontrole; skontrolujte ho v Google Drive.', 'The transcript already holds a review decision; check it in Google Drive.'],
+      no_sidecar: ['Tento dokument nemá prepis, do ktorého by sa potvrdenie zapísalo.', 'This document has no transcript to record the confirmation in.'],
+      no_front_matter: ['Prepis dokumentu nemá očakávanú hlavičku; potvrdenie sa nezapísalo.', 'The document transcript lacks the expected header; nothing was recorded.'],
+      sidecar_unreadable: ['Prepis dokumentu sa nedá prečítať; potvrdenie sa nezapísalo.', 'The document transcript cannot be read; nothing was recorded.'],
+      not_in_review: ['Dokument už nečaká na kontrolu.', 'The document no longer waits for a review.'],
+      not_curated: ['Tento dokument sa takto potvrdiť nedá.', 'This document cannot be confirmed this way.'],
+      drive_not_connected: ['Google Drive nie je pripojený.', 'Google Drive is not connected.'],
+      drive_failed: ['Zápis do Google Drive sa nepodaril; nič sa nezmenilo. Skúste to znova neskôr.', 'Writing to Google Drive failed; nothing changed. Try again later.'],
+      read_only: ['Tento pacient je pre vás len na čítanie.', 'This patient is read-only for you.']
+    };
+    var confirmReviewArmed = null;
+
+    function canConfirmReview(doc) {
+      if (!doc || doc.inbox || !doc.curated || isAdminMode) return false;
+      if (doc.attention_reason !== 'review_needed') return false;
+      var codes = Array.isArray(doc.review_reasons) ? doc.review_reasons : [];
+      return codes.every(function (c) { return CONFIRMABLE_REVIEW_CODES.indexOf(c) !== -1; });
+    }
+
+    /** The "Confirm as is" box in the detail of a reviewed curated document, or null. */
+    function buildConfirmReview(doc) {
+      if (!canConfirmReview(doc)) return null;
+      var box = document.createElement('div');
+      box.className = 'detail-confirm-review';
+      box.appendChild(setI18n(document.createElement('p'),
+        'Porovnali ste dokument s originálom a údaje sedia? Potvrďte ho tak, ako je; potvrdenie sa zapíše do prepisu (.md) v Google Drive, originál sa nemení.',
+        'Have you compared the document with the original and the data is right? Confirm it as is; the confirmation is recorded in its transcript (.md) on Google Drive, the original is not changed.'));
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'confirm-review-btn';
+      btn.id = 'confirm-review-btn';
+      btn.setAttribute('data-action', 'confirmReviewAsIs|' + String(Number(doc.id)) + '|@this');
+      setI18n(btn, 'Potvrdiť tak, ako je', 'Confirm as is');
+      box.appendChild(btn);
+      var status = document.createElement('p');
+      status.className = 'confirm-review-status';
+      status.id = 'confirm-review-status';
+      status.setAttribute('role', 'status');
+      box.appendChild(status);
+      return box;
+    }
+
+    function confirmReviewStatus(sk, en) {
+      var el = document.getElementById('confirm-review-status');
+      if (el) setI18n(el, sk, en);
+    }
+
+    async function confirmReviewAsIs(docId, btn) {
+      var id = Number(docId);
+      if (!id || !currentPatientId || isAdminMode) return;
+      var key = currentPatientId + ':' + id;
+      if (confirmReviewArmed !== key) {
+        confirmReviewArmed = key;
+        if (btn) {
+          btn.classList.add('armed');
+          setI18n(btn, 'Naozaj potvrdiť? Kliknite znova', 'Really confirm? Click again');
+        }
+        setTimeout(function () {
+          if (confirmReviewArmed !== key) return;
+          confirmReviewArmed = null;
+          if (btn) { btn.classList.remove('armed'); setI18n(btn, 'Potvrdiť tak, ako je', 'Confirm as is'); }
+        }, 6000);
+        return;
+      }
+      confirmReviewArmed = null;
+      if (btn) {
+        btn.classList.remove('armed');
+        btn.disabled = true;
+        setI18n(btn, 'Potvrdzujem…', 'Confirming…');
+      }
+      try {
+        var resp = await fetch('/api/curated/confirm-review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
+          body: JSON.stringify({ patient_id: currentPatientId, document_id: id })
+        });
+        if (resp.status === 401) { logout(); return; }
+        var data = {};
+        try { data = await resp.json(); } catch (e) { data = {}; }
+        if (resp.ok) {
+          confirmReviewStatus('Potvrdené. Dokument je pripravený.', 'Confirmed. The document is ready.');
+          if (openDoc.id === id) openDoc.data = null;
+          await refresh();
+          return;
+        }
+        var msg = CONFIRM_REVIEW_ERRORS[data && data.error] ||
+          ['Potvrdenie sa nepodarilo. Skúste to znova neskôr.', 'The confirmation failed. Try again later.'];
+        confirmReviewStatus(msg[0], msg[1]);
+      } catch (e) {
+        confirmReviewStatus('Potvrdenie sa nepodarilo. Skúste to znova neskôr.', 'The confirmation failed. Try again later.');
+      }
+      if (btn) { btn.disabled = false; setI18n(btn, 'Potvrdiť tak, ako je', 'Confirm as is'); }
+    }
+
     /** A file still in the patient's inbox on Drive: a short explanation, no detail fetch. */
     function renderInboxDetail(doc, detailTd, opts) {
       opts = opts || {};
@@ -4034,6 +4136,8 @@
       closeBtn.onclick = function(e) { e.stopPropagation(); closeDocDetail(); };
       if (!overlay) panel.appendChild(closeBtn);
       panel.appendChild(buildStepList(doc, data));
+      var confirmBox = buildConfirmReview(doc);
+      if (confirmBox) panel.appendChild(confirmBox);
       var cols = document.createElement('div');
       cols.className = 'doc-detail-cols';
       panel.appendChild(cols);
