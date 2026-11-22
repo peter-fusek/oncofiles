@@ -16,6 +16,9 @@ Every HTTP request is put into one *route class*:
 ``inbound`` the inbound mail webhooks ``/inbound/*`` (#950): their own buckets,
             keyed by the client IP, so a flood of them never drains the
             anonymous ``/api/*`` budget and vice versa
+``qlink``   the quarantine e-mail buttons ``/q/<token>`` and ``/q`` (#950):
+            unauthenticated by design, so small per-IP and global buckets of
+            their own and a 4 KiB body cap
 ``public``  everything else (landing pages, static assets, ``/readiness``,
             ``/api/public-config``)
 ``exempt``  ``/health`` — never limited, never size-checked (Coolify's
@@ -105,7 +108,8 @@ AUTH = "auth"
 API = "api"
 PUBLIC = "public"
 INBOUND = "inbound"
-CLASSES = (MCP, AUTH, API, PUBLIC, INBOUND)
+QLINK = "qlink"
+CLASSES = (MCP, AUTH, API, PUBLIC, INBOUND, QLINK)
 
 _EXEMPT_PATHS = frozenset({"/health"})
 _AUTH_PATHS = frozenset({"/authorize", "/token", "/register", "/revoke", "/dashboard/verify"})
@@ -115,6 +119,8 @@ _API_PATHS = frozenset({"/dashboard/config"})
 _PUBLIC_API_PATHS = frozenset({"/api/public-config"})
 _API_PREFIXES = ("/api/", "/ops/")
 _INBOUND_PREFIX = "/inbound/"
+_QLINK_PATH = "/q"
+_QLINK_PREFIX = "/q/"
 _JSON_CLASSES = frozenset({MCP, API, AUTH, INBOUND})
 # Paths with their own body limit (bytes); the class buckets still apply.
 UPLOAD_PATHS = frozenset({"/api/upload"})
@@ -139,6 +145,8 @@ def classify(path: str) -> str:
         return API
     if path.startswith(_INBOUND_PREFIX):
         return INBOUND
+    if path == _QLINK_PATH or path.startswith(_QLINK_PREFIX):
+        return QLINK
     return PUBLIC
 
 
@@ -215,6 +223,8 @@ DEFAULTS: dict[str, ClassLimits] = {
     INBOUND: ClassLimits(
         Limit(60, 30), Limit(120, 60), Limit(120, 60), DEFAULT_INBOUND_MAX_BODY_BYTES
     ),
+    # #950 quarantine buttons: a person clicks a few times; per IP and global.
+    QLINK: ClassLimits(Limit(10, 6), Limit(60, 30), Limit(60, 30), 4 * 1024),
 }
 DEFAULT_MCP_CONCURRENCY = 4
 LOG_INTERVAL_S = 60.0
@@ -235,7 +245,7 @@ class RateLimitConfig:
 
     @classmethod
     def from_env(cls, static_bearer: str = "") -> RateLimitConfig:
-        """Read env vars. Per class ``X`` in MCP/AUTH/API/PUBLIC/INBOUND:
+        """Read env vars. Per class ``X`` in MCP/AUTH/API/PUBLIC/INBOUND/QLINK:
         ``RATE_LIMIT_X_PER_MIN``, ``RATE_LIMIT_X_BURST``,
         ``RATE_LIMIT_X_GLOBAL_PER_MIN``, ``RATE_LIMIT_X_GLOBAL_BURST``,
         ``RATE_LIMIT_X_ANON_PER_MIN``, ``RATE_LIMIT_X_ANON_BURST``,
@@ -411,7 +421,7 @@ def principal_for(
 ) -> Principal:
     """Return the bucket principal for this request (no DB)."""
     ip = client_ip(scope, cfg.trusted_proxies)
-    if route_class in (AUTH, INBOUND):
+    if route_class in (AUTH, INBOUND, QLINK):
         return Principal("ip:" + ip, trusted=False)
     auth = _header(scope, b"authorization").strip()
     if auth[:7].lower() == "bearer ":

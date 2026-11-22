@@ -12,6 +12,8 @@ for every API path the dashboard calls an answer of the same shape:
     activity   ~ GET /api/activity
     inbound_address ~ GET /api/inbound-address   (#950, invented address)
     trial_status ~ GET /api/trial-status   (#950 phase 2, not a trial)
+    inbound_quarantine ~ GET /api/inbound-quarantine   (#950 quarantine, one
+                 invented item from an invented sender)
     thumbnails ~ GET /api/doc-thumbnails  (keyed by document id; the script
                  answers each request with the ids it asked for, #948)
 
@@ -506,6 +508,25 @@ def build(showcase_documents: list[dict], version: str) -> dict:
         # #950 phase 2: the demo twin of GET /api/trial-status (the demo
         # patient did not start through welcome@, so no first-steps card).
         "trial_status": {"trial": False},
+        # #950 quarantine: the demo twin of GET /api/inbound-quarantine (one
+        # invented item; approving or rejecting only explains itself).
+        "inbound_quarantine": {
+            "enabled": True,
+            "read_only": False,
+            "pending": 1,
+            "items": [
+                {
+                    "id": 1,
+                    "sender": "ambulancia@example.test",
+                    "received_at": "2027-04-14T08:12:00Z",
+                    "reason": "unknown_sender",
+                    "files": [
+                        {"name": "vysledky_2027-04-13.pdf", "type": "PDF", "size": 184320},
+                    ],
+                    "total_bytes": 184320,
+                }
+            ],
+        },
         "thumbnails": demo_thumbnails.build(pictures),
         "activity": {
             "events": [

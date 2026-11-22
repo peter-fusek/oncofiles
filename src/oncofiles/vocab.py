@@ -401,6 +401,12 @@ _SPECS: dict[str, _Spec] = {
     "inbound_claimed_job_state": _from("oncofiles.database._inbound_claimed", "CLAIMED_JOB_STATES"),
     "consent_kind": _from("oncofiles.patient_consent", "CONSENT_KINDS"),
     "trial_source": _from("oncofiles.database._trials", "TRIAL_SOURCES"),
+    "inbound_quarantine_state": _from(
+        "oncofiles.database._inbound_quarantine", "QUARANTINE_STATES"
+    ),
+    "inbound_quarantine_action": _from(
+        "oncofiles.database._inbound_quarantine", "QUARANTINE_ACTIONS"
+    ),
 }
 
 # (table, column) → domain. Every enum-like column is here, in
@@ -478,6 +484,8 @@ COLUMN_DOMAINS: dict[tuple[str, str], str] = {
     ("inbound_claimed_jobs", "state"): "inbound_claimed_job_state",
     ("patient_consents", "kind"): "consent_kind",
     ("trial_accounts", "source"): "trial_source",
+    ("inbound_quarantine", "state"): "inbound_quarantine_state",
+    ("inbound_quarantine_tokens", "action"): "inbound_quarantine_action",
 }
 
 # Codes used as keys into a reference table or an external code system that this
@@ -931,6 +939,16 @@ _LABELS: dict[str, dict[str, tuple[str, str]]] = {
     },
     "trial_source": {
         "welcome_email": ("E-mail na welcome@", "E-mail to welcome@"),
+    },
+    "inbound_quarantine_state": {
+        "pending": ("Čaká na schválenie", "Waiting for approval"),
+        "approved": ("Schválené", "Approved"),
+        "rejected": ("Odmietnuté", "Rejected"),
+        "expired": ("Vypršalo", "Expired"),
+    },
+    "inbound_quarantine_action": {
+        "approve": ("Schváliť", "Approve"),
+        "reject": ("Odmietnuť", "Reject"),
     },
 }
 

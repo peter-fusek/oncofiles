@@ -1839,6 +1839,26 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
                 _state.counters["unmatched_capped"] += 1
                 logger.info("inbound: patient %s dropped reason=unmatched_capped", pp)
                 return Result("unmatched_capped", pp)
+            # #950 quarantine (maintainer decision 2026-11-22): the screened
+            # attachments wait encrypted for the caregiver's approval (e-mail
+            # buttons + dashboard). No reply to the sender. Over a quarantine
+            # cap (or without HOLDING_STORE_SECRET) the mail is listed only.
+            from oncofiles import inbound_quarantine
+
+            held = await inbound_quarantine.quarantine_mail(
+                db, patient_id, th, msg, reason, progress
+            )
+            if held.outcome == "retry":
+                logger.info("inbound: patient %s quarantine retry reason=%s", pp, held.temporary)
+                return Result("retry", pp, temporary=held.temporary)
+            if held.outcome in ("quarantined", "duplicate"):
+                _record_unmatched(msg.sender, patient_id, f"quarantined_{reason}", held.files)
+                _state.counters[f"quarantine_{held.outcome}"] += 1
+                if msg.message_id:
+                    _remember(_state.done_ids, mid_key, RECENT_MAX)
+                return Result("quarantined", pp, skipped=held.skipped)
+            if held.code:
+                _state.counters[f"quarantine_listed_{held.code}"] += 1
             _record_unmatched(msg.sender, patient_id, reason, len(msg.attachments))
             _state.counters[f"unmatched_{reason}"] += 1
             logger.info(

@@ -7415,6 +7415,233 @@ async def api_inbound_address_rotate(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/inbound-quarantine", methods=["GET"])
+async def api_inbound_quarantine(request: Request) -> JSONResponse:
+    """Attachments from other senders waiting for the caregiver (#950 quarantine).
+
+    The #867 ACL (``_dashboard_patient_or_refusal``: unknown and foreign are
+    the same 404). The caregiver sees each pending item (sender, time, file
+    names, types, sizes); anyone else who passes the ACL (an admin's
+    read-only view, the operator bearer) sees only the count.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    patient_id, refusal = await _dashboard_patient_or_refusal(request)
+    if refusal is not None:
+        return refusal
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    caregiver = await _dashboard_write_refusal(request, db_inst, patient_id) is None
+    from oncofiles import inbound_quarantine
+
+    try:
+        return JSONResponse(
+            await inbound_quarantine.dashboard_view(db_inst, patient_id, caregiver=caregiver)
+        )
+    except Exception:
+        logger.exception("API inbound-quarantine error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/inbound-quarantine/decide", methods=["POST"])
+async def api_inbound_quarantine_decide(request: Request) -> JSONResponse:
+    """Approve or reject one quarantined item (#950 quarantine).
+
+    Body ``{"patient_id", "item_id", "action": "approve" | "reject"}``:
+    ``_dashboard_body_patient`` (#867) then the #921 write refusal (only the
+    caregiver decides). A foreign or unknown item id is the same 404.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    patient_id, acl_err = await _dashboard_body_patient(
+        request, db_inst, str(body.get("patient_id") or "")
+    )
+    if acl_err is not None:
+        return acl_err
+    ro_err = await _dashboard_write_refusal(request, db_inst, patient_id)
+    if ro_err is not None:
+        return ro_err
+    action = body.get("action")
+    try:
+        item_id = int(body.get("item_id"))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if action not in ("approve", "reject"):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    from oncofiles import inbound_quarantine
+    from oncofiles.secrets_keys import caller_email_hash
+
+    if not inbound_quarantine.configured():
+        return JSONResponse({"enabled": False}, status_code=409)
+    decided_by = caller_email_hash(_get_dashboard_email(request) or "") or "dashboard"
+    decide = inbound_quarantine.approve if action == "approve" else inbound_quarantine.reject
+    try:
+        result = await decide(db_inst, patient_id, item_id, decided_by=decided_by, via="dashboard")
+    except Exception:
+        logger.exception("API inbound-quarantine decide error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    if result.get("result") == "not_found":
+        return _patient_not_found()
+    status = 200 if result.get("result") in ("approved", "rejected", "already") else 409
+    return JSONResponse(result, status_code=status)
+
+
+# ── /q/<token>: the e-mail buttons of the quarantine (#950, #834 exception) ──
+
+_QUARANTINE_PAGE_CSP = (
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+    "frame-ancestors 'none'; base-uri 'none'"
+)
+_QUARANTINE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Robots-Tag": "noindex, nofollow",
+    "Content-Security-Policy": _QUARANTINE_PAGE_CSP,
+}
+_QUARANTINE_FORM_MAX_BYTES = 4096
+
+
+def _quarantine_page(inner: str) -> HTMLResponse:
+    page = (
+        '<!doctype html><html lang="sk"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<meta name="robots" content="noindex, nofollow">'
+        "<title>Oncofiles</title><style>"
+        "body{font-family:system-ui,sans-serif;max-width:34rem;margin:2rem auto;"
+        "padding:0 16px;color:#1d2a44;background:#fff;line-height:1.5}"
+        "h1{font-size:1.3rem}.sender{font-family:monospace;word-break:break-all}"
+        "button{font-size:1.1rem;padding:.8rem 1.6rem;border:0;border-radius:6px;"
+        "background:#ff8a65;color:#1d2a44;font-weight:600;cursor:pointer}"
+        ".warn{border-left:4px solid #1d2a44;padding-left:.6rem}"
+        "</style></head><body>" + inner + "</body></html>"
+    )
+    return HTMLResponse(page, headers=dict(_QUARANTINE_HEADERS))
+
+
+def _quarantine_neutral() -> HTMLResponse:
+    """The ONE answer for a bad, used or expired link (and a wrong CSRF value)."""
+    return _quarantine_page(
+        "<h1>Odkaz už neplatí / This link is no longer valid</h1>"
+        "<p>Prílohy, ktoré čakajú na schválenie, nájdete po prihlásení v Oncofiles.</p>"
+        "<p>Attachments waiting for approval are in Oncofiles after you sign in.</p>"
+        '<p><a href="/dashboard">oncofiles.com/dashboard</a></p>'
+    )
+
+
+@mcp.custom_route("/q/{token}", methods=["GET"])
+async def quarantine_link_page(request: Request) -> HTMLResponse:
+    """Confirm page of an e-mail button. A GET NEVER changes anything (link
+    scanners prefetch): it shows the sender (escaped), counts, types and sizes
+    and one confirm button that POSTs the token in the body."""
+    import html as _html
+
+    from oncofiles import inbound_quarantine
+
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    token = request.path_params.get("token", "")
+    try:
+        view = await inbound_quarantine.link_view(db_inst, token)
+    except Exception as exc:
+        logger.warning("quarantine link page failed (%s)", type(exc).__name__)
+        view = None
+    if view is None:
+        return _quarantine_neutral()
+    esc = _html.escape
+    files = ", ".join(f"{esc(t)} {esc(s)}" for t, s in view["files"])
+    if view["action"] == "approve":
+        head = "Schváliť prílohy? / Approve the attachments?"
+        what = (
+            "<p>Prílohy pôjdu do dokumentov pacienta a spracujú sa automaticky.</p>"
+            "<p>The attachments go into the patient's documents and are processed "
+            "automatically.</p>"
+        )
+        label = "Schváliť / Approve"
+    else:
+        head = "Odmietnuť prílohy? / Reject the attachments?"
+        what = "<p>Prílohy sa nespracujú.</p><p>The attachments are not processed.</p>"
+        label = "Odmietnuť / Reject"
+    warn = ""
+    if view["reason"] == "auth_failed":
+        warn = (
+            '<p class="warn">Odosielateľa sa nepodarilo overiť. / '
+            "The sender could not be verified.</p>"
+        )
+    inner = (
+        f"<h1>{head}</h1>"
+        f'<p>Odosielateľ / Sender: <span class="sender">{esc(view["sender"])}</span></p>'
+        f"<p>Príloh / Attachments: {int(view['count'])} ({files})</p>"
+        f"{warn}{what}"
+        '<form method="post" action="/q">'
+        f'<input type="hidden" name="token" value="{esc(token)}">'
+        f'<input type="hidden" name="csrf" value="{esc(view["csrf"])}">'
+        f'<button type="submit">{label}</button></form>'
+    )
+    return _quarantine_page(inner)
+
+
+@mcp.custom_route("/q", methods=["POST"])
+async def quarantine_link_action(request: Request) -> HTMLResponse:
+    """The decision of an e-mail button: token and CSRF value in the form
+    BODY (never the URL). Single use; a bad, used or expired token, a wrong
+    CSRF value or a cross-site request gets the one neutral answer."""
+    from urllib.parse import parse_qs
+
+    from oncofiles import inbound_quarantine
+
+    site = request.headers.get("sec-fetch-site", "").lower()
+    origin = request.headers.get("origin", "")
+    if site == "cross-site" or (
+        origin
+        and origin not in ("https://oncofiles.com", f"{request.url.scheme}://{request.url.netloc}")
+    ):
+        logger.info("quarantine link: refused reason=cross_site")
+        return _quarantine_neutral()
+    raw = b""
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > _QUARANTINE_FORM_MAX_BYTES:
+            return _quarantine_neutral()
+    try:
+        form = parse_qs(raw.decode("ascii"), max_num_fields=4, strict_parsing=False)
+    except (UnicodeDecodeError, ValueError):
+        return _quarantine_neutral()
+    token = (form.get("token") or [""])[0]
+    csrf = (form.get("csrf") or [""])[0]
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        outcome = await inbound_quarantine.act_on_link(db_inst, token, csrf)
+    except Exception as exc:
+        logger.warning("quarantine link action failed (%s)", type(exc).__name__)
+        outcome = "retry_later"
+    logger.info("quarantine link: outcome=%s", outcome)
+    if outcome == "approved":
+        return _quarantine_page(
+            "<h1>Schválené / Approved</h1>"
+            "<p>Prílohy sú v dokumentoch pacienta.</p>"
+            "<p>The attachments are in the patient's documents.</p>"
+        )
+    if outcome == "rejected":
+        return _quarantine_page(
+            "<h1>Odmietnuté / Rejected</h1>"
+            "<p>Prílohy sa nespracujú.</p><p>The attachments are not processed.</p>"
+        )
+    if outcome == "retry_later":
+        return _quarantine_page(
+            "<h1>Teraz sa to nepodarilo / This did not work right now</h1>"
+            "<p>Skúste to o chvíľu znova, alebo rozhodnite po prihlásení v Oncofiles.</p>"
+            "<p>Try again in a while, or decide after signing in to Oncofiles.</p>"
+        )
+    return _quarantine_neutral()
+
+
 @mcp.custom_route("/api/inbound-unmatched", methods=["GET"])
 async def api_inbound_unmatched(request: Request) -> JSONResponse:
     """Admin zone: mail to patient addresses that was not filed (#950).

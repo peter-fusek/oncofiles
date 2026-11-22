@@ -609,6 +609,13 @@
     .inbound-terms { margin-top: 0.625rem; font-size: 0.8125rem; color: var(--ink-2); max-width: 46rem; }
     .inbound-status { margin-top: 0.5rem; font-size: 0.8125rem; color: var(--ink); background: var(--info-bg); border-radius: 8px; padding: 0.5rem 0.75rem; }
     .inbound-status[hidden] { display: none; }
+    /* #950 quarantine: attachments from other senders waiting for approval */
+    .quarantine-card[hidden] { display: none; }
+    .quarantine-card { margin-top: 1.25rem; border-left: 4px solid var(--coral); }
+    .quarantine-item { border-top: 1px solid var(--rule); padding: 0.75rem 0; }
+    .quarantine-sender code { word-break: break-all; }
+    .quarantine-files { margin: 0.25rem 0 0.5rem 1.25rem; font-size: 0.8125rem; word-break: break-word; }
+    .quarantine-warn { font-size: 0.8125rem; }
     /* #950 phase 2: first steps of a welcome@ trial. */
     .trial-card[hidden] { display: none; }
     .trial-card { margin-top: 1.25rem; border-left: 4px solid var(--peach); }
