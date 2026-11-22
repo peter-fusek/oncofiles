@@ -1,4 +1,4 @@
-"""Quarantine of inbound attachments from other senders (#950, migration 100).
+"""Quarantine of inbound attachments from other senders (#950, migration 101).
 
 Maintainer decision 2026-11-22: a document sent to a patient's document
 address by ANY sender other than the patient's caregiver (the core's one

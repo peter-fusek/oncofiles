@@ -1,4 +1,4 @@
-"""Quarantined inbound attachments and their action links (#950, migration 100).
+"""Quarantined inbound attachments and their action links (#950, migration 101).
 
 Writers and readers live in ``oncofiles.inbound_quarantine``. Every helper
 takes a keyword-only ``patient_id`` and filters on it in SQL, except the

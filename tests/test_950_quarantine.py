@@ -668,7 +668,7 @@ def test_rate_limit_class_of_its_own():
 
 
 def test_migration_is_additive():
-    sql = (ROOT / "migrations" / "100_inbound_quarantine.sql").read_text()
+    sql = (ROOT / "migrations" / "101_inbound_quarantine.sql").read_text()
     code = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
     statements = [st.strip() for st in code.split(";") if st.strip()]
     assert statements and all(st.upper().startswith("CREATE ") for st in statements)
