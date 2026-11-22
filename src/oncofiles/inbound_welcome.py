@@ -19,16 +19,29 @@ decides, in this order:
    filing through ``dashboard_upload.handle_upload``, the receipt; no gate,
    an existing caregiver keeps working). More than one: nothing is filed, no
    reply, listed in the admin zone as ``caregiver_multiple_patients``.
-4. **Gmail only** (the person later proves the address with Google sign-in).
+4. **Go-live switch** (``public_config.go_live``, runtime env
+   ``INBOUND_GO_LIVE=true``): while it is off, welcome@ mail that would start
+   or feed a trial is NOT admitted (reason ``not_live``, listed in the admin
+   zone with counts and the sender hash prefix only): no trial, no holding
+   write, no reply, no reading. The env used to gate only the landing CTA;
+   with the secrets set and ``ONBOARDING_MODE=open`` any Gmail user could
+   otherwise create a trial before infra decides the moment. It sits AFTER
+   the existing-caregiver handover (step 3), so existing patients keep
+   working, and AFTER the DKIM verification (step 2): the queue worker still
+   downloads the EML and verifies it (it writes nothing but the claimed
+   row's own state, and the logged verdict is useful for go-live testing);
+   only then does this step refuse. Mail to a personal patient address
+   (phase 1) never passes through here and is not gated.
+5. **Gmail only** (the person later proves the address with Google sign-in).
    Any other domain is listed in the admin zone only (``welcome_not_gmail``).
-5. **No attachments**: nothing to read, dropped (``welcome_no_files``).
-6. **Onboarding gate** (#852, ``onboarding_gate.onboarding_allowed``; admins
+6. **No attachments**: nothing to read, dropped (``welcome_no_files``).
+7. **Onboarding gate** (#852, ``onboarding_gate.onboarding_allowed``; admins
    pass): ``closed``, or ``invite`` for a sender not invited, gets at most one
    reply per sender per ``NOT_OPEN_REPLY_INTERVAL_S`` (24 h): the files are
    not kept, the person can try the demo and sign in with Google once their
    account opens (no waitlist wording, aligned with the landing). ``open``
    continues.
-7. **Trial patient**, under ``_ADMIT_LOCK`` (no two coroutines create one):
+8. **Trial patient**, under ``_ADMIT_LOCK`` (no two coroutines create one):
    the sender's existing trial (``trial_accounts.sender_hash``, one per
    canonical sender) or a new one, if the global ``MAX_NEW_TRIALS_PER_DAY``
    allows (counted in the DB). An ended trial (``trial_ends_at`` passed)
@@ -370,7 +383,7 @@ async def admit(db, msg: inbound_email.InboundMessage) -> tuple[str, str, bool] 
     else None (dropped, listed or answered; see the module docstring for the
     order). ``welcome`` is False when the mail is handed to an existing
     caregiver's patient (phase 1 receipt), True for a trial (welcome reply)."""
-    from oncofiles import holding_store, onboarding_gate
+    from oncofiles import holding_store, onboarding_gate, public_config
 
     loop = inbound_email.loop_reason(msg)
     if loop:
@@ -398,6 +411,10 @@ async def admit(db, msg: inbound_email.InboundMessage) -> tuple[str, str, bool] 
         _count("welcome_to_existing_patient")
         logger.info("inbound: welcome handed to patient %s (phase 1)", pid[:4])
         return pid, token, False
+    # Everything below can create or feed a trial: only once infra went live.
+    if not public_config.go_live():
+        _listed(sender, "not_live", files)
+        return None
     if not is_gmail(sender):
         _listed(sender, "welcome_not_gmail", files)
         return None
