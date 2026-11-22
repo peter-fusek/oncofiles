@@ -1446,3 +1446,94 @@ def test_admin_panel_renders_the_alert():
 
     js = (Path(inbound_dkim.__file__).parent / "dashboard.js").read_text()
     assert "claimed_address_refusals_high" in js and "data.alerts" in js
+
+
+# ── #976: the mail text on claimed rows ─────────────────────────────────
+
+
+async def _claimed_payloads(db):
+    async with db.db.execute(
+        "SELECT bucket, job_uuid, payload_enc FROM inbound_claimed_jobs ORDER BY id"
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    return [
+        inbound_queue.decrypt_payload(
+            r["payload_enc"],
+            patient_id=inbound_queue._CLAIMED_SCOPE,
+            token_hash=r["bucket"],
+            job_uuid=r["job_uuid"],
+        )
+        for r in rows
+    ]
+
+
+async def _job_payloads(db):
+    async with db.db.execute(
+        "SELECT patient_id, token_hash, job_uuid, payload_enc FROM inbound_jobs ORDER BY id"
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    return [
+        inbound_queue.decrypt_payload(
+            r["payload_enc"],
+            patient_id=r["patient_id"],
+            token_hash=r["token_hash"],
+            job_uuid=r["job_uuid"],
+        )
+        for r in rows
+    ]
+
+
+async def test_claimed_row_carries_the_text_until_verified_then_a_caregiver_row_drops_it(
+    idb, drive, mails, dkim_brevo, rsa_key
+):
+    files, emls, _fetched, records = dkim_brevo
+    pem, record = rsa_key
+    records[key_name()] = record
+    addr = await address_of(idb)
+    files["att-1"] = pdf(1)
+    emls["eml-1"] = sign(raw_mail(to=addr), pem)
+    await _post(idb, dkim_item(addr, eml="eml-1", files=[("SynthLab2027.pdf", "att-1")]))
+    [claimed] = await _claimed_payloads(idb)
+    assert claimed["body_text"] == "never stored"  # unverified: kept, encrypted
+    await inbound_queue.run_pending(idb)
+    [claimed] = await _claimed_payloads(idb)
+    assert "body_text" not in claimed  # the row ended: dropped
+    [job] = await _job_payloads(idb)
+    assert "body_text" not in job  # a verified caregiver row never carries it
+
+
+async def test_forged_claim_is_quarantined_with_its_text(
+    idb, drive, mails, dkim_brevo, rsa_key, monkeypatch, tmp_path
+):
+    from oncofiles import inbound_quarantine
+
+    monkeypatch.setenv("HOLDING_STORE_SECRET", "synthetic-holding-secret-976")
+    monkeypatch.setattr("oncofiles.config.DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(inbound_quarantine, "_free_bytes", lambda: 10**15)
+    files, emls, _fetched, records = dkim_brevo
+    pem, record = rsa_key
+    records[key_name()] = record
+    addr = await address_of(idb)
+    files["att-1"] = pdf(1)
+    emls["eml-1"] = sign(raw_mail(to=addr), pem).replace(BODY_MARKER, b"forged body 2027")
+    await _post(idb, dkim_item(addr, eml="eml-1", files=[("SynthLab2027.pdf", "att-1")]))
+    await inbound_queue.run_pending(idb)
+    async with idb.db.execute("SELECT * FROM inbound_quarantine") as cur:
+        [item] = [dict(r) for r in await cur.fetchall()]
+    assert item["refusal_reason"] == "auth_failed"
+    assert inbound_quarantine.body_text(item) == "never stored"
+    for payload in [*(await _claimed_payloads(idb)), *(await _job_payloads(idb))]:
+        assert "body_text" not in payload
+
+
+async def test_claimed_row_failed_before_decryption_drops_the_text(idb, dkim_brevo):
+    addr = await address_of(idb)
+    await _post(idb, dkim_item(addr, eml="eml-1"))
+    await idb.db.execute(
+        "UPDATE inbound_claimed_jobs SET attempts = ?", (inbound_queue.MAX_ATTEMPTS,)
+    )
+    await idb.db.commit()
+    await inbound_queue.run_pending(idb)
+    assert (await _rows(idb, "inbound_claimed_jobs"))[0]["reason"] == "max_attempts"
+    [claimed] = await _claimed_payloads(idb)
+    assert "body_text" not in claimed

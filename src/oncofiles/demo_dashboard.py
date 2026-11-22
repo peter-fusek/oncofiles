@@ -13,7 +13,9 @@ for every API path the dashboard calls an answer of the same shape:
     inbound_address ~ GET /api/inbound-address   (#950, invented address)
     trial_status ~ GET /api/trial-status   (#950 phase 2, not a trial)
     inbound_quarantine ~ GET /api/inbound-quarantine   (#950 quarantine, one
-                 invented item from an invented sender)
+                 invented item from an invented sender, with an invented text)
+    inbound_quarantine_previews ~ GET /api/inbound-quarantine/preview  (#976,
+                 keyed "<item_id>:<n>"; invented page drawings)
     thumbnails ~ GET /api/doc-thumbnails  (keyed by document id; the script
                  answers each request with the ids it asked for, #948)
 
@@ -348,6 +350,34 @@ def _detail(row: dict, summary: tuple[str, str], pages: list[tuple[str, str]]) -
     }
 
 
+def _quarantine_previews() -> dict[str, dict]:
+    """Invented page drawings for the demo's quarantine tiles (#976)."""
+    pages = {
+        "1:0": {
+            "style": "printed",
+            "category": "labs",
+            "title": "Výsledky laboratórnych vyšetrení",
+            "title_en": "Laboratory results",
+            "text": "Hemoglobín  131 g/l  120 - 160\nLeukocyty  6,1 10^9/l  4,0 - 10,0",
+            "text_en": "Haemoglobin  131 g/l  120 - 160\nLeukocytes  6.1 10^9/l  4.0 - 10.0",
+        },
+        "2:0": {
+            "style": "scan",
+            "category": "other",
+            "title": "Faktúra",
+            "title_en": "Invoice",
+            "text": "Faktúra č. 2027-0042\nSuma  12,00 EUR",
+            "text_en": "Invoice no. 2027-0042\nTotal  12.00 EUR",
+        },
+    }
+    out: dict[str, dict] = {}
+    for key, doc in pages.items():
+        sk = demo_thumbnails.data_uri(demo_thumbnails.picture(doc, en=False))
+        en = demo_thumbnails.data_uri(demo_thumbnails.picture(doc, en=True))
+        out[key] = {"src": sk} if en == sk else {"src": sk, "src_en": en}
+    return out
+
+
 def build(showcase_documents: list[dict], version: str) -> dict:
     """The ``dashboard`` section of ``/api/demo-data``."""
     rows: list[dict] = []
@@ -521,10 +551,26 @@ def build(showcase_documents: list[dict], version: str) -> dict:
                     "received_at": "2027-04-14T08:12:00Z",
                     "reason": "unknown_sender",
                     "files": [
-                        {"name": "vysledky_2027-04-13.pdf", "type": "PDF", "size": 184320},
+                        {
+                            "name": "vysledky_2027-04-13.pdf",
+                            "type": "PDF",
+                            "size": 184320,
+                            "preview": True,
+                        },
                     ],
                     "total_bytes": 184320,
                     "filed_count": 0,
+                    # #976: the mail's text (invented), shown as plain text
+                    "body_text": (
+                        "Dobrý deň,\n\nv prílohe posielame výsledky odberu z 13. 4. 2027. "
+                        "Kontrola je naplánovaná o dva týždne.\n\nS pozdravom\n"
+                        "Ambulancia (vymyslený príklad)"
+                    ),
+                    "body_text_en": (
+                        "Hello,\n\nplease find attached the results of the sample taken on "
+                        "13 April 2027. The check-up is planned in two weeks.\n\nKind regards\n"
+                        "The clinic (an invented example)"
+                    ),
                 }
             ],
             # the trash ("Kôš"): a rejected item still restorable (invented)
@@ -534,14 +580,21 @@ def build(showcase_documents: list[dict], version: str) -> dict:
                     "sender": "neznamy@example.test",
                     "received_at": "2027-04-09T17:40:00Z",
                     "reason": "unknown_sender",
-                    "files": [{"name": "faktura_2027.pdf", "type": "PDF", "size": 51200}],
+                    "files": [
+                        {"name": "faktura_2027.pdf", "type": "PDF", "size": 51200, "preview": True}
+                    ],
                     "total_bytes": 51200,
                     "filed_count": 0,
                     "state": "rejected",
                     "days_left": 25,
+                    "body_text": "Faktúra v prílohe. (vymyslený príklad)",
+                    "body_text_en": "Invoice attached. (an invented example)",
                 }
             ],
         },
+        # #976: the demo twin of GET /api/inbound-quarantine/preview, keyed
+        # "<item_id>:<n>" (invented drawings; the real route answers a JPEG)
+        "inbound_quarantine_previews": _quarantine_previews(),
         "thumbnails": demo_thumbnails.build(pictures),
         "activity": {
             "events": [

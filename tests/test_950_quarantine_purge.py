@@ -109,8 +109,9 @@ async def test_rejected_after_the_trash_loses_only_its_files(idb, drive, mails, 
     assert (tmp_path / "quarantine").is_dir()  # the root stays
     after = await row(idb, item["id"])
     assert after["state"] == "purged" and after["files_purged_at"]
-    # the row and its encrypted blobs stay
+    # the row and its encrypted blobs stay; the mail text (#976) goes with the files
     assert after["sender_enc"] == item["sender_enc"] and after["files_enc"] == item["files_enc"]
+    assert item["body_enc"] and after["body_enc"] is None
     assert after["file_count"] == 2 and after["total_bytes"] == item["total_bytes"]
     # a purged item is neither restorable, nor approvable, nor in the trash list
     assert (await inbound_quarantine.restore(idb, PID, item["id"], decided_by="h"))[
@@ -141,6 +142,7 @@ async def test_rejected_inside_the_trash_is_kept(idb, drive, mails, tmp_path):
     out = await inbound_quarantine.purge_due(idb)
     assert out == {}
     assert (await row(idb, item["id"]))["state"] == "rejected"
+    assert (await row(idb, item["id"]))["body_enc"]  # #976: kept inside the trash
     assert inbound_quarantine.read_file(PID, item["item_uuid"], 0).startswith(b"%PDF")
 
 
@@ -194,8 +196,10 @@ async def test_approved_with_the_switch_on_after_seven_days(
     assert out["approved_purged_items"] == 1 and "purged_items" not in out
     gone = await row(idb, old["id"])
     assert gone["state"] == "approved" and gone["files_purged_at"]
+    assert gone["body_enc"] is None  # #976: cleared at approval
     assert not item_dir(tmp_path, old["item_uuid"]).exists()
     kept = await row(idb, fresh["id"])
+    assert kept["body_enc"] is None  # #976: an approval already cleared the text
     assert kept["files_purged_at"] is None and item_dir(tmp_path, fresh["item_uuid"]).is_dir()
     # approving the purged item again never reads a missing file
     again = await inbound_quarantine.approve(idb, PID, old["id"], decided_by="h", via="x")

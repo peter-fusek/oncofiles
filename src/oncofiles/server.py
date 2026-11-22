@@ -2561,7 +2561,7 @@ async def privacy_policy(request: Request) -> HTMLResponse:
             "Privacy Policy",
             """
 <p class="meta">Effective: March 25, 2026 · Last updated: November 22, 2026 ·
-Consent version 2026-11-22</p>
+Consent version 2026-11-22.2</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2629,23 +2629,30 @@ address agrees to the <a href="/terms">terms of service</a> and to the processin
 documents as described in this policy; the sender receives an e-mail saying so, with the link to
 the terms. Only attachments sent from the patient's caregiver address (with the sender
 confirmed by the mail system) are added to the patient's folder, where they are processed like
-any other document. The text of the e-mail is not stored and is not read by any AI model.
+any other document. The text of the caregiver's e-mail is not stored, and no e-mail text is
+read by any AI model.
 Documents sent to a patient's address by anyone other than the caregiver are held encrypted in
 quarantine until the caregiver approves or rejects them; rejected or expired items stay in a
 30-day trash and are then deleted (approved ones are filed normally), and the sender gets no
-reply. Documents removed after an unclaimed trial can still be restored from
-encrypted backups for up to 6 months.</p>
+reply. So that the caregiver can decide, the plain text of such an e-mail is kept with them,
+encrypted, for the same period and deleted together with the files, and the caregiver's
+dashboard shows a small preview picture of each attachment. Documents removed after an
+unclaimed trial can still be restored from encrypted backups for up to 6 months.</p>
 <p lang="sk"><strong>Dokumenty poslané e-mailom.</strong> Každý pacient môže mať súkromnú
 e-mailovú adresu pre dokumenty. Kto pošle dokumenty na túto adresu, súhlasí s
 <a href="/terms">podmienkami používania</a> a so spracovaním týchto dokumentov podľa týchto
 zásad; odosielateľ dostane e-mail, ktorý to uvádza, s odkazom na podmienky. Do priečinka
 pacienta sa pridajú len prílohy poslané z adresy opatrovateľa pacienta (s odosielateľom
-potvrdeným poštovým systémom) a spracujú sa ako každý iný dokument. Text e-mailu sa neukladá a
-nečíta ho žiadny AI model. Dokumenty, ktoré na adresu pacienta pošle ktokoľvek iný než
+potvrdeným poštovým systémom) a spracujú sa ako každý iný dokument. Text e-mailu opatrovateľa
+sa neukladá a žiadny text e-mailu nečíta AI model. Dokumenty, ktoré na adresu pacienta pošle
+ktokoľvek iný než
 opatrovateľ, čakajú zašifrované v karanténe, kým ich opatrovateľ neschváli alebo neodmietne;
 odmietnuté alebo vypršané položky zostávajú 30 dní v koši a potom sa vymažú (schválené sa
-zaradia ako zvyčajne) a odosielateľ nedostane žiadnu odpoveď. Dokumenty odstránené po
-nevyužitej skúšobnej dobe sa ešte najviac 6 mesiacov dajú obnoviť zo šifrovaných záloh.</p>
+zaradia ako zvyčajne) a odosielateľ nedostane žiadnu odpoveď. Aby sa opatrovateľ mohol
+rozhodnúť, čistý text takého e-mailu sa uchováva spolu s nimi, zašifrovaný, rovnako dlho a
+vymaže sa spolu so súbormi; na nástenke opatrovateľa sa zobrazí malý náhľad každej prílohy.
+Dokumenty odstránené po nevyužitej skúšobnej dobe sa ešte najviac 6 mesiacov dajú obnoviť
+zo šifrovaných záloh.</p>
 <p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
 unrelated to managing your medical documents.</p>
 
@@ -2747,7 +2754,7 @@ async def terms_of_service(request: Request) -> HTMLResponse:
             "Terms of Service",
             """
 <p class="meta">Effective: March 25, 2026 · Last updated: November 22, 2026 ·
-Consent version 2026-11-22</p>
+Consent version 2026-11-22.2</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
@@ -7521,6 +7528,69 @@ async def api_inbound_quarantine_decide(request: Request) -> JSONResponse:
     ok_codes = ("approved", "rejected", "restored", "already")
     status = 200 if result.get("result") in ok_codes else 409
     return JSONResponse(result, status_code=status)
+
+
+# #976: headers of every quarantine preview answer (image or refusal)
+QUARANTINE_PREVIEW_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; sandbox",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+@mcp.custom_route("/api/inbound-quarantine/preview", methods=["GET"])
+async def api_inbound_quarantine_preview(request: Request) -> Response:
+    """A raster preview of one quarantined attachment (#976, rules in
+    ``quarantine_preview``).
+
+    ``?patient_id=…&item_id=…&n=…&size=thumb|large``. The card's ACL (#867
+    ``_dashboard_patient_or_refusal``: unknown and foreign are the same 404),
+    then the #921 write refusal: only the patient's caregiver (an admin's
+    read-only view and the operator bearer get 403 ``read_only``). A foreign
+    or unknown item id is the same 404. 200 = a re-encoded JPEG (never the
+    original bytes); 415 = no safe preview for this type (the card shows the
+    type mark); 409 = the file fails its manifest sha256; 422 = rendering
+    failed or timed out. Always ``Cache-Control: no-store``.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    patient_id, refusal = await _dashboard_patient_or_refusal(request)
+    if refusal is not None:
+        return refusal
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    ro_err = await _dashboard_write_refusal(request, db_inst, patient_id)
+    if ro_err is not None:
+        return ro_err
+    from oncofiles import inbound_quarantine, quarantine_preview
+
+    headers = dict(QUARANTINE_PREVIEW_HEADERS)
+    size = quarantine_preview.parse_size(request.query_params.get("size"))
+    try:
+        item_id = int(request.query_params.get("item_id", ""))
+        index = int(request.query_params.get("n", ""))
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "bad_request"}, status_code=400, headers=headers)
+    if size is None or item_id < 1 or not 0 <= index < 1000:
+        return JSONResponse({"error": "bad_request"}, status_code=400, headers=headers)
+    if not inbound_quarantine.configured():
+        return JSONResponse({"enabled": False}, status_code=409, headers=headers)
+    try:
+        image = await quarantine_preview.render(db_inst, patient_id, item_id, index, size)
+    except quarantine_preview.PreviewRefusedError as refused:
+        if refused.code == quarantine_preview.NOT_FOUND:
+            return _patient_not_found()
+        status = {
+            quarantine_preview.UNSUPPORTED: 415,
+            quarantine_preview.INTEGRITY: 409,
+        }.get(refused.code, 422)
+        return JSONResponse({"error": refused.code}, status_code=status, headers=headers)
+    except Exception as exc:
+        logger.error("API inbound-quarantine preview error (%s)", type(exc).__name__)
+        return JSONResponse({"error": "internal error"}, status_code=500, headers=headers)
+    headers["Content-Disposition"] = 'inline; filename="preview.jpg"'
+    return Response(image, media_type="image/jpeg", headers=headers)
 
 
 # ── /q/<token>: the e-mail buttons of the quarantine (#950, #834 exception) ──

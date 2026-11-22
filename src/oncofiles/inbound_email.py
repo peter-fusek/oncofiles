@@ -139,6 +139,8 @@ from email import policy
 from email.parser import BytesParser
 from email.utils import getaddresses, parseaddr
 
+from oncofiles import inbound_body
+
 logger = logging.getLogger(__name__)
 
 # D2 (the domain) is still open: the ONE place it is named.
@@ -484,8 +486,9 @@ def signature_ok(secret: str, header: str, original_to: str, auth: str, body: by
 
 @dataclass
 class InboundAttachment:
-    name: str  # as sent (may be empty); never logged
-    data: bytes
+    # #976 infra review: no address, name, text, bytes or token in a repr
+    name: str = field(repr=False)  # as sent (may be empty); never logged
+    data: bytes = field(repr=False)
     content_type: str = "application/octet-stream"
     inline: bool = False
     # Adapters whose provider delivers attachments by reference (Brevo) set
@@ -495,21 +498,24 @@ class InboundAttachment:
     declared_size: int | None = None
     # The provider's download reference (Brevo ``DownloadToken``), kept so the
     # durable queue (#952) can rebuild ``fetch`` after a restart. Never logged.
-    ref: str = ""
+    ref: str = field(default="", repr=False)
 
 
 @dataclass
 class InboundMessage:
-    recipients: list[str]  # candidates, most trusted first
-    sender: str  # the From address
+    # #976 infra review: fields holding an address, a message id, file names,
+    # a download token or the mail text are left out of the repr, so a logged
+    # or repr'd message never leaks them
+    recipients: list[str] = field(repr=False)  # candidates, most trusted first
+    sender: str = field(repr=False)  # the From address
     auth_pass: bool  # provider verdict: SPF/DKIM aligned with From
-    message_id: str = ""
+    message_id: str = field(default="", repr=False)
     auto_submitted: str = ""
     precedence: str = ""
     list_id: str = ""
-    return_path: str | None = None  # None = header absent; "<>" = bounce
+    return_path: str | None = field(default=None, repr=False)  # None = header absent; "<>" = bounce
     is_report: bool = False  # multipart/report or message/delivery-status inside
-    attachments: list[InboundAttachment] = field(default_factory=list)
+    attachments: list[InboundAttachment] = field(default_factory=list, repr=False)
     parse_skips: Counter = field(default_factory=Counter)
     # #950 phase 2: admitted through welcome@ (``inbound_welcome.admit``): the
     # reply is the welcome text instead of the receipt.
@@ -522,9 +528,13 @@ class InboundMessage:
     # ``dkim_not_aligned``; "" = worth verifying); ``delivery_id`` is Brevo's
     # per-delivery ``Uuid`` (part of the claimed dedupe key). Never logged.
     auth_mode: str = ""
-    eml_ref: str = ""
+    eml_ref: str = field(default="", repr=False)
     dkim_prefilter: str = ""
-    delivery_id: str = ""
+    delivery_id: str = field(default="", repr=False)
+    # #976: the mail's plain text (``inbound_body``: text/plain preferred,
+    # HTML reduced to text, capped). Read only by the quarantine, which stores
+    # it encrypted for the caregiver's card; never logged, never filed.
+    body_text: str = field(default="", repr=False)
 
 
 class UnparseableMessageError(ValueError):
@@ -635,6 +645,7 @@ def parse_raw_mime(raw: bytes, *, original_to: str = "", auth: str = "") -> Inbo
         is_report=state["report"] or msg.get_content_type() == "multipart/report",
         attachments=attachments,
         parse_skips=skips,
+        body_text=inbound_body.from_mime(msg),
     )
 
 
@@ -1168,8 +1179,10 @@ def _brevo_fetcher(token: str, api_key: str, limit: int):
 def parse_brevo_item(item: dict) -> InboundMessage:
     """Brevo adapter: one ``items[]`` entry → :class:`InboundMessage`.
 
-    Bodies (``RawHtmlBody`` / ``RawTextBody`` / ``ExtractedMarkdown*``) are
-    never read. Attachments are references, downloaded by the core only after
+    Bodies are read only through ``inbound_body.reduce_body`` (#976: the
+    plain text of ``RawTextBody``, else ``RawHtmlBody`` reduced to text,
+    capped; kept only for a quarantined mail); ``ExtractedMarkdown*`` is never
+    read. Attachments are references, downloaded by the core only after
     the sender check passed (``BREVO_API_KEY``; without it nothing is fetched).
     """
     from oncofiles.dashboard_upload import MAX_FILE_BYTES
@@ -1249,6 +1262,7 @@ def parse_brevo_item(item: dict) -> InboundMessage:
         is_report=ctype.startswith("multipart/report"),
         attachments=attachments,
         parse_skips=skips,
+        body_text=inbound_body.reduce_body(item.get("RawTextBody"), item.get("RawHtmlBody")),
     )
 
 

@@ -255,16 +255,19 @@ class InboundClaimedJobsMixin(DatabaseBase):
         now: str,
         lease: str,
         next_attempt_at: str | None = None,
+        payload_enc: str | None = None,
     ) -> bool:
-        """Final (or retry) ``state`` + ``reason`` code, only under the lease."""
+        """Final (or retry) ``state`` + ``reason`` code, only under the lease.
+        ``payload_enc`` (#976) replaces the payload in the same update."""
         if state not in INBOUND_JOB_STATES:
             raise ValueError("unknown inbound job state")
         cursor = await self.db.execute(
             """UPDATE inbound_claimed_jobs
                SET state = ?, reason = ?, updated_at = ?,
-                   next_attempt_at = COALESCE(?, next_attempt_at)
+                   next_attempt_at = COALESCE(?, next_attempt_at),
+                   payload_enc = COALESCE(?, payload_enc)
                WHERE id = ? AND state = 'processing' AND updated_at = ?""",
-            (state, reason, now, next_attempt_at, job_id, lease),
+            (state, reason, now, next_attempt_at, payload_enc, job_id, lease),
         )
         await self.db.commit()
         return (cursor.rowcount or 0) == 1

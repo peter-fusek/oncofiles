@@ -1177,13 +1177,17 @@ async def test_brevo_limits_and_missing_key(idb, drive, mails, brevo, monkeypatc
     assert result.accepted == 0 and result.skipped == {"fetch_failed": 1}
 
 
-def test_brevo_bodies_are_never_read():
+def test_brevo_bodies_are_read_only_through_the_body_reducer():
+    """#976: the text bodies reach the message only via ``inbound_body``
+    (plain text, capped; kept only for a quarantined mail); the extracted
+    markdown is never read."""
     import inspect
 
     src = inspect.getsource(inbound_email.parse_brevo_item)
     code = src.split('"""', 2)[2]
-    for name in ("RawHtmlBody", "RawTextBody", "ExtractedMarkdownMessage"):
-        assert f'"{name}"' not in code
+    assert '"ExtractedMarkdownMessage"' not in code and "ExtractedMarkdown" not in code
+    lines = [ln for ln in code.splitlines() if '"RawTextBody"' in ln or '"RawHtmlBody"' in ln]
+    assert len(lines) == 1 and "inbound_body.reduce_body(" in lines[0]
 
 
 # ── security review: separate secrets, trusted A-R line, separate caps ───

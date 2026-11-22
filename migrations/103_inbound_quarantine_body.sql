@@ -1,0 +1,12 @@
+-- #976 quarantine card: the text of the mail. Additive only: one nullable
+-- column, no backfill (items quarantined before this have no text).
+--
+-- body_enc: the mail's plain text (oncofiles.inbound_body: text/plain
+--           preferred, HTML reduced to text, at most 8 KiB), AES-GCM with the
+--           quarantine key, associated data
+--           quarantine|<patient_id>|<item_uuid>|body. NULL = no text kept.
+--           Shown only to the caregiver in the dashboard card (as text, links
+--           not clickable); never in an e-mail, the /q page, a log or a model.
+--           The purge (oncofiles.inbound_quarantine.purge_due) sets it NULL
+--           together with removing the item's encrypted files.
+ALTER TABLE inbound_quarantine ADD COLUMN body_enc TEXT;

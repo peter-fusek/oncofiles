@@ -182,6 +182,12 @@
  <section class="panel quarantine-card" id="quarantine-card" hidden aria-labelledby="quarantine-title">
  <div class="section-head">
  <h2 id="quarantine-title" data-sk="Čaká na vaše schválenie" data-en="Waiting for your approval">Čaká na vaše schválenie</h2>
+ <!-- #976: the same list / grid switch and tiles as the document list (#948) -->
+ <div class="view-switch quarantine-view-switch" id="quarantine-view-switch" role="group" aria-labelledby="quarantine-view-label" hidden>
+ <span id="quarantine-view-label" class="sr-only" data-sk="Zobrazenie príloh na schválenie" data-en="View of the attachments to approve">Zobrazenie príloh na schválenie</span>
+ <button type="button" class="view-btn is-active" id="q-view-btn-list" data-action="setQuarantineView|list" aria-pressed="true"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2" y="3.5" width="3" height="3" rx="0.8"/><rect x="7" y="4" width="11" height="2" rx="1"/><rect x="2" y="8.5" width="3" height="3" rx="0.8"/><rect x="7" y="9" width="11" height="2" rx="1"/><rect x="2" y="13.5" width="3" height="3" rx="0.8"/><rect x="7" y="14" width="11" height="2" rx="1"/></svg><span class="view-btn-label" data-sk="Zoznam" data-en="List">Zoznam</span></button>
+ <button type="button" class="view-btn" id="q-view-btn-grid" data-action="setQuarantineView|grid" aria-pressed="false"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2.5" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="2.5" y="11" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="11" width="6.5" height="6.5" rx="1.2"/></svg><span class="view-btn-label" data-sk="Mriežka" data-en="Grid">Mriežka</span></button>
+ </div>
  </div>
  <p class="section-lead" data-sk="Tieto prílohy prišli na adresu pre dokumenty z inej adresy, než je vaša. Kým ich neschválite, nič sa s nimi nedeje. Ak odosielateľa nepoznáte, odmietnite ich." data-en="These attachments came to the document address from an address other than yours. Nothing happens to them until you approve them. If you do not know the sender, reject them.">Tieto prílohy prišli na adresu pre dokumenty z inej adresy, než je vaša. Kým ich neschválite, nič sa s nimi nedeje. Ak odosielateľa nepoznáte, odmietnite ich.</p>
  <div id="quarantine-list" class="quarantine-list"></div>
