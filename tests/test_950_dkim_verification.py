@@ -1408,14 +1408,15 @@ async def test_over_bound_address_rows_are_never_dropped_and_alerted_after_three
     for n in range(threshold):
         statuses.append((await _post(idb, dkim_item(addr, eml=f"eml-over-{n}"))).status_code)
     assert statuses == [503] * threshold
-    assert inbound_email.alerts_overview() == {"claimed_address_refusals_high": 0}
+    none = {"claimed_address_refusals_high": 0, "bad_tokens_high": 0}
+    assert inbound_email.alerts_overview() == none
     for n in range(threshold, threshold + 3):
         statuses.append((await _post(idb, dkim_item(addr, eml=f"eml-over-{n}"))).status_code)
     assert set(statuses) == {503}
     counters = inbound_email._state.counters
     assert counters["jobs_claimed_dropped"] == 0
     assert counters["jobs_claimed_full"] == len(statuses)
-    expected = {"claimed_address_refusals_high": 3}
+    expected = {"claimed_address_refusals_high": 3, "bad_tokens_high": 0}
     assert inbound_email.alerts_overview() == expected
     assert inbound_email.unmatched_overview()["alerts"] == expected
     held = len(await _rows(idb, "inbound_claimed_jobs"))
@@ -1436,7 +1437,7 @@ async def test_alerts_are_on_readiness_never_on_health(idb, monkeypatch):
     req = _request(idb, b"", {})
     req.scope["app"] = app
     body = json.loads((await server.readiness(req)).body)
-    assert body["inbound_alerts"] == {"claimed_address_refusals_high": 1}
+    assert body["inbound_alerts"] == {"claimed_address_refusals_high": 1, "bad_tokens_high": 0}
     assert "alerts" not in inspect.getsource(server.health)
 
 

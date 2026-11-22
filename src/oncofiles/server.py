@@ -4136,6 +4136,8 @@ async def readiness(request: Request) -> JSONResponse:
         from oncofiles import inbound_email as _inbound_email
 
         result["inbound_alerts"] = _inbound_email.alerts_overview()
+        # bad-token mails of the last hour, all addresses (enumeration watch)
+        result["inbound_bad_tokens"] = _inbound_email.bad_tokens_overview()
         return JSONResponse(result)
     except Exception:
         logger.exception("Readiness check failed")
