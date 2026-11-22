@@ -61,6 +61,16 @@ class InboundQuarantineMixin(DatabaseBase):
             row = await cursor.fetchone()
         return int(row[0] or 0)
 
+    async def quarantine_retained_bytes_total(self) -> int:
+        """Bytes still on disk in the quarantine store, all patients: every
+        state but a future 'purged' (pending, approved, rejected, expired:
+        nothing is deleted yet)."""
+        async with self.db.execute(
+            "SELECT COALESCE(SUM(total_bytes), 0) FROM inbound_quarantine WHERE state != 'purged'"
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(row[0] or 0)
+
     async def quarantine_state_totals(self) -> dict:
         """{state: {items, files, bytes}} over all patients (admin overview)."""
         async with self.db.execute(

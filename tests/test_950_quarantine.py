@@ -961,3 +961,61 @@ def test_demo_twin_has_a_trash_entry():
     assert trashed["state"] == "rejected" and trashed["days_left"] > 0
     js = (Path(server.__file__).parent / "dashboard.js").read_text()
     assert "restoreQuarantine: 1" in js and "'Kôš (' + trash.length" in js
+
+
+# ── round 4: global retained-bytes cap, own free-space margin, text only ──
+
+
+async def test_global_cap_counts_every_byte_still_on_disk(idb, drive, mails, monkeypatch):
+    """Pending, approved, rejected and expired items all hold bytes until the
+    purge PR; their sum is capped globally (``quarantine_full``)."""
+    for i, state in enumerate(("approved", "rejected", "expired")):
+        await quarantine_one(
+            idb,
+            sender=f"held{i}@example.test",
+            files=[(f"H{i}.pdf", pdf(700 + i), "application/pdf")],
+        )
+        await idb.db.execute(
+            "UPDATE inbound_quarantine SET state = ? "
+            "WHERE id = (SELECT MAX(id) FROM inbound_quarantine)",
+            (state,),
+        )
+    await idb.db.commit()
+    stored = await idb.quarantine_retained_bytes_total()
+    assert stored > 0 and await idb.quarantine_pending_bytes_total() == 0
+    monkeypatch.setattr(inbound_quarantine, "QUARANTINE_MAX_RETAINED_BYTES", stored + 1000)
+    result = await quarantine_one(idb, sender="late@example.test")
+    assert result.outcome == "unmatched"
+    assert inbound_email._state.counters["quarantine_listed_quarantine_full"] == 1
+    overview = await inbound_quarantine.admin_overview(idb)
+    assert overview["stored_bytes"] == stored
+    assert overview["stored_budget_bytes"] == stored + 1000
+
+
+async def test_own_free_space_margin_stops_before_the_trials(idb, drive, mails, monkeypatch):
+    from oncofiles import holding_store
+
+    assert inbound_quarantine.QUARANTINE_MIN_FREE_BYTES > holding_store.MIN_FREE_BYTES
+    # 25 GB free: trials still write (above 20 GB), quarantine already stops
+    monkeypatch.setattr(inbound_quarantine, "_free_bytes", lambda: 25 * 1024**3)
+    assert (await quarantine_one(idb)).outcome == "unmatched"
+    assert inbound_email._state.counters["quarantine_listed_quarantine_disk_low"] == 1
+    assert await rows(idb, "SELECT * FROM inbound_quarantine") == []
+
+
+async def test_notice_is_text_plain_only(idb, drive, monkeypatch):
+    """Brevo rewrites <a href> links in HTML parts, not plain-text URLs: the
+    notice is sent without ``html=`` and has no text/html part."""
+    from tests import fake_smtp
+
+    instances = fake_smtp.install(monkeypatch)
+    await quarantine_one(idb)
+    [smtp] = instances
+    [(msg, to)] = smtp.sent
+    assert to == [CARER]
+    types = [part.get_content_type() for part in msg.walk()]
+    assert "text/html" not in types and "text/plain" in types
+    assert msg["X-Mailin-Tag"] and "inbound_quarantine" in msg["X-Mailin-Tag"]
+    src = Path(inbound_quarantine.__file__).read_text()
+    call = src[src.index("ok = await mailer.send_mail(") :]
+    assert "html=" not in call[: call.index(")\n")]

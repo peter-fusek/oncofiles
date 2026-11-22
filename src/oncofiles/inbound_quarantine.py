@@ -109,6 +109,15 @@ MAX_PENDING_BYTES = 200 * 1024 * 1024  # pending bytes per patient
 MAX_RECEIVED_BYTES_30D = 500 * 1024 * 1024
 # all patients' PENDING bytes; separate from the trial holding store's budget
 QUARANTINE_MAX_PENDING_BYTES = 2 * 1024 * 1024 * 1024
+# all patients' bytes still ON DISK in the quarantine store (security review
+# of 15e2ae0). Nothing deletes a quarantined file yet, so every state holds
+# its bytes: pending, rejected, expired AND approved (approval copies the
+# file into the patient's documents; the encrypted quarantine copy stays).
+# Only the future purge (state 'purged', separate PR) frees bytes.
+QUARANTINE_MAX_RETAINED_BYTES = 5 * 1024 * 1024 * 1024
+# quarantine stops accepting mail at this free space, well above the
+# holding store's MIN_FREE_BYTES (20 GB), so trials never hit disk_low first
+QUARANTINE_MIN_FREE_BYTES = 30 * 1024 * 1024 * 1024
 NOTIFY_SENDER_INTERVAL_S = 3600  # one notification per sender and patient per hour
 MAX_NOTICES_PER_DAY = 3  # notification e-mails per patient per 24 h
 MAX_ITEMS_PER_NOTICE = 5  # items with buttons in one e-mail; the rest: dashboard
@@ -388,7 +397,7 @@ async def quarantine_mail(db, patient_id: str, th: str, msg, reason: str, progre
     temporary download failure of a queued mail returns ``retry`` with nothing
     written; the source hash makes a later attempt a no-op once stored.
     """
-    from oncofiles import holding_store, inbound_email
+    from oncofiles import inbound_email
 
     pp = patient_id[:4]
     if not configured():
@@ -456,8 +465,10 @@ async def quarantine_mail(db, patient_id: str, th: str, msg, reason: str, progre
         return Outcome("listed", "quarantine_received_cap", skipped=skipped)
     if await db.quarantine_pending_bytes_total() + total > QUARANTINE_MAX_PENDING_BYTES:
         return Outcome("listed", "quarantine_full", skipped=skipped)
-    if _free_bytes() - total < holding_store.MIN_FREE_BYTES:
-        return Outcome("listed", "disk_low", skipped=skipped)
+    if await db.quarantine_retained_bytes_total() + total > QUARANTINE_MAX_RETAINED_BYTES:
+        return Outcome("listed", "quarantine_full", skipped=skipped)
+    if _free_bytes() - total < QUARANTINE_MIN_FREE_BYTES:
+        return Outcome("listed", "quarantine_disk_low", skipped=skipped)
 
     item_uuid = str(uuid.uuid4())
     await asyncio.to_thread(_write_files, patient_id, item_uuid, datas)
@@ -1042,6 +1053,10 @@ async def admin_overview(db) -> dict:
         "pending_bytes": by_state.get("pending", {}).get("bytes", 0),
         "pending_budget_bytes": QUARANTINE_MAX_PENDING_BYTES,
         "retained_bytes": retained,
+        # bytes on disk in every state (nothing is deleted yet), against
+        # QUARANTINE_MAX_RETAINED_BYTES
+        "stored_bytes": sum(v.get("bytes", 0) for k, v in by_state.items() if k != "purged"),
+        "stored_budget_bytes": QUARANTINE_MAX_RETAINED_BYTES,
     }
 
 
