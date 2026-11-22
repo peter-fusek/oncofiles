@@ -103,12 +103,15 @@ def propose_cache_key(contract, text) -> str:
     """The proposal depends on the whole README the model reads (vocabulary, folder
     table, rules), not only on its version: a README edit or a vocabulary block the
     run itself added (#854, the runner then classifies with the re-parsed contract)
-    must miss, and so must a change of the classify prompt."""
+    must miss, and so must a change of the classify prompt. Under the default
+    ``CURATED_CLASSIFY_PROMPT=v1`` the key is the pre-#926 one byte for byte
+    (``classify.cache_version()`` = ``PROMPT_VERSION``); v2 adds its own prompt
+    hash and the sampling mode."""
     from oncofiles.curated import classify
 
     readme_sha = hashlib.sha256(contract.readme_text.encode("utf-8")).hexdigest()
     return hashlib.sha256(
-        f"{classify.PROMPT_VERSION}\n{contract.version}\n{contract.patient_token}\n"
+        f"{classify.cache_version()}\n{contract.version}\n{contract.patient_token}\n"
         f"{readme_sha}\n{text}".encode()
     ).hexdigest()
 
@@ -4617,6 +4620,8 @@ async def _classify_scorecard_job(
     requested: int,
     missing: int,
     repeat: int,
+    sampling: str | None = None,
+    prompt_variant: str | None = None,
 ) -> None:
     """Re-run ``classify.propose`` + ``validate`` on each document's stored
     sidecar text (#926). DRY RUN: no Drive write, no filing, no sidecar, no
@@ -4630,7 +4635,8 @@ async def _classify_scorecard_job(
 
     started = time.monotonic()
     job = _reocr_jobs[pid]
-    request = csc.request_settings()
+    request = csc.request_settings(sampling, prompt_variant)
+    variant = request["prompt_variant"]
     auto_vocab = vocab_mod.enabled()
     cards: list[dict] = []
     stopped = False
@@ -4657,6 +4663,8 @@ async def _classify_scorecard_job(
             for _ in range(repeat):
                 runs.append(await asyncio.to_thread(
                     csc.run_once, contract, text, d.get("filename") or "",
+                    prompt_variant=variant,
+                    sampling=request["sampling"] if variant == "v2" else None,
                     auto_vocab=auto_vocab,
                 ))  # fmt: skip
             cards.append(csc.card(d["id"], d.get("category"), runs))
@@ -4666,12 +4674,14 @@ async def _classify_scorecard_job(
             patient_id=pid, label_prefix=compare_to_label, before_id=row_id, kind=csc.KIND
         )
         prev_report = (prev or {}).get("report") or {}
-        versions = csc.versions(sampling=request["sampling"])
+        versions = csc.versions(sampling=request["sampling"], prompt_variant=variant)
         job.update(state="done", report={
             "kind": csc.KIND, "dry_run": True, "scorecard": csc.SCORECARD_VERSION,
             "label": label, "partial": stopped, "versions": versions,
             "settings": {**request, "repeat": repeat, "auto_vocab": auto_vocab,
-                         "max_age_days": None},
+                         "max_age_days": None,
+                         "overrides": {k: v for k, v in (("prompt_variant", prompt_variant),
+                                                         ("sampling", sampling)) if v}},
             "totals": totals,
             "compared_to": {"row_id": prev["id"], "label": prev_report.get("label"),
                             "finished_at": prev.get("finished_at")} if prev else None,
@@ -4704,6 +4714,8 @@ async def curated_classify_scorecard(
     label: str = "classify",
     compare_to_label: str | None = None,
     repeat: int = 1,
+    sampling: str | None = None,
+    prompt_variant: str | None = None,
 ) -> str:
     """DRY RUN classification scorecard (#926): re-run the curated
     classification (LOCAL model, ``classify.propose`` + ``validate``) on the
@@ -4735,14 +4747,30 @@ async def curated_classify_scorecard(
         compare_to_label: compare with the newest classification scorecard
             whose label starts with this; null = the previous one.
         repeat: runs per document (1-3); 2 measures stability.
+        sampling: "thinking" | "greedy" for this job (#926 step 2); null =
+            CURATED_CLASSIFY_SAMPLING. Only with the v2 request (refused
+            under v1). Echoed in ``settings``.
+        prompt_variant: "v1" | "v2" for this job (dry run only); null =
+            CURATED_CLASSIFY_PROMPT. v1 = the request before #926, v2 =
+            reasoning + sampling + worked examples. Echoed in ``settings``
+            and ``versions`` (with its ``prompt_version``), so a before (v1)
+            and an after (v2) run on the same deployed code.
     """
+    from oncofiles.curated import classify, llm
     from oncofiles.curated import classify_scorecard as csc
-    from oncofiles.curated import llm
 
     for name, value in (("label", label), ("compare_to_label", compare_to_label)):
         if value is not None and not _SCORECARD_LABEL.fullmatch(str(value)):
             return json.dumps({"error": f"{name} must be 1-60 letters, digits or . _ : - "
                                "(starting with a letter or digit)"})  # fmt: skip
+    if prompt_variant is not None and prompt_variant not in classify.PROMPT_VARIANTS:
+        return json.dumps({"error": "prompt_variant must be one of "
+                           f"{list(classify.PROMPT_VARIANTS)} or null"})  # fmt: skip
+    if sampling is not None and sampling not in classify.SAMPLING_MODES:
+        return json.dumps({"error": f"sampling must be one of {sorted(classify.SAMPLING_MODES)} "
+                           "or null"})  # fmt: skip
+    if sampling is not None and classify.prompt_variant(prompt_variant) != "v2":
+        return json.dumps({"error": "sampling applies only to prompt_variant v2"})
     if (
         isinstance(repeat, bool)
         or not isinstance(repeat, int)
@@ -4771,7 +4799,7 @@ async def curated_classify_scorecard(
     _reocr_jobs[pid] = job = {
         "state": "running", "kind": "classify_scorecard", "dry_run": True, "label": label,
         "compare_to_label": compare_to_label, "started_at": datetime.now(UTC).isoformat(),
-        "repeat": repeat, **csc.request_settings(),
+        "repeat": repeat, **csc.request_settings(sampling, prompt_variant),
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
         "missing_document_ids": missing,
     }  # fmt: skip
@@ -4791,7 +4819,8 @@ async def curated_classify_scorecard(
         job["task"] = asyncio.create_task(
             _classify_scorecard_job(
                 db, pid, docs, row_id=row_id, label=label, compare_to_label=compare_to_label,
-                requested=len(ids), missing=len(missing), repeat=repeat,
+                requested=len(ids), missing=len(missing), repeat=repeat, sampling=sampling,
+                prompt_variant=prompt_variant,
             )
         )  # fmt: skip
     return json.dumps(_public_job(pid), ensure_ascii=False)

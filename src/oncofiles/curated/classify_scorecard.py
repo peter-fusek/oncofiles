@@ -21,7 +21,9 @@ Metrics:
 * speed: p50 / p95 seconds and completion / reasoning tokens per run;
 * repeat (``repeat=2``): per document, whether every run gave the same
   (doc type, date, institution, review) outcome;
-* ``metadata_unverified``: the ``verify_metadata`` codes the runs would write.
+* ``metadata_unverified``: the ``verify_metadata`` codes (written to the
+  sidecar under ``CURATED_CLASSIFY_PROMPT=v2``; under v1 computed for the
+  comparison only).
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ SCORECARD_VERSION = "classify-scorecard-v1"
 KIND = "classification"
 # a change of these does not change what the numbers mean, so a delta is
 # still given; they are listed in ``definition_changed`` for the reader
-INFO_FIELDS = ("prompt_version", "sampling", "model")
+INFO_FIELDS = ("prompt_variant", "prompt_version", "sampling", "model")
 AGREEMENT_FIELDS = ("doc_type", "date", "institution")
 _HIGHER_IS_BETTER = tuple(f"agreement.{f}.pct_agree" for f in AGREEMENT_FIELDS) + (
     "repeat.pct_stable",
@@ -91,32 +93,44 @@ def _error_kind(exc: BaseException) -> str:
     return "other"
 
 
-def request_settings() -> dict:
-    """How ``propose`` asks the model today: ``legacy`` = temperature 0, the
-    model's default reasoning, ``/no_think`` in the system prompt."""
-    return {"sampling": "legacy", "thinking": "default"}
+def request_settings(sampling: str | None = None, prompt_variant: str | None = None) -> dict:
+    """How ``propose`` asks the model. ``v1`` (``CURATED_CLASSIFY_PROMPT``
+    default): ``legacy`` = temperature 0, the model's default reasoning,
+    ``/no_think`` in the system prompt (what step 1 recorded). ``v2`` (#926
+    step 2): reasoning explicitly on, the sampling mode of
+    ``classify.sampling_mode`` (``thinking`` | ``greedy``)."""
+    variant = classify.prompt_variant(prompt_variant)
+    if variant == "v2":
+        return {"prompt_variant": variant, "sampling": classify.sampling_mode(sampling),
+                "thinking": "on"}  # fmt: skip
+    return {"prompt_variant": variant, "sampling": "legacy", "thinking": "default"}
 
 
-def prompt_version() -> str:
-    """``classify.PROMPT_VERSION`` when the classifier defines one, else the
-    hash of today's template and text cut (the same formula)."""
-    version = getattr(classify, "PROMPT_VERSION", None)
-    if isinstance(version, str):
-        return version
+def prompt_version(prompt_variant: str | None = None) -> str:
+    """The prompt hash of the effective (or given) variant
+    (``classify.prompt_version``: the default request keeps ``PROMPT_VERSION``)."""
+    version = getattr(classify, "prompt_version", None)
+    if callable(version):
+        return version(prompt_variant)
     seed = f"{classify.SYSTEM_TEMPLATE}\n{classify.MAX_TEXT_CHARS}"
     return hashlib.sha256(seed.encode()).hexdigest()[:16]
 
 
-def run_once(contract, text: str, filed_name: str, *, auto_vocab: bool = False) -> dict:
-    """One production ``propose`` (exactly the request a curated run sends)
-    + ``validate`` on a stored text (blocking; one model slot). Returns
-    counts and codes only. Token counts and the finish reason stay None
-    until ``propose`` reports them."""
+def run_once(
+    contract, text: str, filed_name: str, *, prompt_variant: str | None = None,
+    sampling: str | None = None, auto_vocab: bool = False,
+) -> dict:  # fmt: skip
+    """One production ``propose`` (the request a curated run sends; only
+    ``prompt_variant`` and, under v2, ``sampling`` may override the env for a
+    scorecard job) + ``validate`` on a stored text (blocking; one model
+    slot). Returns counts and codes only."""
     stats: dict = {}
     t0 = time.monotonic()
     out: dict = {"seconds": None, "error_kind": None, "truncated": False}
     try:
-        raw = classify.propose(contract, text)
+        raw = classify.propose(
+            contract, text, variant=prompt_variant, sampling=sampling, stats=stats
+        )
     except llm.LocalLLMError as exc:
         kind = _error_kind(exc)
         out.update(error_kind=kind, truncated=kind == "truncated")
@@ -139,7 +153,7 @@ def run_once(contract, text: str, filed_name: str, *, auto_vocab: bool = False) 
         return out  # fmt: skip
     cls = classify.validate(contract, raw, text, today=_today(), auto_vocab=auto_vocab)
     fields = cls.fields
-    iso = f"{fields.date[:4]}-{fields.date[4:6]}-{fields.date[6:]}" if fields else None
+    iso = naming.iso_of(fields.date) if fields else None  # a day, or a month (#919)
     _, unverified = classify.verify_metadata(raw, text, iso)
     out["review"] = bool(cls.review_needed)
     out["reasons"] = sorted({reason_code(r) for r in cls.reasons})
@@ -259,10 +273,11 @@ def totals(cards: list[dict], *, requested: int = 0, missing: int = 0) -> dict:
     }
 
 
-def versions(*, sampling: str) -> dict:
+def versions(*, sampling: str, prompt_variant: str | None = None) -> dict:
     return {
         "scorecard_version": SCORECARD_VERSION,
-        "prompt_version": prompt_version(),
+        "prompt_variant": classify.prompt_variant(prompt_variant),
+        "prompt_version": prompt_version(prompt_variant),
         "sampling": sampling,
         "model": llm.model_id()[:64],
     }
