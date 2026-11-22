@@ -20,7 +20,7 @@ QUARANTINE_ACTIONS = ("approve", "reject")
 _COLS = """id, patient_id, item_uuid, source_hash, sender_hash, sender_enc, files_enc,
            refusal_reason, file_count, total_bytes, state, received_at, notified_at,
            notice_key, claimed_at, decided_at, decided_by, decided_via, filed_count,
-           restored_at, files_purged_at"""
+           restored_at, files_purged_at, body_enc"""
 
 
 class InboundQuarantineMixin(DatabaseBase):
@@ -107,15 +107,17 @@ class InboundQuarantineMixin(DatabaseBase):
         refusal_reason: str,
         file_count: int,
         total_bytes: int,
+        body_enc: str | None = None,
     ) -> int | None:
         """Insert one pending item; None when the same delivery is already
-        quarantined (``ON CONFLICT DO NOTHING``)."""
+        quarantined (``ON CONFLICT DO NOTHING``). ``body_enc`` (#976): the
+        mail's text, AES-GCM, or None."""
         pid = require_patient_id(patient_id)
         cursor = await self.db.execute(
             """INSERT INTO inbound_quarantine
                  (patient_id, item_uuid, source_hash, sender_hash, sender_enc, files_enc,
-                  refusal_reason, file_count, total_bytes, state)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                  refusal_reason, file_count, total_bytes, state, body_enc)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
                ON CONFLICT (patient_id, source_hash) DO NOTHING""",
             (
                 pid,
@@ -127,6 +129,7 @@ class InboundQuarantineMixin(DatabaseBase):
                 refusal_reason,
                 int(file_count),
                 int(total_bytes),
+                body_enc,
             ),
         )
         await self.db.commit()
@@ -350,7 +353,8 @@ class InboundQuarantineMixin(DatabaseBase):
         """pending → ``state``. With ``lease`` (approve) only under that claim;
         without it (reject) only while no fresh approval claim holds the item.
         ``filed_count`` None keeps the stored count (a reject after a partial
-        approve)."""
+        approve). A decided item's unused e-mail links are voided in the same
+        transaction (#976 infra tidy-up)."""
         if state not in ("approved", "rejected"):
             raise ValueError("bad decision state")
         if lease is not None:
@@ -373,6 +377,12 @@ class InboundQuarantineMixin(DatabaseBase):
                 *extra,
             ),
         )
+        if cursor.rowcount:
+            await self.db.execute(
+                """UPDATE inbound_quarantine_tokens SET used_at = ?
+                   WHERE patient_id = ? AND quarantine_id = ? AND used_at IS NULL""",
+                (at, patient_id, int(item_id)),
+            )
         await self.db.commit()
         return bool(cursor.rowcount)
 
@@ -412,7 +422,8 @@ class InboundQuarantineMixin(DatabaseBase):
 
     async def expire_quarantine_items(self, *, before: str, stale_before: str, at: str) -> int:
         """Mark pending items received (or restored) before ``before`` expired;
-        ``decided_at`` = ``at`` starts their trash period. Nothing deleted."""
+        ``decided_at`` = ``at`` starts their trash period; their unused e-mail
+        links are voided (#976 infra tidy-up). Nothing deleted."""
         cursor = await self.db.execute(
             """UPDATE inbound_quarantine
                SET state = 'expired', decided_at = ?, decided_by = NULL, decided_via = 'expiry'
@@ -420,6 +431,15 @@ class InboundQuarantineMixin(DatabaseBase):
                  AND (claimed_at IS NULL OR claimed_at < ?)""",
             (at, before, stale_before),
         )
+        if cursor.rowcount:
+            await self.db.execute(
+                """UPDATE inbound_quarantine_tokens SET used_at = ?
+                   WHERE used_at IS NULL AND quarantine_id IN (
+                     SELECT id FROM inbound_quarantine
+                     WHERE state = 'expired' AND decided_via = 'expiry' AND decided_at = ?
+                   )""",
+                (at, at),
+            )
         await self.db.commit()
         return int(cursor.rowcount or 0)
 
@@ -454,14 +474,16 @@ class InboundQuarantineMixin(DatabaseBase):
     ) -> bool:
         """Record that the item's files are gone, under the same conditions
         the candidate query used. ``kind`` 'trash': rejected / expired →
-        'purged'; 'approved': the state stays 'approved'. The row stays."""
+        'purged'; 'approved': the state stays 'approved'. The row stays; the
+        mail text (``body_enc``, #976) goes with the files."""
         if kind == "trash":
             sql = """UPDATE inbound_quarantine
-                     SET state = 'purged', files_purged_at = ?, claimed_at = NULL
+                     SET state = 'purged', files_purged_at = ?, claimed_at = NULL,
+                         body_enc = NULL
                      WHERE id = ? AND patient_id = ? AND files_purged_at IS NULL
                        AND state IN ('rejected', 'expired') AND decided_at < ?"""
         elif kind == "approved":
-            sql = """UPDATE inbound_quarantine SET files_purged_at = ?
+            sql = """UPDATE inbound_quarantine SET files_purged_at = ?, body_enc = NULL
                      WHERE id = ? AND patient_id = ? AND files_purged_at IS NULL
                        AND state = 'approved' AND filed_count >= file_count
                        AND decided_at < ?"""

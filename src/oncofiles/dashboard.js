@@ -624,6 +624,11 @@
       if (path === '/api/inbound-address') return d.inbound_address;
       if (path === '/api/trial-status') return d.trial_status;
       if (path === '/api/inbound-quarantine') return d.inbound_quarantine;
+      if (path === '/api/inbound-quarantine/preview') {
+        // #976: an invented drawing per item and file (never a network call)
+        var qp = new URL(url, location.origin).searchParams;
+        return (d.inbound_quarantine_previews || {})[qp.get('item_id') + ':' + qp.get('n')] || { src: null };
+      }
       if (path === '/api/patients') return d.patients;
       if (path === '/api/patient-budget') return { show_pill: false };
       if (path === '/api/manifest') return { generated_at: new Date().toISOString(), invented: true, documents: (d.documents || {}).documents || [] };
@@ -1069,6 +1074,53 @@
     // (approve files them like the caregiver's own mail; reject only marks
     // them). An admin's read-only view gets only a count. Built with
     // createElement/textContent only; demo data is invented.
+    //
+    // #976: each mail is one tile in the document list's tile style (#948:
+    // list / grid switch, .doc-card tiles, .doc-thumb previews, the quick
+    // look): previews of its files, sender, time, file count and types, the
+    // first lines of the mail's text (full text on expand, always as plain
+    // text: textContent, links are not clickable) and Approve / Reject on the
+    // tile. Previews come from GET /api/inbound-quarantine/preview (caregiver
+    // only, a re-encoded JPEG, never the file itself), asked for lazily, ONE
+    // request at a time, kept for the page's lifetime; a file without a
+    // preview keeps its flat file-type mark.
+
+    var Q_VIEW_KEY = 'oncofiles_quarantine_view';
+    var Q_MAX_SHOTS = 4;               // previews on one tile; the rest as "+N"
+    var Q_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
+    var quarantineView = readQuarantineView();
+    var quarantineData = null;         // the last card answer
+    var qPreviewCache = new Map();     // 'item:n:size' -> {src, src_en?} | null (no preview)
+    var qPreviewWanted = [];           // thumb keys to ask for, in order
+    var qPreviewLargeWanted = null;    // the one large preview the quick look waits for
+    var qPreviewInFlight = null;
+    var qPreviewBusy = false;
+    var qPreviewGen = 0;               // bumped when the patient changes
+    var qObserver = null;
+    var qLook = null;                  // {itemId, n} while the quick look shows a quarantined file
+
+    function readQuarantineView() {
+      try { return localStorage.getItem(Q_VIEW_KEY) === 'grid' ? 'grid' : 'list'; }
+      catch (e) { return 'list'; }
+    }
+
+    function setQuarantineView(view) {
+      quarantineView = view === 'grid' ? 'grid' : 'list';
+      try { localStorage.setItem(Q_VIEW_KEY, quarantineView); } catch (e) { /* no storage: this page only */ }
+      if (quarantineData) renderQuarantine(quarantineData);
+    }
+
+    function updateQuarantineViewControls(show) {
+      var sw = document.getElementById('quarantine-view-switch');
+      if (sw) sw.hidden = !show;
+      var grid = quarantineView === 'grid';
+      [['q-view-btn-list', !grid], ['q-view-btn-grid', grid]].forEach(function (pair) {
+        var btn = document.getElementById(pair[0]);
+        if (!btn) return;
+        btn.classList.toggle('is-active', pair[1]);
+        btn.setAttribute('aria-pressed', pair[1] ? 'true' : 'false');
+      });
+    }
 
     function quarantineStatus(sk, en) {
       var el = document.getElementById('quarantine-status');
@@ -1081,6 +1133,8 @@
     function hideQuarantineCard() {
       var card = document.getElementById('quarantine-card');
       if (card) card.hidden = true;
+      quarantineData = null;
+      if (qLook) closeQuickLook();
     }
 
     function quarantineSize(n) {
@@ -1090,13 +1144,341 @@
       return n + ' B';
     }
 
+    function quarantineWhen(item) {
+      return String(item.received_at || '').replace('T', ' ').replace('Z', ' UTC');
+    }
+
+    /** The row shape typeMark() reads: only the file name decides the mark. */
+    function qFileDoc(f) { return { filename: String((f && f.name) || '') }; }
+
+    function qKey(itemId, n, size) { return String(itemId) + ':' + String(n) + ':' + size; }
+
+    function resetQuarantinePreviews() {
+      qPreviewGen += 1;
+      qPreviewCache.clear();
+      qPreviewWanted = [];
+      qPreviewLargeWanted = null;
+      if (qObserver) { qObserver.disconnect(); qObserver = null; }
+    }
+
+    /** One file's preview tile: a button that opens the quick look. */
+    function buildQuarantineThumb(item, n, f) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'thumb-btn quarantine-thumb-btn';
+      btn.setAttribute('aria-haspopup', 'dialog');
+      btn.setAttribute('data-q-item', String(item.id));
+      btn.setAttribute('data-q-n', String(n));
+      btn.title = f.name || '';
+      var label = document.createElement('span');
+      label.className = 'sr-only';
+      setI18n(label, 'Náhľad: ' + (f.name || '?'), 'Preview: ' + (f.name || '?'));
+      var box = document.createElement('span');
+      box.className = 'doc-thumb';
+      box.setAttribute('data-q-key', qKey(item.id, n, 'thumb'));
+      var entry = f.preview ? qPreviewCache.get(qKey(item.id, n, 'thumb')) : null;
+      if (entry) {
+        box.appendChild(thumbImg(entry, qFileDoc(f)));
+        box.classList.add('has-img');
+      } else {
+        box.appendChild(typeMark(qFileDoc(f)));
+        if (entry === undefined) observeQuarantineThumb(box);
+      }
+      btn.appendChild(box);
+      btn.appendChild(label);
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        openQuarantineLook(item.id, n, btn);
+      });
+      return btn;
+    }
+
+    function observeQuarantineThumb(box) {
+      var key = box.getAttribute('data-q-key');
+      if (typeof IntersectionObserver === 'undefined') { wantQuarantinePreview(key); return; }
+      if (!qObserver) {
+        qObserver = new IntersectionObserver(function (entries, observer) {
+          entries.forEach(function (en) {
+            if (!en.isIntersecting) return;
+            observer.unobserve(en.target);
+            wantQuarantinePreview(en.target.getAttribute('data-q-key'));
+          });
+        }, { rootMargin: '320px 0px' });
+      }
+      qObserver.observe(box);
+    }
+
+    function wantQuarantinePreview(key) {
+      if (!key || qPreviewCache.has(key) || qPreviewWanted.indexOf(key) !== -1 || qPreviewInFlight === key) return;
+      qPreviewWanted.push(key);
+      pumpQuarantinePreviews();
+    }
+
+    /** One preview: a re-encoded JPEG from the server, read as a data URL. */
+    async function fetchQuarantinePreview(itemId, n, size) {
+      var url = '/api/inbound-quarantine/preview?item_id=' + encodeURIComponent(itemId) +
+        '&n=' + encodeURIComponent(n) + '&size=' + size;
+      function ok(src) { return typeof src === 'string' && src.indexOf('data:image/') === 0; }
+      if (DEMO) {
+        var answer = await apiFetch(url);  // demoRoute: an invented drawing, or null
+        return answer && ok(answer.src) && (answer.src_en == null || ok(answer.src_en)) ? answer : null;
+      }
+      if (!currentPatientId) return null;
+      var resp = await fetch(url + '&patient_id=' + encodeURIComponent(currentPatientId), {
+        headers: { 'Authorization': authHeader() }
+      });
+      if (resp.status === 401) { logout(); return null; }
+      if (!resp.ok) return null;  // 415 no safe preview, 409 / 422 refused: the mark stays
+      if ((resp.headers.get('Content-Type') || '').indexOf('image/jpeg') !== 0) return null;
+      var blob = await resp.blob();
+      if (!blob || blob.size > Q_PREVIEW_MAX_BYTES) return null;
+      var src = await new Promise(function (resolve) {
+        var reader = new FileReader();
+        reader.onload = function () { resolve(reader.result); };
+        reader.onerror = function () { resolve(null); };
+        reader.readAsDataURL(new Blob([blob], { type: 'image/jpeg' }));
+      });
+      return typeof src === 'string' && src.indexOf('data:image/jpeg') === 0 ? { src: src } : null;
+    }
+
+    /** One request at a time: the quick look's large preview first, else the next thumb. */
+    async function pumpQuarantinePreviews() {
+      if (qPreviewBusy) return;
+      var key = null;
+      if (qPreviewLargeWanted !== null) { key = qPreviewLargeWanted; qPreviewLargeWanted = null; }
+      else if (qPreviewWanted.length) key = qPreviewWanted.shift();
+      if (key === null) return;
+      if (qPreviewCache.has(key)) { pumpQuarantinePreviews(); return; }
+      var parts = key.split(':');
+      qPreviewBusy = true;
+      qPreviewInFlight = key;
+      var gen = qPreviewGen;
+      var entry = null;
+      try { entry = await fetchQuarantinePreview(parts[0], parts[1], parts[2]); }
+      catch (e) { entry = null; }
+      qPreviewBusy = false;
+      qPreviewInFlight = null;
+      if (gen === qPreviewGen) {
+        qPreviewCache.set(key, entry);
+        applyQuarantinePreview(key);
+      }
+      pumpQuarantinePreviews();
+    }
+
+    function applyQuarantinePreview(key) {
+      var entry = qPreviewCache.get(key);
+      var parts = key.split(':');
+      var f = qFindFile(parts[0], parts[1]);
+      if (entry && f && parts[2] === 'thumb') {
+        document.querySelectorAll('.doc-thumb[data-q-key]').forEach(function (box) {
+          if (box.getAttribute('data-q-key') !== key || box.querySelector('img')) return;
+          clearEl(box);
+          box.appendChild(thumbImg(entry, qFileDoc(f.file)));
+          box.classList.add('has-img');
+        });
+      }
+      if (qLook && String(qLook.itemId) === parts[0] && String(qLook.n) === parts[1]) showQuarantineLargePreview();
+    }
+
+    /** Every mail the card shows (pending first, then the trash), flat. */
+    function qAllItems() {
+      if (!quarantineData) return [];
+      return (quarantineData.items || []).map(function (it) { return { item: it, trash: false }; })
+        .concat((quarantineData.trash || []).map(function (it) { return { item: it, trash: true }; }));
+    }
+
+    function qFindFile(itemId, n) {
+      var all = qAllItems();
+      for (var i = 0; i < all.length; i++) {
+        if (String(all[i].item.id) !== String(itemId)) continue;
+        var f = (all[i].item.files || [])[Number(n)];
+        return f ? { item: all[i].item, file: f, trash: all[i].trash } : null;
+      }
+      return null;
+    }
+
+    /** Every file of every mail, in card order: what Left / Right walk through. */
+    function qFlatFiles() {
+      var out = [];
+      qAllItems().forEach(function (entry) {
+        (entry.item.files || []).forEach(function (_f, n) { out.push({ itemId: entry.item.id, n: n }); });
+      });
+      return out;
+    }
+
+    function quarantineTypes(item) {
+      var seen = [];
+      (item.files || []).forEach(function (f) {
+        var t = String(f.type || '?');
+        if (seen.indexOf(t) === -1) seen.push(t);
+      });
+      return seen.join(', ');
+    }
+
+    function quarantineWarning(item) {
+      var warn = document.createElement('p');
+      warn.className = 'quarantine-warn';
+      var mark = document.createElement('span');
+      mark.className = 'state-mark attention';
+      mark.setAttribute('aria-hidden', 'true');
+      warn.appendChild(mark);
+      var wt = document.createElement('span');
+      // infra review of #970: the From may be the caregiver's own address
+      setI18n(wt, ' Správa sa tvári, že je od vás, ale váš poskytovateľ pošty ju nepodpísal. Schváľte ju, len ak ste ju naozaj poslali vy.',
+        ' This mail claims to be from you, but it is not signed by your mail provider. Approve it only if you really sent it.');
+      warn.appendChild(wt);
+      return warn;
+    }
+
+    /** The mail's text as plain text (textContent): never HTML, links not clickable. */
+    function quarantineBodyBlock(item, full) {
+      var wrap = document.createElement('div');
+      wrap.className = 'quarantine-body-wrap';
+      var label = document.createElement('span');
+      label.className = 'quarantine-body-label';
+      setI18n(label, 'Text e-mailu', 'Text of the e-mail');
+      wrap.appendChild(label);
+      var text = String(loc(item, 'body_text') || '');
+      if (!text) {
+        var none = document.createElement('span');
+        none.className = 'quarantine-body-none';
+        setI18n(none, 'Text e-mailu nie je uložený.', 'The text of the e-mail is not kept.');
+        wrap.appendChild(none);
+        return wrap;
+      }
+      var box = document.createElement('div');
+      box.className = 'quarantine-body' + (full ? ' is-open' : '');
+      box.textContent = text;
+      wrap.appendChild(box);
+      if (!full) {
+        var more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'link-btn quarantine-body-toggle';
+        more.setAttribute('aria-expanded', 'false');
+        more.setAttribute('data-action', 'toggleQuarantineBody|@this');
+        setI18n(more, 'Zobraziť celý text', 'Show the full text');
+        wrap.appendChild(more);
+      }
+      return wrap;
+    }
+
+    function toggleQuarantineBody(btn) {
+      var box = btn && btn.parentNode ? btn.parentNode.querySelector('.quarantine-body') : null;
+      if (!box) return;
+      var open = !box.classList.contains('is-open');
+      box.classList.toggle('is-open', open);
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) setI18n(btn, 'Skryť text', 'Hide the text');
+      else setI18n(btn, 'Zobraziť celý text', 'Show the full text');
+    }
+
+    function quarantineActions(item, trash) {
+      var actions = document.createElement('div');
+      actions.className = 'inbound-actions quarantine-actions';
+      function button(action, sk, en) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'copy-btn';
+        b.setAttribute('data-action', action + '|' + item.id + '|@this');
+        setI18n(b, sk, en);
+        actions.appendChild(b);
+      }
+      if (trash) {
+        button('restoreQuarantine', 'Obnoviť', 'Restore');
+      } else {
+        button('approveQuarantine', 'Schváliť', 'Approve');
+        button('rejectQuarantine', 'Odmietnuť', 'Reject');
+      }
+      return actions;
+    }
+
+    /** One mail = one tile (the document list's .doc-card style): previews, sender,
+        time, files, the first lines of its text, and the decision. */
+    function buildQuarantineTile(item, trash) {
+      var li = document.createElement('li');
+      li.className = 'doc-card-item quarantine-tile-item';
+      var card = document.createElement('div');
+      card.className = 'doc-card quarantine-tile' + (item.reason === 'auth_failed' ? ' is-attention' : '');
+      card.setAttribute('data-q-item', String(item.id));
+
+      var shot = document.createElement('div');
+      shot.className = 'doc-card-shot quarantine-shots';
+      var files = item.files || [];
+      files.slice(0, Q_MAX_SHOTS).forEach(function (f, n) { shot.appendChild(buildQuarantineThumb(item, n, f)); });
+      if (files.length > Q_MAX_SHOTS) {
+        var extra = document.createElement('span');
+        extra.className = 'quarantine-more';
+        extra.textContent = '+' + (files.length - Q_MAX_SHOTS);
+        shot.appendChild(extra);
+      }
+      card.appendChild(shot);
+
+      var body = document.createElement('div');
+      body.className = 'doc-card-body';
+      var head = document.createElement('p');
+      head.className = 'quarantine-sender';
+      var addr = document.createElement('code');
+      addr.textContent = item.sender || '?';
+      head.appendChild(addr);
+      body.appendChild(head);
+      var meta = document.createElement('p');
+      meta.className = 'doc-card-meta quarantine-meta';
+      var when = document.createElement('span');
+      when.className = 'doc-card-date';
+      when.textContent = quarantineWhen(item);
+      meta.appendChild(when);
+      var count = document.createElement('span');
+      count.className = 'section-meta';
+      var nFiles = files.length;
+      setI18n(count, nFiles + (nFiles === 1 ? ' súbor' : (nFiles < 5 ? ' súbory' : ' súborov')) + ' · ' + quarantineTypes(item) + ' · ' + quarantineSize(item.total_bytes),
+        nFiles + (nFiles === 1 ? ' file' : ' files') + ' · ' + quarantineTypes(item) + ' · ' + quarantineSize(item.total_bytes));
+      meta.appendChild(count);
+      if (trash) {
+        var days = Number(item.days_left) || 0;
+        var state = document.createElement('span');
+        state.className = 'section-meta';
+        var stateSk = item.state === 'expired' ? 'vypršalo' : 'odmietnuté';
+        var stateEn = item.state === 'expired' ? 'expired' : 'rejected';
+        setI18n(state, stateSk + ' · zostáva ' + days + ' d', stateEn + ' · ' + days + ' days left');
+        meta.appendChild(state);
+      }
+      body.appendChild(meta);
+      if (item.reason === 'auth_failed') body.appendChild(quarantineWarning(item));
+      var ul = document.createElement('ul');
+      ul.className = 'quarantine-files';
+      files.forEach(function (f) {
+        var fl = document.createElement('li');
+        fl.textContent = (f.name || '?') + ' · ' + (f.type || '?') + ' · ' + quarantineSize(f.size);
+        ul.appendChild(fl);
+      });
+      body.appendChild(ul);
+      body.appendChild(quarantineBodyBlock(item, false));
+      var foot = document.createElement('div');
+      foot.className = 'doc-card-stage';
+      foot.appendChild(quarantineActions(item, trash));
+      body.appendChild(foot);
+      card.appendChild(body);
+      li.appendChild(card);
+      return li;
+    }
+
+    function quarantineTileList(items, trash) {
+      var ul = document.createElement('ul');
+      ul.className = quarantineView === 'grid' ? 'doc-grid quarantine-grid' : 'quarantine-rows';
+      items.forEach(function (item) { ul.appendChild(buildQuarantineTile(item, trash)); });
+      return ul;
+    }
+
     function renderQuarantine(data) {
       var card = document.getElementById('quarantine-card');
       var list = document.getElementById('quarantine-list');
       if (!card || !list) return;
       clearEl(list);
-      if (!data || !data.enabled || (!data.pending && !(data.trash || []).length)) { hideQuarantineCard(); return; }
+      if (qObserver) { qObserver.disconnect(); qObserver = null; }
+      if (!data || !data.enabled || (!data.pending && !(data.trash || []).length)) { hideQuarantineCard(); updateQuarantineViewControls(false); return; }
+      quarantineData = data;
       if (data.read_only) {
+        updateQuarantineViewControls(false);
         var ro = document.createElement('p');
         ro.className = 'section-meta';
         setI18n(ro, 'Čaká na schválenie opatrovateľom: ' + data.pending,
@@ -1105,63 +1487,14 @@
         card.hidden = false;
         return;
       }
-      (data.items || []).forEach(function (item) {
-        var box = document.createElement('div');
-        box.className = 'quarantine-item';
-        var head = document.createElement('p');
-        head.className = 'quarantine-sender';
-        var who = document.createElement('span');
-        setI18n(who, 'Odosielateľ: ', 'Sender: ');
-        var addr = document.createElement('code');
-        addr.textContent = item.sender || '?';
-        var when = document.createElement('span');
-        when.className = 'section-meta';
-        when.textContent = ' · ' + String(item.received_at || '').replace('T', ' ').replace('Z', ' UTC');
-        head.appendChild(who);
-        head.appendChild(addr);
-        head.appendChild(when);
-        box.appendChild(head);
-        if (item.reason === 'auth_failed') {
-          var warn = document.createElement('p');
-          warn.className = 'quarantine-warn';
-          var mark = document.createElement('span');
-          mark.className = 'state-mark attention';
-          mark.setAttribute('aria-hidden', 'true');
-          warn.appendChild(mark);
-          var wt = document.createElement('span');
-          // infra review of #970: the From may be the caregiver's own address
-          setI18n(wt, ' Správa sa tvári, že je od vás, ale váš poskytovateľ pošty ju nepodpísal. Schváľte ju, len ak ste ju naozaj poslali vy.',
-            ' This mail claims to be from you, but it is not signed by your mail provider. Approve it only if you really sent it.');
-          warn.appendChild(wt);
-          box.appendChild(warn);
-        }
-        var ul = document.createElement('ul');
-        ul.className = 'quarantine-files';
-        (item.files || []).forEach(function (f) {
-          var li = document.createElement('li');
-          li.textContent = (f.name || '?') + ' · ' + (f.type || '?') + ' · ' + quarantineSize(f.size);
-          ul.appendChild(li);
-        });
-        box.appendChild(ul);
-        var actions = document.createElement('div');
-        actions.className = 'inbound-actions';
-        var ok = document.createElement('button');
-        ok.type = 'button';
-        ok.className = 'copy-btn';
-        ok.setAttribute('data-action', 'approveQuarantine|' + item.id + '|@this');
-        setI18n(ok, 'Schváliť', 'Approve');
-        var no = document.createElement('button');
-        no.type = 'button';
-        no.className = 'copy-btn';
-        no.setAttribute('data-action', 'rejectQuarantine|' + item.id + '|@this');
-        setI18n(no, 'Odmietnuť', 'Reject');
-        actions.appendChild(ok);
-        actions.appendChild(no);
-        box.appendChild(actions);
-        list.appendChild(box);
-      });
+      updateQuarantineViewControls(true);
+      if ((data.items || []).length) list.appendChild(quarantineTileList(data.items, false));
       renderQuarantineTrash(list, data.trash || []);
       card.hidden = false;
+      if (qLook) {
+        if (qFindFile(qLook.itemId, qLook.n)) renderQuarantineLook();
+        else closeQuickLook();  // decided or gone meanwhile
+      }
     }
 
     // Trash ("Kôš", maintainer decision 2026-11-22): rejected / expired items
@@ -1176,42 +1509,118 @@
       box.appendChild(sum);
       var note = document.createElement('p');
       note.className = 'section-meta';
-      setI18n(note, 'Odmietnuté a vypršané prílohy sa dajú obnoviť 30 dní; potom sa ich súbory vymažú.',
-        'Rejected and expired attachments can be restored for 30 days; then their files are deleted.');
+      setI18n(note, 'Odmietnuté a vypršané prílohy sa dajú obnoviť 30 dní; potom sa ich súbory aj text e-mailu vymažú.',
+        'Rejected and expired attachments can be restored for 30 days; then their files and the text of the e-mail are deleted.');
       box.appendChild(note);
-      trash.forEach(function (item) {
-        var row = document.createElement('div');
-        row.className = 'quarantine-item';
-        var head = document.createElement('p');
-        head.className = 'quarantine-sender';
-        var addr = document.createElement('code');
-        addr.textContent = item.sender || '?';
-        var meta = document.createElement('span');
-        meta.className = 'section-meta';
-        var days = Number(item.days_left) || 0;
-        var stateSk = item.state === 'expired' ? 'vypršalo' : 'odmietnuté';
-        var stateEn = item.state === 'expired' ? 'expired' : 'rejected';
-        setI18n(meta, ' · ' + stateSk + ' · zostáva ' + days + ' d', ' · ' + stateEn + ' · ' + days + ' days left');
-        head.appendChild(addr);
-        head.appendChild(meta);
-        row.appendChild(head);
-        var ul = document.createElement('ul');
-        ul.className = 'quarantine-files';
-        (item.files || []).forEach(function (f) {
-          var li = document.createElement('li');
-          li.textContent = (f.name || '?') + ' \u00b7 ' + (f.type || '?') + ' \u00b7 ' + quarantineSize(f.size);
-          ul.appendChild(li);
-        });
-        row.appendChild(ul);
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'copy-btn';
-        btn.setAttribute('data-action', 'restoreQuarantine|' + item.id + '|@this');
-        setI18n(btn, 'Obnoviť', 'Restore');
-        row.appendChild(btn);
-        box.appendChild(row);
-      });
+      box.appendChild(quarantineTileList(trash, true));
       list.appendChild(box);
+    }
+
+    // ── Quick look of a quarantined file (the #948 overlay, its own content) ──
+
+    function openQuarantineLook(itemId, n, opener) {
+      var overlay = document.getElementById('quicklook');
+      if (!overlay || !qFindFile(itemId, n)) return;
+      var wasOpen = quickLook.id !== null;
+      qLook = { itemId: itemId, n: Number(n) };
+      quickLook.id = 'q:' + itemId + ':' + n;  // never a document id
+      if (!wasOpen) {
+        quickLook.opener = opener || document.activeElement;
+        overlay.hidden = false;
+        lockPageScroll(true);
+      }
+      renderQuarantineLook();
+      if (!wasOpen) document.getElementById('ql-panel').focus();
+    }
+
+    function renderQuarantineLook() {
+      if (!qLook) return;
+      var found = qFindFile(qLook.itemId, qLook.n);
+      if (!found) return;
+      var f = found.file;
+      var item = found.item;
+      document.getElementById('ql-title').textContent = f.name || '?';
+      var meta = document.getElementById('ql-meta');
+      clearEl(meta);
+      var addr = document.createElement('code');
+      addr.textContent = item.sender || '?';
+      meta.appendChild(addr);
+      var info = document.createElement('span');
+      info.className = 'ql-date';
+      info.textContent = (f.type || '?') + ' · ' + quarantineSize(f.size) + ' · ' + quarantineWhen(item);
+      meta.appendChild(info);
+      var flat = qFlatFiles();
+      var idx = -1;
+      flat.forEach(function (x, i) { if (String(x.itemId) === String(qLook.itemId) && x.n === qLook.n) idx = i; });
+      document.getElementById('ql-pos').textContent = idx >= 0 ? (idx + 1) + ' / ' + flat.length : '';
+      var prev = document.getElementById('ql-prev');
+      var next = document.getElementById('ql-next');
+      prev.disabled = idx <= 0;
+      next.disabled = idx < 0 || idx >= flat.length - 1;
+      if ((document.activeElement === prev || document.activeElement === next) && document.activeElement.disabled) {
+        document.getElementById('ql-panel').focus();
+      }
+      showQuarantineLargePreview();
+      var host = document.getElementById('ql-detail');
+      clearEl(host);
+      clearEl(document.getElementById('ql-links'));
+      var panel = document.createElement('div');
+      panel.className = 'quarantine-look-detail';
+      var who = document.createElement('p');
+      who.className = 'quarantine-sender';
+      var lead = document.createElement('span');
+      setI18n(lead, 'Odosielateľ: ', 'Sender: ');
+      var code = document.createElement('code');
+      code.textContent = item.sender || '?';
+      who.appendChild(lead);
+      who.appendChild(code);
+      panel.appendChild(who);
+      if (item.reason === 'auth_failed') panel.appendChild(quarantineWarning(item));
+      var ul = document.createElement('ul');
+      ul.className = 'quarantine-files';
+      (item.files || []).forEach(function (other) {
+        var li = document.createElement('li');
+        li.textContent = (other.name || '?') + ' · ' + (other.type || '?') + ' · ' + quarantineSize(other.size);
+        ul.appendChild(li);
+      });
+      panel.appendChild(ul);
+      panel.appendChild(quarantineBodyBlock(item, true));
+      panel.appendChild(quarantineActions(item, found.trash));
+      host.appendChild(panel);
+    }
+
+    /** The large preview; until it arrives, the small one or the file-type mark. */
+    function showQuarantineLargePreview() {
+      var page = document.getElementById('ql-page');
+      var found = qLook ? qFindFile(qLook.itemId, qLook.n) : null;
+      if (!page || !found) return;
+      var f = found.file;
+      var large = f.preview ? qPreviewCache.get(qKey(qLook.itemId, qLook.n, 'large')) : null;
+      var entry = large || (f.preview ? qPreviewCache.get(qKey(qLook.itemId, qLook.n, 'thumb')) : null);
+      clearEl(page);
+      if (entry) {
+        var img = thumbImg(entry, qFileDoc(f));
+        img.alt = (dashLang === 'sk' ? 'Náhľad: ' : 'Preview: ') + (f.name || '');
+        page.appendChild(img);
+      } else {
+        page.appendChild(typeMark(qFileDoc(f)));
+      }
+      page.classList.toggle('has-img', !!entry);
+      var waiting = !!f.preview && large === undefined;
+      page.classList.toggle('is-loading', waiting);
+      var key = qKey(qLook.itemId, qLook.n, 'large');
+      if (waiting && qPreviewInFlight !== key) {
+        qPreviewLargeWanted = key;  // only the latest
+        pumpQuarantinePreviews();
+      }
+    }
+
+    function quarantineLookStep(delta) {
+      var flat = qFlatFiles();
+      var idx = -1;
+      flat.forEach(function (x, i) { if (String(x.itemId) === String(qLook.itemId) && x.n === qLook.n) idx = i; });
+      var next = idx < 0 ? null : flat[idx + Number(delta)];
+      if (next) openQuarantineLook(next.itemId, next.n);
     }
 
     async function loadQuarantine() {
@@ -2057,7 +2466,7 @@
 
     // #857: version of the privacy + terms text the consent checkbox refers to.
     // Must equal oncofiles.patient_consent.CONSENT_VERSION (a test keeps them equal).
-    var CONSENT_VERSION = '2026-11-22';
+    var CONSENT_VERSION = '2026-11-22.2';
 
     async function wizardStep1Submit() {
       var btn = document.getElementById('wiz-create-btn');
@@ -4554,6 +4963,7 @@
       thumbLargeWanted = null;
       thumbsOff = false;
       resetThumbObserver();
+      resetQuarantinePreviews();  // #976: they belong to this sign-in and patient
     }
 
     // ── Grid view ──
@@ -4678,6 +5088,7 @@
     }
 
     function renderQuickLook() {
+      if (qLook) { renderQuarantineLook(); return; }  // #976: a quarantined file
       var d = findDoc(quickLook.id);
       if (!d) return;
       renderQuickLookNav();
@@ -4764,6 +5175,7 @@
     /** Left / Right: the previous or next document of the list as it is filtered and sorted now. */
     function quickLookStep(delta) {
       if (quickLook.id === null) return;
+      if (qLook) { quarantineLookStep(delta); return; }  // #976
       var list = docListView().sorted;
       var idx = indexOfDoc(list, quickLook.id);
       var next = idx < 0 ? null : list[idx + Number(delta)];
@@ -4777,6 +5189,8 @@
       var opener = quickLook.opener;
       quickLook = { id: null, opener: null, details: {} };
       thumbLargeWanted = null;
+      qLook = null;  // #976
+      qPreviewLargeWanted = null;
       overlay.hidden = true;
       ['ql-page', 'ql-detail', 'ql-links'].forEach(function (elId) { clearEl(document.getElementById(elId)); });
       lockPageScroll(false);

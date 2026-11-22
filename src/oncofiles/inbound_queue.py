@@ -197,7 +197,7 @@ import uuid
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
-from oncofiles import inbound_email, inbound_welcome
+from oncofiles import inbound_body, inbound_email, inbound_welcome
 from oncofiles.database._inbound_jobs import InboundQueueFullError
 from oncofiles.email_identity import canonical_email
 
@@ -432,12 +432,19 @@ def _warn_unconfigured_once() -> None:
 # ── payload <-> message ──────────────────────────────────────────────────
 
 
-def to_payload(msg: inbound_email.InboundMessage, token: str) -> dict:
+def to_payload(msg: inbound_email.InboundMessage, token: str, *, keep_body: bool = False) -> dict:
     """The minimal plaintext of a job (encrypted before it is stored).
 
     At most ``MAX_FILES_PER_MAIL`` attachment references are kept (#952 infra
     review: a bounded payload); the rest are counted as ``too_many_files``, so
     the receipt still reports them.
+
+    ``keep_body`` (#976): only for a mail the sender rule already refuses at
+    enqueue (an untrusted row, which the quarantine will hold) the capped
+    plain text travels along, so the quarantine can keep it for the
+    caregiver's card. A trusted or claimed row never carries a body, and the
+    worker drops it from the payload as soon as the job ends (``done`` /
+    ``failed``).
     """
     refs = [a for a in msg.attachments if a.ref]
     skips = Counter(msg.parse_skips)
@@ -474,6 +481,7 @@ def to_payload(msg: inbound_email.InboundMessage, token: str) -> dict:
         "eml_ref": msg.eml_ref,
         "dkim_prefilter": msg.dkim_prefilter,
         "delivery_id": msg.delivery_id,
+        **({"body_text": msg.body_text} if keep_body and msg.body_text else {}),
     }
 
 
@@ -531,6 +539,7 @@ def from_payload(payload: dict) -> inbound_email.InboundMessage:
         eml_ref=str(payload.get("eml_ref") or ""),
         dkim_prefilter=str(payload.get("dkim_prefilter") or ""),
         delivery_id=str(payload.get("delivery_id") or ""),
+        body_text=inbound_body.cap(str(payload.get("body_text") or "")),
     )
 
 
@@ -714,7 +723,7 @@ async def enqueue(
         pid = row["patient_id"]
         trusted = await inbound_email.sender_refusal(db, pid, msg) is None
         job_uuid = str(uuid.uuid4())
-        payload = to_payload(msg, token)
+        payload = to_payload(msg, token, keep_body=not trusted)
         rows.append(
             {
                 "job_uuid": job_uuid,
@@ -999,6 +1008,7 @@ async def _run_one(db) -> str | None:
     if not await db.claim_inbound_job(job, now=lease["value"]):
         return "lost_claim"
     attempts = job["attempts"] + 1
+    held: dict = {"payload": None}  # the decrypted payload, once read
 
     def lease_lost() -> str:
         inbound_email._state.counters["jobs_lease_lost"] += 1
@@ -1008,6 +1018,25 @@ async def _run_one(db) -> str | None:
     async def finish(
         state: str, reason: str, *, retry_in: timedelta | None = None, refund: bool = False
     ) -> str:
+        if state != "pending" and (held["payload"] or {}).get("body_text") is not None:
+            # #976: the mail text is not kept once the job ends (the
+            # quarantine holds its own encrypted copy)
+            held["payload"].pop("body_text", None)
+            new = _iso(_now())
+            if not await db.update_inbound_job_payload(
+                jid,
+                patient_id=pid,
+                payload_enc=encrypt_payload(
+                    held["payload"],
+                    patient_id=pid,
+                    token_hash=job["token_hash"],
+                    job_uuid=job["job_uuid"],
+                ),
+                lease=lease["value"],
+                now=new,
+            ):
+                return lease_lost()
+            lease["value"] = new
         at = _now()
         ok = await db.finish_inbound_job(
             jid,
@@ -1066,6 +1095,7 @@ async def _run_one(db) -> str | None:
         )
     except UndecryptablePayloadError:
         return await finish("failed", "undecryptable")
+    held["payload"] = payload
     age = (now - _parse_iso(job["created_at"])).total_seconds()
     if payload.get("attachments") and age > BREVO_ATTACHMENT_RETENTION_S:
         return await finish("failed", "download_expired")

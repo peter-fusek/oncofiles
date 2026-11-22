@@ -139,6 +139,8 @@ from email import policy
 from email.parser import BytesParser
 from email.utils import getaddresses, parseaddr
 
+from oncofiles import inbound_body
+
 logger = logging.getLogger(__name__)
 
 # D2 (the domain) is still open: the ONE place it is named.
@@ -525,6 +527,10 @@ class InboundMessage:
     eml_ref: str = ""
     dkim_prefilter: str = ""
     delivery_id: str = ""
+    # #976: the mail's plain text (``inbound_body``: text/plain preferred,
+    # HTML reduced to text, capped). Read only by the quarantine, which stores
+    # it encrypted for the caregiver's card; never logged, never filed.
+    body_text: str = ""
 
 
 class UnparseableMessageError(ValueError):
@@ -635,6 +641,7 @@ def parse_raw_mime(raw: bytes, *, original_to: str = "", auth: str = "") -> Inbo
         is_report=state["report"] or msg.get_content_type() == "multipart/report",
         attachments=attachments,
         parse_skips=skips,
+        body_text=inbound_body.from_mime(msg),
     )
 
 
@@ -1168,8 +1175,10 @@ def _brevo_fetcher(token: str, api_key: str, limit: int):
 def parse_brevo_item(item: dict) -> InboundMessage:
     """Brevo adapter: one ``items[]`` entry → :class:`InboundMessage`.
 
-    Bodies (``RawHtmlBody`` / ``RawTextBody`` / ``ExtractedMarkdown*``) are
-    never read. Attachments are references, downloaded by the core only after
+    Bodies are read only through ``inbound_body.reduce_body`` (#976: the
+    plain text of ``RawTextBody``, else ``RawHtmlBody`` reduced to text,
+    capped; kept only for a quarantined mail); ``ExtractedMarkdown*`` is never
+    read. Attachments are references, downloaded by the core only after
     the sender check passed (``BREVO_API_KEY``; without it nothing is fetched).
     """
     from oncofiles.dashboard_upload import MAX_FILE_BYTES
@@ -1249,6 +1258,7 @@ def parse_brevo_item(item: dict) -> InboundMessage:
         is_report=ctype.startswith("multipart/report"),
         attachments=attachments,
         parse_skips=skips,
+        body_text=inbound_body.reduce_body(item.get("RawTextBody"), item.get("RawHtmlBody")),
     )
 
 

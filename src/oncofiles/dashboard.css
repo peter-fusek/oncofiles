@@ -618,6 +618,35 @@
     .quarantine-warn { font-size: 0.8125rem; }
     .quarantine-trash { margin-top: 0.75rem; border-top: 1px solid var(--rule); padding-top: 0.5rem; }
     .quarantine-trash summary { cursor: pointer; font-weight: 600; }
+    /* #976: one mail = one tile in the document list's .doc-card style (#948) */
+    .quarantine-view-switch { margin-left: auto; }
+    .quarantine-view-switch[hidden] { display: none; }
+    .quarantine-rows { list-style: none; display: flex; flex-direction: column; gap: 0.75rem; margin: 0.75rem 0 0; padding: 0; }
+    .quarantine-grid { margin-top: 0.75rem; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); }
+    .doc-card.quarantine-tile { cursor: default; }
+    .doc-card.quarantine-tile.is-attention { border-color: var(--coral); }
+    .quarantine-rows .doc-card.quarantine-tile { flex-direction: row; }
+    .quarantine-shots { flex-wrap: wrap; gap: 0.5rem; align-content: flex-start; }
+    .quarantine-rows .doc-card .quarantine-shots { flex: none; width: 7.5rem; border-bottom: none; border-right: 1px solid var(--rule); padding: 0.75rem; }
+    .doc-card .quarantine-shots .doc-thumb { width: 4.25rem; max-width: none; }
+    .doc-card .quarantine-shots .thumb-btn:only-of-type .doc-thumb { width: 6rem; }
+    .quarantine-more { align-self: center; font: 600 0.8125rem var(--num); color: var(--ink-2); }
+    .quarantine-meta { margin: 0; }
+    .quarantine-tile .quarantine-sender { margin: 0; font-weight: 600; font-size: 0.875rem; }
+    .quarantine-tile .quarantine-files { margin: 0 0 0 1.125rem; font-size: 0.75rem; color: var(--ink-2); }
+    .quarantine-body-wrap { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+    .quarantine-body-label { font: 600 0.6875rem/1.2 var(--sans); text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-2); }
+    .quarantine-body-none { font-size: 0.8125rem; color: var(--ink-2); }
+    .quarantine-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 0.8125rem; line-height: 1.45; color: var(--ink); background: var(--slate-100); border-radius: 6px; padding: 0.375rem 0.5rem; max-height: 4.75em; overflow: hidden; }
+    .quarantine-body.is-open { max-height: 18rem; overflow-y: auto; }
+    .quarantine-look-detail .quarantine-body.is-open { max-height: none; }
+    .quarantine-body-toggle { align-self: flex-start; padding: 0; border: none; background: none; font: 600 0.8125rem var(--sans); color: var(--ink); text-decoration: underline; cursor: pointer; }
+    .quarantine-actions { margin: 0; }
+    .quarantine-look-detail { display: flex; flex-direction: column; gap: 0.75rem; }
+    @media (max-width: 480px) {
+      .quarantine-rows .doc-card.quarantine-tile { flex-direction: column; }
+      .quarantine-rows .doc-card .quarantine-shots { width: auto; border-right: none; border-bottom: 1px solid var(--rule); }
+    }
     /* #950 phase 2: first steps of a welcome@ trial. */
     .trial-card[hidden] { display: none; }
     .trial-card { margin-top: 1.25rem; border-left: 4px solid var(--peach); }

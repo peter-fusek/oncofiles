@@ -47,9 +47,14 @@ fsync + atomic rename + directory fsync, like ``holding_store``), key
 unset = no quarantine, the mail is listed only), associated data
 ``quarantine|<patient_id>|<item_uuid>|file|<n>``. The sender address and the
 file manifest (names, types, sizes, hashes) are AES-GCM blobs in the row
-(associated data ``quarantine|<patient_id>|<item_uuid>|<field>``). A
-quarantined file is NOT a document: no ``documents`` row, never read by a
-model, never indexed, never in search or MCP, never previewed, not counted.
+(associated data ``quarantine|<patient_id>|<item_uuid>|<field>``), and so is
+the mail's plain text (#976, ``body_enc``, field ``body``: ``inbound_body``,
+at most 8 KiB; shown only in the caregiver's card, as text). A quarantined
+file is NOT a document: no ``documents`` row, never read by a model, never
+indexed, never in search or MCP, not counted. Its only reader besides the
+approve path is ``quarantine_preview.render`` (#976): a bounded raster
+preview for the caregiver's card, never the original bytes; this module
+imports no renderer, model, indexer or extractor itself.
 
 Action links (#834 exception, this purpose only): each announced item gets
 two random tokens (``TOKEN_BYTES`` = 32 bytes, 256 bits, URL-safe), one per
@@ -154,6 +159,9 @@ DASHBOARD_URL = "https://oncofiles.com/dashboard"
 QUARANTINE_MAIL_TAG = "inbound_quarantine"
 
 REASONS = ("unknown_sender", "auth_failed")
+# #976: manifest types the caregiver's card may ask a preview for (the
+# preview module sniffs the decrypted bytes again and never trusts this)
+PREVIEW_MIMES = frozenset({"application/pdf", "image/jpeg", "image/png"})
 
 # Screen / filing codes that are final for a file: approval counts the file
 # as handled (not filed) and never retries it.
@@ -491,6 +499,7 @@ async def quarantine_mail(db, patient_id: str, th: str, msg, reason: str, progre
 
     item_uuid = str(uuid.uuid4())
     await asyncio.to_thread(_write_files, patient_id, item_uuid, datas)
+    body = getattr(msg, "body_text", "") or ""
     row_id = await db.insert_quarantine_item(
         patient_id=patient_id,
         item_uuid=item_uuid,
@@ -501,6 +510,8 @@ async def quarantine_mail(db, patient_id: str, th: str, msg, reason: str, progre
         refusal_reason=reason if reason in REASONS else "unknown_sender",
         file_count=len(files),
         total_bytes=total,
+        # #976: the mail's text for the caregiver's card (capped, encrypted)
+        body_enc=seal({"text": body}, patient_id, item_uuid, "body") if body else None,
     )
     if row_id is None:
         # Same delivery stored meanwhile: the files just written are unused
@@ -1291,6 +1302,30 @@ async def admin_overview(db) -> dict:
 # ── dashboard ────────────────────────────────────────────────────────────
 
 
+def body_text(item: dict) -> str:
+    """The mail's text of one item (#976), ``""`` when none was kept or it
+    cannot be read. Caregiver card only; never logged."""
+    blob = item.get("body_enc")
+    if not blob:
+        return ""
+    try:
+        text = unseal(blob, item["patient_id"], item["item_uuid"], "body").get("text")
+    except Exception:
+        logger.warning("quarantine: item %d text unreadable", item["id"])
+        return ""
+    return text if isinstance(text, str) else ""
+
+
+def previewable(item: dict, f: dict) -> bool:
+    """True when the card may ask ``quarantine_preview`` for this file: a
+    previewable manifest type and the encrypted files still on disk."""
+    return (
+        not item.get("files_purged_at")
+        and item.get("state") != "purged"
+        and str(f.get("mime") or "").lower() in PREVIEW_MIMES
+    )
+
+
 def _card_item(item: dict) -> dict | None:
     try:
         sender, files = _item_view(item)
@@ -1303,19 +1338,27 @@ def _card_item(item: dict) -> dict | None:
         "received_at": item["received_at"],
         "reason": item["refusal_reason"],
         "files": [
-            {"name": f["name"], "type": file_type(f["name"]), "size": int(f["size"])} for f in files
+            {
+                "name": f["name"],
+                "type": file_type(f["name"]),
+                "size": int(f["size"]),
+                "preview": previewable(item, f),
+            }
+            for f in files
         ],
         "total_bytes": int(item["total_bytes"]),
         "filed_count": int(item.get("filed_count") or 0),
+        "body_text": body_text(item),
     }
 
 
 async def dashboard_view(db, patient_id: str, *, caregiver: bool) -> dict:
     """The card's data. The caregiver sees each pending item (sender, time,
-    file names, types, sizes; ``reason`` ``auth_failed`` = claims to be from
-    the caregiver but is not signed) and the trash (rejected / expired items
+    file names, types, sizes, a ``preview`` flag per file and the mail's
+    ``body_text``, #976; ``reason`` ``auth_failed`` = claims to be from the
+    caregiver but is not signed) and the trash (rejected / expired items
     still restorable, with ``days_left``); anyone else (an admin's read-only
-    view) only the count."""
+    view, the operator bearer) only the count: no text, no preview."""
     if not configured():
         return {"enabled": False, "pending": 0, "items": [], "trash": []}
     if not caregiver:
