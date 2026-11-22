@@ -1033,6 +1033,15 @@ async def _build_document_matrix(
     known_drive_ids |= {
         d.file_id.split(":", 1)[1] for d in docs if (d.file_id or "").startswith("gdrive:")
     }
+    # #950 phase 3: a held file copied into the inbox is already shown by its
+    # holding row (with its text); its inbox entry would be the same document.
+    from oncofiles.holding_store import is_holding_file_id, moved_drive_id
+
+    known_drive_ids |= {
+        m
+        for d in docs
+        if is_holding_file_id(d.file_id) and (m := moved_drive_id(d.structured_metadata))
+    }
     inbox_rows = dashboard_inbox.rows(inbox_items, known_drive_ids)
     if filter_param in ("all", "in_progress", "attention"):
         for r in inbox_rows:

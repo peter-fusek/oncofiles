@@ -69,6 +69,7 @@ PAGE_TEXT = "<!-- page 1 -->\nInvented result 2027-05-04\n<!-- page 2 -->\nSecon
 @pytest.fixture(autouse=True)
 def welcome_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HOLDING_STORE_SECRET", HOLD_SECRET)
+    monkeypatch.setenv("INBOUND_GO_LIVE", "true")  # #950: welcome@ trials only once live
     monkeypatch.setattr("oncofiles.config.DATA_DIR", tmp_path)
     monkeypatch.setattr("oncofiles.config.ONBOARDING_MODE", "open")
     monkeypatch.setattr("oncofiles.config.ONBOARDING_INVITE_EMAILS", frozenset())
@@ -143,6 +144,11 @@ async def send(db, *items):
     assert resp.status_code == 202
     await drain()
     return resp
+
+
+def replies(sent):
+    """The welcome@ replies, without the phase 3 "ready" mail (tag trial_ready)."""
+    return [m for m in sent if "trial_ready" not in (m.get("tags") or [])]
 
 
 async def trials(db):
@@ -224,6 +230,65 @@ async def test_closed_gate_replies_once_and_keeps_nothing(idb, mails, brevo, mod
         assert name not in mails[0]["text"]
     async with idb.db.execute("SELECT COUNT(*) FROM inbound_jobs") as cur:
         assert (await cur.fetchone())[0] == 0
+
+
+# ── go-live switch (INBOUND_GO_LIVE gates welcome@ trials, not only the CTA) ──
+
+
+@pytest.mark.parametrize("value", ["", "false", "no", "1"])
+async def test_not_live_creates_no_trial_and_sends_no_reply(
+    idb, mails, brevo, model, monkeypatch, welcome_env, value
+):
+    if value:
+        monkeypatch.setenv("INBOUND_GO_LIVE", value)
+    else:
+        monkeypatch.delenv("INBOUND_GO_LIVE", raising=False)
+    store, fetched = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    assert await trials(idb) == [] and fetched == [] and mails == [] and model == []
+    async with idb.db.execute("SELECT COUNT(*) FROM inbound_jobs") as cur:
+        assert (await cur.fetchone())[0] == 0
+    assert inbound_email._state.counters["not_live"] == 1
+    overview = inbound_email.unmatched_overview()
+    [entry] = overview["senders"]
+    assert entry["reasons"] == {"not_live": 1} and entry["files"] == 2
+    assert entry["patient"] == "" and NEW not in json.dumps(overview)
+    assert list(Path(welcome_env).glob("holding/*")) == []  # nothing held
+
+
+async def test_live_creates_the_trial_as_before(idb, mails, brevo, model, monkeypatch):
+    monkeypatch.setenv("INBOUND_GO_LIVE", "TRUE")
+    store, _ = brevo
+    await send(idb, welcome_item(files=two_files(store)))
+    [trial] = await trials(idb)
+    assert len(await held_docs(idb, trial["patient_id"])) == 2
+    assert len(replies(mails)) == 1
+    assert inbound_email._state.counters["not_live"] == 0
+
+
+async def test_not_live_still_hands_an_existing_caregiver_to_phase_one(
+    idb, mails, brevo, model, drive, monkeypatch
+):
+    monkeypatch.delenv("INBOUND_GO_LIVE", raising=False)
+    store, fetched = brevo
+    await send(idb, welcome_item(sender=CARER, files=two_files(store)))
+    assert await trials(idb) == [] and fetched == ["w-a", "w-b"]
+    assert [f[0] for f in drive.files] == [FILE_A, FILE_B]
+    [reply] = mails
+    assert reply["to"] == [CARER]
+    assert inbound_email._state.counters["not_live"] == 0
+
+
+async def test_not_live_leaves_patient_address_mail_alone(
+    idb, mails, brevo, model, drive, monkeypatch
+):
+    monkeypatch.delenv("INBOUND_GO_LIVE", raising=False)
+    address = (await inbound_email.ensure_address(idb, PID))["address"]
+    store, fetched = brevo
+    await send(idb, brevo_item(address, sender=CARER, files=two_files(store)))
+    assert fetched == ["w-a", "w-b"]
+    assert [f[0] for f in drive.files] == [FILE_A, FILE_B]
+    assert len(mails) == 1 and inbound_email._state.counters["not_live"] == 0
 
 
 async def test_invite_mode_admits_only_invited_senders(idb, mails, brevo, model, monkeypatch):
@@ -335,7 +400,7 @@ async def test_welcome_reply_has_counts_terms_sign_in_and_the_address(idb, mails
     await send(idb, welcome_item(files=two_files(store)))
     [trial] = await trials(idb)
     address = (await inbound_email.ensure_address(idb, trial["patient_id"]))["address"]
-    [reply] = mails
+    [reply] = replies(mails)
     text = reply["text"]
     assert reply["to"] == [NEW] and reply["headers"] == {"Auto-Submitted": "auto-replied"}
     assert "prijali sme 2 dokument" in text and "we received 2 document" in text
@@ -353,7 +418,7 @@ async def test_reply_at_most_once_per_ten_minutes(idb, mails, brevo, model):
     store["w-c"] = pdf(953)
     files = [("SynthThird2027.pdf", "application/pdf", len(store["w-c"]), "w-c")]
     await send(idb, welcome_item(files=files, mid="<r-2@example.test>"))
-    assert len(mails) == 1
+    assert len(replies(mails)) == 1
     assert inbound_email.unmatched_overview()["totals"]["reply_throttled"] == 1
 
 
@@ -366,7 +431,7 @@ async def test_per_sender_mail_cap(idb, mails, brevo, model, monkeypatch):
     await send(idb, welcome_item(files=two_files(store), mid="<m-1@example.test>"))
     await send(idb, welcome_item(files=two_files(store), mid="<m-2@example.test>"))
     [trial] = await trials(idb)
-    assert len(await held_docs(idb, trial["patient_id"])) == 2 and len(mails) == 1
+    assert len(await held_docs(idb, trial["patient_id"])) == 2 and len(replies(mails)) == 1
     assert inbound_email.unmatched_overview()["totals"]["welcome_sender_capped"] == 1
 
 
@@ -383,7 +448,7 @@ async def test_global_new_trial_cap(idb, mails, brevo, model, monkeypatch):
     store, _ = brevo
     await send(idb, welcome_item(files=two_files(store)))
     await send(idb, welcome_item(sender=NEW2, files=two_files(store)))
-    assert len(await trials(idb)) == 1 and len(mails) == 1
+    assert len(await trials(idb)) == 1 and len(replies(mails)) == 1
     assert inbound_email.unmatched_overview()["totals"]["welcome_trial_cap"] == 1
 
 

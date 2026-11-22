@@ -2311,6 +2311,32 @@ def _start_sync_scheduler(
         next_run_time=datetime.now(),
     )
 
+    # #950 phase 3: copy a trial's held files into its curated inbox once it
+    # connected Drive (one file at a time, create-only, read back), flag held
+    # rows whose curated mirror exists, send due "ready" e-mails. Also kicked
+    # by connect_folder right after a trial connects. Never deletes anything.
+    async def _run_holding_move():
+        from oncofiles import holding_move
+
+        try:
+            async with _sync_semaphore:
+                await holding_move.run_pending(db)
+        except Exception:
+            logger.exception("holding move run failed")
+            raise
+
+    from oncofiles.holding_move import WORKER_INTERVAL_MIN as HOLDING_MOVE_INTERVAL_MIN
+
+    scheduler.add_job(
+        local_only_task("holding_move", _run_holding_move),
+        IntervalTrigger(minutes=HOLDING_MOVE_INTERVAL_MIN),
+        id="holding_move",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+        next_run_time=datetime.now(),
+    )
+
     # OF-1/OF-2: Periodic memory check — reclaim memory + graceful restart.
     # Start after 7 min to avoid false positives from startup sync spike (#366).
     scheduler.add_job(
@@ -4106,6 +4132,10 @@ async def readiness(request: Request) -> JSONResponse:
             result["inbound_jobs"] = await db.inbound_job_counts(include_done=False)
         except Exception:
             result["inbound_jobs"] = None
+        # #950: inbound alert codes (in memory, counts only; never on /health)
+        from oncofiles import inbound_email as _inbound_email
+
+        result["inbound_alerts"] = _inbound_email.alerts_overview()
         return JSONResponse(result)
     except Exception:
         logger.exception("Readiness check failed")
@@ -5506,6 +5536,10 @@ async def dashboard_verify(request: Request) -> JSONResponse:
             patient_id=None,
             route=dashboard_audit.route_name(request),
         )
+        # #950 phase 3: first sign-in of a welcome@ trial (funnel; never raises)
+        from oncofiles import trial_funnel
+
+        await trial_funnel.note_sign_in(audit_db, email)
     resp = JSONResponse(
         {
             "session_token": session_token,
@@ -7389,7 +7423,10 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
     the patient id prefix, mails, files, reason codes and times, plus totals,
     and the durable queue's counts per state / failure reason (#952).
     Go-live diagnostics: ``auth_refusals`` (counter per refusal code) and
-    ``authserv_candidates`` (hostname-shaped authserv-ids only, counts, times).
+    ``authserv_candidates`` (hostname-shaped authserv-ids only, counts, times);
+    ``header_names`` / ``item_keys`` / ``payload_keys`` (field NAMES of the
+    Brevo payload as ``{name, items}``, never values), ``auth_evidence``
+    (presence-flag counts) and ``field_names_stats``.
     """
     err = _require_admin(request)
     if err:
@@ -7405,10 +7442,25 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
     except Exception as exc:
         logger.warning("API inbound-unmatched: job counts failed (%s)", type(exc).__name__)
         out["jobs"] = None
+    try:
+        # #950 DKIM mode: the claimed bucket (mail waiting for its verification)
+        out["claimed_jobs"] = await db_inst.inbound_claimed_counts()
+    except Exception as exc:
+        logger.warning("API inbound-unmatched: claimed counts failed (%s)", type(exc).__name__)
+        out["claimed_jobs"] = None
     # #950 phase 2: why the trial reader last waited (codes and counts only)
     from oncofiles import holding_extract
 
     out["holding_reader"] = holding_extract.reader_status()
+    # #950 phase 3: time-to-value funnel of the welcome@ trials (counts and
+    # median seconds only; no ids, addresses, names or files)
+    from oncofiles import trial_funnel
+
+    try:
+        out["trial_funnel"] = trial_funnel.funnel(await db_inst.trial_funnel_rows())
+    except Exception as exc:
+        logger.warning("API inbound-unmatched: trial funnel failed (%s)", type(exc).__name__)
+        out["trial_funnel"] = None
     return JSONResponse(out)
 
 
@@ -7448,6 +7500,10 @@ async def api_trial_status(request: Request) -> JSONResponse:
                 "ready": counts.get("done", 0),
                 "attention": counts.get("failed", 0) + counts.get("excluded", 0),
                 "drive_connected": not await holding_store.holding_mode(db, patient_id),
+                # #950 phase 3: held files with a verified copy in Drive, and
+                # whether every one has one (the trial is converted)
+                "moved_to_drive": await db.holding_moved_count(patient_id=patient_id),
+                "converted": bool(trial.get("converted_at")),
             }
         )
     except Exception:
@@ -7646,7 +7702,9 @@ async def inbound_brevo_webhook(request: Request) -> Response:
         try:
             await inbound_queue.enqueue(db_inst, messages)
         except inbound_queue.InboundQueueFullError:
-            # #952 caps: nothing written, Brevo retries after Retry-After
+            # #952 caps (nothing written), or #950 claimed address rows over
+            # their bounds (the rest of the batch is then committed and the
+            # periodic worker picks it up): Brevo retries after Retry-After
             return _inbound_busy()
         except Exception as exc:
             logger.error("inbound: enqueue failed (%s)", type(exc).__name__)

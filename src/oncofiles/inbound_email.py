@@ -352,6 +352,17 @@ class InboundMessage:
     # #950 phase 2: admitted through welcome@ (``inbound_welcome.admit``): the
     # reply is the welcome text instead of the receipt.
     welcome: bool = False
+    # #950 (Brevo): ``auth_mode == "dkim"`` = the verdict is not known yet
+    # (``auth_pass`` stays False) and is decided by the queue worker on the
+    # raw message (``inbound_dkim``); ``eml_ref`` is Brevo's
+    # ``EMLDownloadToken``; ``dkim_prefilter`` is the refusal code the
+    # payload's own ``DKIM-Signature`` headers already give (``dkim_none`` /
+    # ``dkim_not_aligned``; "" = worth verifying); ``delivery_id`` is Brevo's
+    # per-delivery ``Uuid`` (part of the claimed dedupe key). Never logged.
+    auth_mode: str = ""
+    eml_ref: str = ""
+    dkim_prefilter: str = ""
+    delivery_id: str = ""
 
 
 class UnparseableMessageError(ValueError):
@@ -554,24 +565,52 @@ async def _load_referenced(
 #   behind Traefik/TLS and the token must be rotated like a password.
 # * There is no SPF/DKIM/DMARC field. The original headers are in
 #   ``Headers``, but any sender can put an ``Authentication-Results`` line in
-#   their own mail, and whether Brevo's MX adds (and strips foreign copies of)
-#   its own line is NOT documented. So ``auth_pass`` is True only when
-#   exactly one ``Authentication-Results`` header carries the authserv-id of
-#   the runtime env ``INBOUND_BREVO_AUTHSERV_ID`` (two or more = a forged copy
-#   may be among them = fail), the topmost such line is used, and it says
-#   ``dmarc=pass`` with ``header.from`` equal to the From domain. Unset (the
-#   default) = every sender fails the check = nothing is filed, everything is
-#   listed as unmatched. Infra sets it only after reading a live payload.
-# Not verified (needs a live payload): the exact ``Headers`` shape, which
-# Authentication-Results line Brevo's MX writes, the ``auth`` header format.
+#   their own mail.
+#
+# Production finding (2026-11-21): Brevo's payload has NO
+# Authentication-Results header at all, so any such header in a payload was
+# written by the sender. The verdict is therefore DKIM ONLY (infra review of
+# #966): the queue worker downloads the raw message (item key
+# ``EMLDownloadToken``) and verifies its DKIM signatures itself
+# (``inbound_dkim``; the design is in ``inbound_queue``). The earlier
+# Authentication-Results mode was removed: ``INBOUND_BREVO_AUTHSERV_ID`` is
+# ignored (one ERROR when it is set; the verdict stays DKIM, fail closed).
+# Authentication-Results headers are still read for the go-live diagnostics
+# (authserv-id candidates), never for a verdict.
 
 BREVO_ATTACHMENT_URL = "https://api.brevo.com/v3/inbound/attachments/{token}"
 BREVO_TOKEN_HEADER = "x-inbound-token"
 BREVO_API_KEY_ENV = "BREVO_API_KEY"
+# Ignored on purpose (see above); its presence is reported once as an ERROR.
 BREVO_AUTHSERV_ENV = "INBOUND_BREVO_AUTHSERV_ID"
+VERIFICATION_MODE = "dkim"
+_warned_authserv = False
+
+
+def verification_mode() -> str:
+    """Always ``dkim``. A set ``INBOUND_BREVO_AUTHSERV_ID`` is ignored and
+    logged once as an ERROR: an Authentication-Results header in a Brevo
+    payload comes from the sender and must never pass a mail."""
+    global _warned_authserv
+    if os.environ.get(BREVO_AUTHSERV_ENV, "").strip() and not _warned_authserv:
+        _warned_authserv = True
+        logger.error(
+            "inbound: INBOUND_BREVO_AUTHSERV_ID is set but ignored: Brevo sends no "
+            "Authentication-Results, the sender verdict is DKIM only; unset it"
+        )
+    return VERIFICATION_MODE
+
+
+def verification_ready() -> bool:
+    """The DKIM verification needs nothing extra (the EML is fetched with the
+    same ``BREVO_API_KEY`` as the attachments)."""
+    return verification_mode() == VERIFICATION_MODE
+
+
 BREVO_MAX_BODY_BYTES = 8 * 1024 * 1024  # JSON only: bodies and headers, no files
 BREVO_MAX_ITEMS = 20
 _DOWNLOAD_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{1,512}$")  # no dots, no slashes
+_DELIVERY_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
 def brevo_token_ok(secret: str, header: str) -> bool:
@@ -609,77 +648,45 @@ def _brevo_headers(raw) -> dict[str, list[str]]:
     return out
 
 
-_SINGLE_VALUED_AUTH_HEADERS = ("from", "sender", "return-path")
-_AR_HEADER_FROM = re.compile(r"(?:^|[\s;])header\.from=([^\s;]+)")
-_AR_DMARC_PASS = re.compile(r"(?:^|[\s;])dmarc=pass\b")
-
-
-# Why the trusted verdict refused a Brevo item (go-live diagnostics, #950):
-# one code per refusal, in the order of the checks. Counted in memory and
-# shown in the admin overview as ``auth_refusals``; never a header value.
+# Why the sender verdict refused a Brevo item (#950): one code per refusal,
+# the DKIM codes of ``inbound_dkim.DKIM_REFUSAL_REASONS`` (same order).
+# Counted in memory and shown in the admin overview as ``auth_refusals``;
+# never a header value.
 AUTH_REFUSAL_REASONS = (
-    "authserv_unset",
-    "single_header_repeated",
-    "from_header_mismatch",
-    "no_trusted_line",
-    "multiple_trusted_lines",
-    "dmarc_not_pass",
-    "header_from_missing",
-    "header_from_mismatch",
+    "eml_unavailable",
+    "eml_too_large",
+    "from_repeated",
+    "from_mismatch",
+    "dkim_none",
+    "dkim_not_aligned",
+    "dkim_malformed",
+    "dkim_l_tag",
+    "dkim_weak_alg",
+    "dkim_weak_key",
+    "dkim_expired",
+    "dkim_invalid",
+    "dkim_h_incomplete",
+    "recipient_not_signed",
+    "stale_date",
 )
 
 
-def _brevo_auth_refusal(headers: dict[str, list[str]], sender: str) -> str | None:
-    """The trusted Authentication-Results verdict for ``sender`` (fail closed).
-
-    Returns ``None`` on a pass, otherwise the first failing check as a code of
-    :data:`AUTH_REFUSAL_REASONS`.
-
-    Only lines whose authserv-id equals ``INBOUND_BREVO_AUTHSERV_ID`` count.
-    More than one such line = refused (a sender may have planted a copy with
-    the trusted id below the real one). The topmost (= only) trusted line must
-    say ``dmarc=pass`` AND carry ``header.from`` equal to the From domain,
-    case-insensitive.
-    """
-    authserv = os.environ.get(BREVO_AUTHSERV_ENV, "").strip().lower()
-    if not authserv:
-        return "authserv_unset"
-    # A header the verdict leans on that should occur once but occurs more
-    # often: refused (fail closed).
-    if any(len(headers.get(name, [])) > 1 for name in _SINGLE_VALUED_AUTH_HEADERS):
-        return "single_header_repeated"
-    header_from = headers.get("from")
-    if header_from and _domain(parseaddr(header_from[0])[1]) != _domain(sender):
-        return "from_header_mismatch"
-    trusted = [
-        line.partition(";")[2].lower()
-        for line in headers.get("authentication-results", [])
-        if line.partition(";")[0].strip().lower() == authserv
-    ]
-    if not trusted:
-        return "no_trusted_line"
-    if len(trusted) > 1:
-        return "multiple_trusted_lines"
-    line = trusted[0]
-    if not _AR_DMARC_PASS.search(line):
-        return "dmarc_not_pass"
-    match = _AR_HEADER_FROM.search(line)
-    if not match:
-        return "header_from_missing"
-    domain = match.group(1).strip().strip('"').rstrip(".").lower()
-    if not domain or domain != _domain(sender):
-        return "header_from_mismatch"
-    return None
+ALERT_CODES = ("claimed_address_refusals_high",)
 
 
-def _brevo_auth_pass(headers: dict[str, list[str]], sender: str) -> bool:
-    """True only when :func:`_brevo_auth_refusal` finds nothing; a refusal is
-    counted by reason code (admin overview ``auth_refusals``)."""
-    reason = _brevo_auth_refusal(headers, sender)
-    if reason is None:
-        return True
+def note_alert(code: str) -> None:
+    """Count one alert (admin inbound panel and operator ``/readiness``)."""
+    _state.alerts[code] += 1
+
+
+def alerts_overview() -> dict:
+    """Alert codes with counts, in memory only (never on ``/health``)."""
+    return {code: _state.alerts[code] for code in ALERT_CODES}
+
+
+def note_auth_refusal(reason: str) -> None:
+    """Count one refused verdict by its code (admin overview ``auth_refusals``)."""
     _state.auth_refusals[reason] += 1
-    return False
 
 
 # Authserv-id candidates (go-live diagnostics, #950): infra must learn which
@@ -777,6 +784,175 @@ def _log_authserv_candidates(items: list) -> None:
         if invalid:
             listed += f"; invalid={invalid}"
         logger.info("inbound: authserv-id candidates: %s", listed)
+
+
+# Payload field names (go-live diagnostics, #950): production payloads carry
+# no Authentication-Results header, so infra must learn which authentication
+# evidence Brevo does deliver. For every item of a payload that passed the
+# token check only the NAMES are kept: of the entries in ``Headers`` (both
+# documented shapes), of the item's own keys and of the payload's keys. A
+# name must match ``FIELD_NAME_RE``; anything else is only counted as invalid.
+# Never a header value, an address, a subject or a body.
+FIELD_NAME_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+FIELD_NAMES_PER_ITEM_MAX = 50  # per item and kind; more are counted as truncated
+FIELD_NAMES_MAX = 200  # distinct names kept per kind; the least-seen is evicted
+
+# Authentication evidence as presence flags (booleans, never values). Header
+# flags: exact header names, or a name prefix ("x-brevo-"); item-key flags:
+# exact key or substring, case-insensitive.
+_EVIDENCE_HEADERS = {
+    "arc_authentication_results": "arc-authentication-results",
+    "arc_seal": "arc-seal",
+    "arc_message_signature": "arc-message-signature",
+    "received_spf": "received-spf",
+    "dkim_signature": "dkim-signature",
+    "authentication_results": "authentication-results",
+}
+_EVIDENCE_HEADER_PREFIXES = {
+    "header_x_brevo": "x-brevo-",
+    "header_x_sib": "x-sib-",
+    "header_x_mailin": "x-mailin-",
+}
+_EVIDENCE_KEYS_EXACT = {"key_spam_score": "spamscore"}
+_EVIDENCE_KEYS_SUBSTRING = {
+    "key_spam": "spam",
+    "key_spf": "spf",
+    "key_dkim": "dkim",
+    "key_dmarc": "dmarc",
+}
+AUTH_EVIDENCE_FLAGS = (
+    *_EVIDENCE_HEADERS,
+    *_EVIDENCE_HEADER_PREFIXES,
+    *_EVIDENCE_KEYS_EXACT,
+    *_EVIDENCE_KEYS_SUBSTRING,
+)
+
+
+def _header_names(raw) -> list[str]:
+    """The names of ``Headers`` entries in order, for both documented shapes
+    (an object, or a list of ``{Name, Value}`` / ``{name: value}`` entries).
+    Values are never read."""
+    names: list[str] = []
+    if isinstance(raw, dict):
+        names.extend(k for k in raw if isinstance(k, str))
+    elif isinstance(raw, list):
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            if "Name" in entry or "name" in entry:
+                name = entry.get("Name", entry.get("name"))
+                if isinstance(name, str):
+                    names.append(name)
+            else:
+                names.extend(k for k in entry if isinstance(k, str))
+    return names
+
+
+def _valid_names(names) -> list[str]:
+    """Distinct valid names (first-seen order), at most
+    ``FIELD_NAMES_PER_ITEM_MAX``; invalid and truncated ones are counted."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if not isinstance(name, str) or not FIELD_NAME_RE.match(name):
+            _state.field_stats["invalid_names"] += 1
+            continue
+        if name in seen:
+            continue
+        if len(out) >= FIELD_NAMES_PER_ITEM_MAX:
+            _state.field_stats["truncated_names"] += 1
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def _auth_evidence(header_names: list[str], item_keys: list[str]) -> dict[str, bool]:
+    """Presence flags over ALL names of one item (not only the capped list)."""
+    headers = {n.strip().lower() for n in header_names if isinstance(n, str)}
+    keys = {k.strip().lower() for k in item_keys if isinstance(k, str)}
+    flags = {flag: name in headers for flag, name in _EVIDENCE_HEADERS.items()}
+    for flag, prefix in _EVIDENCE_HEADER_PREFIXES.items():
+        flags[flag] = any(h.startswith(prefix) for h in headers)
+    for flag, name in _EVIDENCE_KEYS_EXACT.items():
+        flags[flag] = name in keys
+    for flag, part in _EVIDENCE_KEYS_SUBSTRING.items():
+        flags[flag] = any(part in k for k in keys)
+    return flags
+
+
+def _note_names(book: dict, names: list[str]) -> None:
+    """Count one item's (or payload's) names; at most ``FIELD_NAMES_MAX``
+    are kept, a new one replaces the one seen on the fewest items (oldest on
+    a tie)."""
+    for name in names:
+        _state.field_seq += 1
+        entry = book.get(name)
+        if entry is None:
+            if len(book) >= FIELD_NAMES_MAX:
+                victim = min(book, key=lambda n: (book[n]["items"], book[n]["seq"]))
+                del book[victim]
+                _state.field_stats["evicted"] += 1
+            entry = book[name] = {"items": 0, "seq": 0}
+        entry["items"] += 1
+        entry["seq"] = _state.field_seq
+
+
+def _ranked(book: dict) -> list[dict]:
+    return [
+        {"name": n, "items": e["items"]}
+        for n, e in sorted(book.items(), key=lambda kv: (-kv[1]["items"], kv[0]))
+    ]
+
+
+def field_names_overview() -> dict:
+    """Admin overview: header names, item keys and payload keys with the
+    number of items (payloads) carrying each, auth evidence flag counts and
+    totals. Names and counts only."""
+    stats = _state.field_stats
+    return {
+        "header_names": _ranked(_state.header_names),
+        "item_keys": _ranked(_state.item_keys),
+        "payload_keys": _ranked(_state.payload_keys),
+        "auth_evidence": {f: _state.auth_evidence[f] for f in AUTH_EVIDENCE_FLAGS},
+        "field_names_stats": {
+            "items_seen": stats["items"],
+            "payloads_seen": stats["payloads"],
+            "invalid_names": stats["invalid_names"],
+            "truncated_names": stats["truncated_names"],
+            "evicted": stats["evicted"],
+        },
+    }
+
+
+def _log_field_names(payload: dict, items: list) -> None:
+    """Collect the names of one payload; one INFO line per item with its
+    header names and item keys, and one with its auth evidence flags (names
+    and booleans only)."""
+    _state.field_stats["payloads"] += 1
+    payload_keys = _valid_names(list(payload))
+    _note_names(_state.payload_keys, payload_keys)
+    logger.info("inbound: payload keys: %s", ", ".join(payload_keys) or "none")
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        _state.field_stats["items"] += 1
+        all_headers = _header_names(item.get("Headers"))
+        all_keys = list(item)
+        header_names = _valid_names(all_headers)
+        item_keys = _valid_names(all_keys)
+        _note_names(_state.header_names, header_names)
+        _note_names(_state.item_keys, item_keys)
+        flags = _auth_evidence(all_headers, all_keys)
+        present = [f for f in AUTH_EVIDENCE_FLAGS if flags[f]]
+        for flag in present:
+            _state.auth_evidence[flag] += 1
+        logger.info(
+            "inbound: header names: %s; item keys: %s",
+            ", ".join(header_names) or "none",
+            ", ".join(item_keys) or "none",
+        )
+        logger.info("inbound: auth evidence: %s", ", ".join(present) or "none")
 
 
 def _mailbox(value) -> str:
@@ -884,10 +1060,25 @@ def parse_brevo_item(item: dict) -> InboundMessage:
         return values[0] if values else ""
 
     ctype = first("content-type").lower()
+    sender = _mailbox(item.get("From"))
+    eml_ref = str(item.get("EMLDownloadToken") or "")
+    if not _DOWNLOAD_TOKEN_RE.match(eml_ref):
+        eml_ref = ""
+    uuids = item.get("Uuid")
+    delivery = uuids[0] if isinstance(uuids, list) and uuids else uuids
+    delivery = str(delivery) if isinstance(delivery, str) else ""
+    from oncofiles.inbound_dkim import payload_prefilter
+
+    verification_mode()  # reports a set INBOUND_BREVO_AUTHSERV_ID once
     return InboundMessage(
         recipients=recipients,
-        sender=_mailbox(item.get("From")),
-        auth_pass=_brevo_auth_pass(headers, _mailbox(item.get("From"))),
+        sender=sender,
+        # DKIM only: decided later by the queue worker on the raw message
+        auth_pass=False,
+        auth_mode="dkim",
+        eml_ref=eml_ref,
+        dkim_prefilter=payload_prefilter(headers.get("dkim-signature") or [], sender) or "",
+        delivery_id=delivery if _DELIVERY_ID_RE.match(delivery) else "",
         message_id=str(item.get("MessageId") or "").strip(),
         auto_submitted=first("auto-submitted"),
         precedence=first("precedence"),
@@ -905,6 +1096,7 @@ def parse_brevo_payload(payload) -> list[InboundMessage]:
         raise UnparseableMessageError("payload")
     items = payload["items"][:BREVO_MAX_ITEMS]
     if items:
+        _log_field_names(payload, items)
         _log_authserv_candidates(items)
     out = []
     for item in items:
@@ -1066,8 +1258,19 @@ class _State:
         self.locks: dict[str, asyncio.Lock] = {}
         # go-live diagnostics (#950): auth refusal codes, authserv candidates
         self.auth_refusals: Counter = Counter()
+        # alert codes for the admin panel and operator /readiness (codes and
+        # counts only), and the claimed-bucket batch-503s per token hash
+        self.alerts: Counter = Counter()
+        self.claimed_503: dict[str, list[float]] = {}
         self.authserv_hosts: dict[str, dict] = {}
         self.authserv_stats: Counter = Counter()
+        # header / item / payload field names and auth evidence flags (#950)
+        self.header_names: dict[str, dict] = {}
+        self.item_keys: dict[str, dict] = {}
+        self.payload_keys: dict[str, dict] = {}
+        self.auth_evidence: Counter = Counter()
+        self.field_stats: Counter = Counter()
+        self.field_seq = 0
 
     def lock(self, key: str) -> asyncio.Lock:
         lk = self.locks.get(key)
@@ -1130,10 +1333,13 @@ def unmatched_overview() -> dict:
     ]
     return {
         "enabled": is_enabled(),
+        "verification_mode": verification_mode(),
         "senders": senders,
         "totals": dict(_state.counters),
         "auth_refusals": {r: _state.auth_refusals[r] for r in AUTH_REFUSAL_REASONS},
+        "alerts": alerts_overview(),
         "authserv_candidates": authserv_candidates(),
+        **field_names_overview(),
     }
 
 
@@ -1812,6 +2018,11 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
             replied = await _send_receipt(
                 th, msg.sender, accepted, skipped, now, welcome_address=welcome_address
             )
+            if replied and msg.welcome:
+                # #950 phase 3: time-to-value funnel (first welcome reply)
+                from oncofiles import trial_funnel
+
+                await trial_funnel.note_event(db, "first_reply_at", patient_id)
             if progress is not None:
                 await progress.mark_receipt_sent()
         # On the last attempt a temporary failure was reported in the receipt;

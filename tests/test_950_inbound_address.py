@@ -980,9 +980,34 @@ AUTHSERV = "mx.synthetic-relay.example"
 
 @pytest.fixture
 def brevo(monkeypatch):
-    """BREVO_API_KEY + authserv set; attachment downloads served from a dict."""
+    """BREVO_API_KEY set; attachment downloads served from a dict.
+
+    The sender verdict is DKIM only (#966). These tests are about the queue
+    and the core, so a parsed item arrives here already VERIFIED, with the
+    verdict of its ``auth`` (its ``EMLDownloadToken`` starts with
+    ``eml-pass`` or ``eml-fail``), exactly as the worker hands it to
+    ``enqueue(verified=True)`` after the claimed bucket. The claimed bucket
+    and the real DKIM verification are covered by
+    ``tests/test_950_dkim_verification.py``.
+    """
+    from oncofiles import inbound_dkim
+
     monkeypatch.setenv(inbound_email.BREVO_API_KEY_ENV, "synthetic-brevo-key-950")
-    monkeypatch.setenv(inbound_email.BREVO_AUTHSERV_ENV, AUTHSERV)
+    monkeypatch.delenv(inbound_email.BREVO_AUTHSERV_ENV, raising=False)
+    real_parse = inbound_email.parse_brevo_item
+
+    def _parse(item):
+        msg = real_parse(item)
+        msg.auth_pass = msg.eml_ref.startswith("eml-pass")
+        msg.auth_mode = ""  # the verdict is final (as after the worker's verification)
+        return msg
+
+    async def _verify(eml_token, sender, api_key, recipient_ok):
+        ok = eml_token.startswith("eml-pass")
+        return inbound_dkim.Verdict(ok, None if ok else "dkim_invalid")
+
+    monkeypatch.setattr(inbound_email, "parse_brevo_item", _parse)
+    monkeypatch.setattr(inbound_dkim, "verify_message", _verify)
     store: dict[str, bytes] = {}
     fetched: list[str] = []
 
@@ -1003,10 +1028,16 @@ def ar_line(sender: str = CARER, dmarc: str = "pass", authserv: str = AUTHSERV) 
     return f"{authserv}; spf=pass; dkim=pass; dmarc={dmarc} header.from={domain}"
 
 
+def dkim_header(sender: str = CARER) -> str:
+    domain = sender.rpartition("@")[2]
+    return f"v=1; a=rsa-sha256; d={domain}; s=s2027; h=from:to:date; bh=AAAA; b=AAAA"
+
+
 def brevo_item(to: str, *, sender: str = CARER, files=(), auth: str = "pass", headers=None):
-    hdrs = {"Authentication-Results": ar_line(sender, auth)}
+    hdrs = {"Authentication-Results": ar_line(sender, auth), "DKIM-Signature": dkim_header(sender)}
     hdrs.update(headers or {})
     return {
+        "EMLDownloadToken": f"eml-{auth}-synthetic",
         "Uuid": ["00000000-0000-4000-8000-00000000b950"],
         "MessageId": f"<brevo-{len(files)}-{to[:3]}-{sender[:3]}@example.test>",
         "InReplyTo": None,
@@ -1100,20 +1131,24 @@ async def test_brevo_unknown_sender_downloads_nothing(idb, drive, mails, brevo):
     assert inbound_email.unmatched_overview()["senders"][0]["reasons"] == {"unknown_sender": 1}
 
 
-@pytest.mark.parametrize("case", ["env_unset", "dmarc_fail", "foreign_authserv"])
-async def test_brevo_auth_verdict_is_conservative(idb, drive, mails, brevo, monkeypatch, case):
+@pytest.mark.parametrize("case", ["env_unset", "env_set", "foreign_authserv"])
+async def test_an_authentication_results_header_never_passes(idb, drive, mails, monkeypatch, case):
+    """#966: Brevo sends no Authentication-Results, so any such header comes
+    from the sender. The verdict is DKIM only: parsing never passes a mail,
+    whatever its A-R lines say and whether INBOUND_BREVO_AUTHSERV_ID is set."""
+    monkeypatch.setenv(inbound_email.BREVO_API_KEY_ENV, "synthetic-brevo-key-950")
     addr = await address_of(idb)
-    files = [("S.pdf", "application/pdf", 10, "tok-a")]
-    item = brevo_item(addr, files=files, auth="fail" if case == "dmarc_fail" else "pass")
-    if case == "env_unset":
-        monkeypatch.delenv(inbound_email.BREVO_AUTHSERV_ENV)
+    item = brevo_item(addr, files=[("S.pdf", "application/pdf", 10, "tok-a")])
+    if case == "env_set":
+        monkeypatch.setenv(inbound_email.BREVO_AUTHSERV_ENV, AUTHSERV)
+    else:
+        monkeypatch.delenv(inbound_email.BREVO_AUTHSERV_ENV, raising=False)
     if case == "foreign_authserv":
-        # a line written by anyone else (another authserv-id) does not count
-        item["Headers"] = {"Authentication-Results": "attacker.example; dmarc=pass"}
+        item["Headers"]["Authentication-Results"] = "attacker.example; dmarc=pass"
     msg = inbound_email.parse_brevo_item(item)
-    assert msg.auth_pass is False
+    assert msg.auth_pass is False and msg.auth_mode == "dkim"
     result = await inbound_email.process_message(idb, msg)
-    assert result.outcome == "unmatched" and brevo[1] == []
+    assert result.outcome == "unmatched" and drive.files == []
 
 
 def test_brevo_headers_list_shape_and_loop_headers(brevo):
@@ -1123,7 +1158,6 @@ def test_brevo_headers_list_shape_and_loop_headers(brevo):
         {"Name": "Auto-Submitted", "Value": "auto-replied"},
     ]
     msg = inbound_email.parse_brevo_item(item)
-    assert msg.auth_pass is True
     assert inbound_email.loop_reason(msg) == "auto_submitted"
 
 
@@ -1186,41 +1220,31 @@ async def test_card_is_enabled_by_either_adapter(idb, monkeypatch, keep):
 
 
 @pytest.mark.parametrize(
-    ("lines", "ok"),
+    "lines",
     [
-        ([ar_line()], True),
-        # a forged lower line with the trusted id next to the real one: refused
-        ([ar_line(), ar_line(dmarc="pass")], False),
-        ([ar_line(dmarc="fail"), ar_line()], False),
-        # lines of other servers are ignored, the trusted one decides
-        (["other.example; dmarc=pass header.from=gmail.com", ar_line()], True),
-        (["other.example; dmarc=pass header.from=gmail.com"], False),
-        # header.from must be the From domain
-        ([f"{AUTHSERV}; dmarc=pass header.from=example.test"], False),
-        ([f"{AUTHSERV}; dmarc=pass"], False),
-        ([f"{AUTHSERV}; dmarc=pass header.from=GMAIL.COM"], True),
-        ([ar_line(dmarc="fail")], False),
+        [ar_line()],
+        [ar_line(), ar_line()],
+        ["other.example; dmarc=pass header.from=gmail.com", ar_line()],
+        [f"{AUTHSERV}; dmarc=pass header.from=GMAIL.COM"],
     ],
 )
-def test_trusted_authentication_results_line(brevo, lines, ok):
+def test_authentication_results_lines_never_pass(monkeypatch, lines):
+    """#966: even a perfect-looking line with the configured authserv-id."""
+    monkeypatch.setenv(inbound_email.BREVO_AUTHSERV_ENV, AUTHSERV)
     item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}")
     item["Headers"] = {"Authentication-Results": lines}
-    assert inbound_email.parse_brevo_item(item).auth_pass is ok
-
-
-def test_trusted_line_list_shape_two_entries_refused(brevo):
-    item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}")
-    item["Headers"] = [
-        {"Name": "Authentication-Results", "Value": ar_line()},
-        {"Name": "Authentication-Results", "Value": ar_line()},
-    ]
     assert inbound_email.parse_brevo_item(item).auth_pass is False
 
 
-def test_header_from_must_match_the_sender(brevo):
-    item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}", sender=STRANGER)
-    item["Headers"] = {"Authentication-Results": ar_line(CARER)}  # says gmail.com
-    assert inbound_email.parse_brevo_item(item).auth_pass is False
+def test_authserv_env_is_ignored_with_one_error(monkeypatch, caplog):
+    monkeypatch.setattr(inbound_email, "_warned_authserv", False)
+    monkeypatch.setenv(inbound_email.BREVO_AUTHSERV_ENV, AUTHSERV)
+    caplog.set_level(logging.ERROR, logger="oncofiles.inbound_email")
+    assert inbound_email.verification_mode() == "dkim"
+    assert inbound_email.verification_mode() == "dkim"
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and "ignored" in errors[0].getMessage()
+    assert AUTHSERV not in caplog.text
 
 
 async def test_unmatched_flood_never_blocks_the_caregiver(idb, drive, mails, monkeypatch):
@@ -1445,21 +1469,15 @@ def test_download_token_accepts_url_safe_base64(brevo):
 
 
 @pytest.mark.parametrize("name", ["From", "Sender", "Return-Path"])
-def test_repeated_single_valued_auth_header_fails(brevo, name):
+def test_repeated_single_valued_header_never_passes(monkeypatch, name):
+    """#966: the payload headers never pass a mail (DKIM on the EML decides)."""
+    monkeypatch.delenv(inbound_email.BREVO_AUTHSERV_ENV, raising=False)
     item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}")
     item["Headers"] = {
         "Authentication-Results": ar_line(),
         name: [f"<{CARER}>", "<other@example.test>"],
     }
     assert inbound_email.parse_brevo_item(item).auth_pass is False
-
-
-def test_header_from_must_agree_with_the_from_object(brevo):
-    item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}")
-    item["Headers"] = {"Authentication-Results": ar_line(), "From": "<other@example.test>"}
-    assert inbound_email.parse_brevo_item(item).auth_pass is False
-    item["Headers"]["From"] = f"Synthetic Carer <{CARER}>"
-    assert inbound_email.parse_brevo_item(item).auth_pass is True
 
 
 async def test_receipt_is_marked_auto_replied(idb, drive, mails):

@@ -225,6 +225,23 @@ async def stored_inbox_md5s(db, patient_id: str, *, log_pid: str | None = None) 
     return await asyncio.to_thread(inbox_upload.inbox_md5s, resolved.gdrive, resolved.folder_id)
 
 
+async def stored_inbox_md5_ids(db, patient_id: str, *, log_pid: str | None = None):
+    """``(target, {md5: Drive id})`` of the patient's curated inbox (read-only).
+
+    For the #950 phase 3 holding mover: ``target`` is the resolved upload
+    target (a ``_Target`` with path ``curated_inbox``) or the refusal
+    ``Outcome`` (no Drive, a Drive-only or overlapping folder); the map is
+    empty then. A listing error propagates (fail closed: no copy this run).
+    """
+    resolved = await _resolve_target(db, patient_id, log_pid)
+    if isinstance(resolved, Outcome) or resolved.path != "curated_inbox":
+        return resolved, {}
+    from oncofiles.curated import inbox_upload
+
+    ids = await asyncio.to_thread(inbox_upload.inbox_md5_ids, resolved.gdrive, resolved.folder_id)
+    return resolved, ids
+
+
 async def _store_one(db, patient_id: str, target: _Target, name: str, data: bytes, mime: str):
     """Store ONE file. Returns a result dict, or raises ``InboxUnavailableError``."""
     if target.path == "curated_inbox":
