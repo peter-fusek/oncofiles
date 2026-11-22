@@ -3730,7 +3730,7 @@
     // #919: the caregiver confirms a filed document in review "as is". Only for
     // soft reason codes (same list as curated/confirm_review.CONFIRMABLE_CODES);
     // anything else must be fixed in Drive. Hidden in an admin's read-only view.
-    var CONFIRMABLE_REVIEW_CODES = ['no_date', 'low_confidence', 'rotated_region', 'orientation_unsure', 'chart_page', 'other'];
+    var CONFIRMABLE_REVIEW_CODES = ['no_date', 'low_confidence', 'rotated_region', 'orientation_unsure', 'chart_page'];
     var CONFIRM_REVIEW_ERRORS = {
       busy: ['Práve prebieha spracovanie priečinka. Skúste to o niekoľko minút znova.', 'The folder is being processed right now. Try again in a few minutes.'],
       hard_check: ['Tento dôvod kontroly sa nedá len potvrdiť; dokument treba opraviť v Google Drive.', 'This review reason cannot just be confirmed; the document needs to be fixed in Google Drive.'],

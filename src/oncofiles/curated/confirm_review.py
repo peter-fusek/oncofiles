@@ -40,9 +40,12 @@ from oncofiles.curated.runner import (
 # Anything else (another person, a birth date, a split, an unknown type, a
 # missing institution or vocabulary entry, a technical failure, …) must be
 # fixed in Drive: the route answers 409 ``hard_check``. May only shrink
-# without a maintainer decision.
+# without a maintainer decision. ``other`` is NOT confirmable (security review
+# of #973): ``review_codes`` maps every reason sentence it does not recognise to
+# ``other``, including hard ones (a birth month, a month not printed on its own,
+# a refused vocabulary entry), so it fails closed; so does a review with no code.
 CONFIRMABLE_CODES = frozenset(
-    {"no_date", "low_confidence", "rotated_region", "orientation_unsure", "chart_page", OTHER}
+    {"no_date", "low_confidence", "rotated_region", "orientation_unsure", "chart_page"}
 )
 
 
@@ -65,7 +68,8 @@ def override_value(today: date) -> str:
 
 def hard_codes(codes) -> list[str]:
     """The codes of ``codes`` that a caregiver may NOT set aside, in order."""
-    return [c for c in codes or [] if c not in CONFIRMABLE_CODES]
+    codes = list(codes or []) or [OTHER]  # no recognised reason = unknown = hard
+    return [c for c in codes if c not in CONFIRMABLE_CODES]
 
 
 def plan(sidecar_text: str, today: date) -> tuple[str, list[str]]:

@@ -27,6 +27,7 @@ from oncofiles.curated.confirm_review import (
     CONFIRMABLE_CODES,
     AlreadyResolvedError,
     ConfirmRefusedError,
+    hard_codes,
     override_value,
     plan,
 )
@@ -116,7 +117,6 @@ def test_allowlist_is_exactly_the_soft_codes():
                 "rotated_region",
                 "orientation_unsure",
                 "chart_page",
-                "other",
             }
         )
         == CONFIRMABLE_CODES
@@ -494,3 +494,27 @@ def test_dashboard_wiring():
     assert "data-action', 'confirmReviewAsIs|" in block
     assert "classList.add('armed')" in block
     assert "/api/curated/confirm-review" in block
+
+
+@pytest.mark.parametrize(
+    "codes",
+    [["other"], [], None, ["no_date", "other"]],
+)
+def test_other_or_no_code_is_a_hard_check(codes):
+    """Security review of #973: an unrecognised reason (mapped to ``other``)
+    or a review without any code is never set aside by a click."""
+    assert hard_codes(codes) == ["other"]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "date 2027-03 is the patient's birth month",
+        "month 2027-03 is not printed on its own in the document text",
+        "automatic vocabulary refused: layout unknown",
+    ],
+)
+def test_hard_reasons_without_their_own_code_are_refused(reason):
+    from oncofiles.curated.review_codes import codes_of
+
+    assert hard_codes(codes_of([reason]))
