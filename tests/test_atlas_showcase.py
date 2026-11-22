@@ -109,6 +109,7 @@ class _LooseText(HTMLParser):
         ("three.module.js", "application/javascript; charset=utf-8"),
         ("GLTFLoader.js", "application/javascript; charset=utf-8"),
         ("BufferGeometryUtils.js", "application/javascript; charset=utf-8"),
+        ("RoomEnvironment.js", "application/javascript; charset=utf-8"),
         ("mesh-figure.glb", "model/gltf-binary"),
         ("mesh-spine.glb", "model/gltf-binary"),
         ("mesh-knee.glb", "model/gltf-binary"),
@@ -261,17 +262,18 @@ def test_atlas_scripts_need_nothing_the_csp_forbids():
     assert re.findall(r"^import .*? from '([^']+)';$", app_js, re.M) == [
         "./three.module.js",
         "./GLTFLoader.js",
+        "./RoomEnvironment.js",
     ]
     three = (ATLAS_DIR / "three.module.js").read_text(encoding="utf-8")
     assert "@license" in three[:200] and "const REVISION = '149';" in three[:400]
-    for name in ("GLTFLoader.js", "BufferGeometryUtils.js"):
+    for name in ("GLTFLoader.js", "BufferGeometryUtils.js", "RoomEnvironment.js"):
         text = (ATLAS_DIR / name).read_text(encoding="utf-8")
         assert "three.js r149 (MIT" in text[:200]
         imports = re.findall(r"from '([^']+)';", text)
         assert imports and all(i.startswith("./") and "/" not in i[2:] for i in imports), imports
         assert not re.search(r"\beval\s*\(|new Function\s*\(", text)
     # every file the page asks for is on the allowlist
-    for name in ["three.module.js", "GLTFLoader.js", *MESHES]:
+    for name in ["three.module.js", "GLTFLoader.js", "RoomEnvironment.js", *MESHES]:
         assert name in atlas_showcase.ASSETS
     assert "'/movement-atlas/mesh-' + k + '.glb'" in app_js
 
@@ -415,7 +417,10 @@ async def test_use_case_page_head_and_video(lang):
     assert not re.search(r"\son[a-z]+\s*=", html), "no inline event handlers"
     assert '<link rel="stylesheet" href="/fonts/fonts.css">' in html
 
-    video_url = f"https://oncofiles.com/movement-atlas/video-{lang}.mp4"
+    # every media URL carries the cache buster, so a re-render reaches returning visitors
+    v = atlas_showcase.MEDIA_QUERY
+    assert v == "?v=2"
+    video_url = f"https://oncofiles.com/movement-atlas/video-{lang}.mp4{v}"
     assert f'<meta property="og:video" content="{video_url}">' in html
     assert '<meta property="og:video:type" content="video/mp4">' in html
 
@@ -428,10 +433,11 @@ async def test_use_case_page_head_and_video(lang):
     assert 'width="1080"' in video and 'height="1080"' in video
     # the poster is the frame the first play starts at; the intro card is og:image
     assert 'data-start="12"' in video
-    assert f'poster="/movement-atlas/poster-{lang}-start.jpg"' in video
-    og_image = f"https://oncofiles.com/movement-atlas/poster-{lang}.jpg"
+    assert f'poster="/movement-atlas/poster-{lang}-start.jpg{v}"' in video
+    og_image = f"https://oncofiles.com/movement-atlas/poster-{lang}.jpg{v}"
     assert f'<meta property="og:image" content="{og_image}">' in html
-    assert f'src="/movement-atlas/video-{lang}.mp4"' in video
+    assert f'<meta name="twitter:image" content="{og_image}">' in html
+    assert f'src="/movement-atlas/video-{lang}.mp4{v}"' in video
     assert 'aria-describedby="video-alt"' in video and 'id="video-alt"' in html
     start_script = html[html.rindex("<script>") : html.rindex("</script>")]
     assert "video[data-start]" in start_script and "v.currentTime = start" in start_script
@@ -441,7 +447,7 @@ async def test_use_case_page_head_and_video(lang):
     data = json.loads(block)
     assert data["@type"] == "VideoObject"
     assert data["contentUrl"] == video_url
-    assert data["thumbnailUrl"] == f"https://oncofiles.com/movement-atlas/poster-{lang}.jpg"
+    assert data["thumbnailUrl"] == og_image
     assert data["duration"] == "PT82S" and data["inLanguage"] == lang
     assert date.fromisoformat(data["uploadDate"]) <= date.today()
     for key in ("name", "description"):
@@ -548,12 +554,13 @@ def test_landing_video_markup_and_language_switch():
     assert 'data-start="12"' in video
     assert 'width="1080"' in video and 'height="1080"' in video
     # the posters are the frame at data-start, so the start is not a visual jump
-    assert 'poster="/movement-atlas/poster-sk-start.jpg"' in video
-    assert 'src="/movement-atlas/video-sk.mp4"' in video
+    v = atlas_showcase.MEDIA_QUERY  # same cache buster as the use-case pages
+    assert f'poster="/movement-atlas/poster-sk-start.jpg{v}"' in video
+    assert f'src="/movement-atlas/video-sk.mp4{v}"' in video
     assert "#t=" not in video  # the language swap compares src verbatim
     for lang in ("sk", "en"):
-        assert f'data-{lang}-src="/movement-atlas/video-{lang}.mp4"' in video
-        assert f'data-{lang}-poster="/movement-atlas/poster-{lang}-start.jpg"' in video
+        assert f'data-{lang}-src="/movement-atlas/video-{lang}.mp4{v}"' in video
+        assert f'data-{lang}-poster="/movement-atlas/poster-{lang}-start.jpg{v}"' in video
         assert f"data-{lang}-label=" in video
     assert 'aria-describedby="atlas-video-alt"' in video and 'id="atlas-video-alt"' in block
     # the video element itself must not be a data-sk element: applyLang would
@@ -847,3 +854,89 @@ def test_atlas_heading_font_is_self_hosted_and_atlas_only():
         assert "font-weight:700" in rule, rule
     assert "Bricolage" not in (SRC / "fonts" / "fonts.css").read_text(encoding="utf-8")
     assert "Bricolage" not in LANDING
+
+
+# ── Realistic look (#830 follow-up, maintainer 2026-11-22) ───────────────
+
+VIDEO_TOOLS = Path(__file__).parent.parent / "scripts" / "atlas_video"
+
+
+def test_atlas_uses_physically_based_materials_and_image_based_lighting():
+    """The look may be realistic (the copy never says so): PBR materials,
+    image-based light from three's RoomEnvironment, filmic tone mapping, soft
+    shadows, baked ambient occlusion and smoothed normals, all inside the CSP
+    (no texture files, no post-processing pass, no WASM)."""
+    app_js = (ATLAS_DIR / "app.js").read_text(encoding="utf-8")
+    for needle in (
+        "MeshPhysicalMaterial",
+        "new RoomEnvironment()",
+        "PMREMGenerator",
+        "T.ACESFilmicToneMapping",
+        "T.sRGBEncoding",
+        "T.PCFSoftShadowMap",
+        "T.ColorManagement.legacyMode = false",
+        "function bakeAO(",
+        "function smoothNormals(",
+        "function heightMaps(",
+    ):
+        assert needle in app_js, needle
+    # textures are generated on a canvas at startup: nothing extra is fetched
+    assert not re.search(r"\.(png|jpe?g|webp|ktx2|hdr|exr)['\"]", app_js)
+    assert "EffectComposer" not in app_js
+    vendor = (Path(__file__).parent.parent / "scripts/atlas_meshes/vendor_three.py").read_text()
+    assert '"examples/jsm/environments/RoomEnvironment.js": "RoomEnvironment.js"' in vendor
+    # the schematic parts are still said to be schematic
+    assert "doplnené schematicky" in app_js
+    assert "Schematický 3D model, nie snímky." in (ATLAS_DIR / "index.html").read_text()
+
+
+def test_record_mode_is_a_query_flag_without_inline_code():
+    """?record=1 hides the page chrome and steps frames on demand; it needs no
+    inline script and does not change the page for visitors."""
+    app_js = (ATLAS_DIR / "app.js").read_text(encoding="utf-8")
+    assert "new URLSearchParams(location.search).get('record') === '1'" in app_js
+    assert "if (!RECORD) requestAnimationFrame(frame);" in app_js
+    assert "step(dt) { tick(dt); }" in app_js
+    css = (ATLAS_DIR / "atlas.css").read_text(encoding="utf-8")
+    assert ".record header" in css and ".record #panel" in css
+    html = (ATLAS_DIR / "index.html").read_text(encoding="utf-8")
+    assert "record" not in html
+
+
+def _mp4_box(data: bytes, name: bytes) -> bytes:
+    i = data.index(name)
+    size = struct.unpack(">I", data[i - 4 : i])[0]
+    return data[i + 4 : i - 4 + size]
+
+
+@pytest.mark.parametrize("lang", ["sk", "en"])
+def test_video_is_82_seconds_square_and_small(lang):
+    data = (ATLAS_DIR / f"video-{lang}.mp4").read_bytes()
+    mvhd = _mp4_box(data, b"mvhd")
+    if mvhd[0] == 1:
+        timescale, duration = struct.unpack(">IQ", mvhd[20:32])
+    else:
+        timescale, duration = struct.unpack(">II", mvhd[12:20])
+    assert abs(duration / timescale - atlas_showcase.VIDEO_SECONDS) < 0.5
+    tkhd = _mp4_box(data, b"tkhd")
+    width, height = struct.unpack(">II", tkhd[-8:])
+    assert (width >> 16, height >> 16) == (1080, 1080)
+    assert len(data) < 3_800_000
+
+
+def test_video_tooling_copy_carries_no_identifier_or_claim():
+    """The text burned into the videos (cards, titles, English scene text)."""
+    for name in ("render.py", "overlay.js"):
+        text = (VIDEO_TOOLS / name).read_text(encoding="utf-8")
+        hit = _FORBIDDEN_CLAIMS.search(text)
+        assert not hit, f"{name}: {hit.group(0)!r}"
+        for label, pattern in _IDENTIFIERS.items():
+            hit = pattern.search(text)
+            assert not hit, (
+                f"{label} in {name}: {text[max(0, hit.start() - 30) : hit.end() + 30]!r}"
+            )
+    render = (VIDEO_TOOLS / "render.py").read_text(encoding="utf-8")
+    assert "schematic 3D model" in render and "schematický 3D model" in render
+    assert (
+        "INTRO, OUTRO = 3.0, 4.0" in render and "JOINT, MUSCLE, EXERCISE = 9.0, 6.0, 5.0" in render
+    )

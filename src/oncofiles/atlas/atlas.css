@@ -154,3 +154,9 @@ footer.credit a{color:var(--accent)}
 
 /* oncofiles.com hosting: link back to the use-case page */
 header .origin a{color:var(--accent)}
+/* ?record=1 (nahrávanie videa, scripts/atlas_video): len scéna cez celé okno, bez ovládania a bez textov stránky */
+.record body{display:block;overflow:hidden}
+.record header,.record footer,.record #panel,.record .ctl,.record .hint,.record .transport,.record #loading{display:none!important}
+.record main{display:block;height:100vh}
+.record .stage{position:fixed;inset:0}
+.record .stage canvas,.record #labels,.record #leaders{transition:none}

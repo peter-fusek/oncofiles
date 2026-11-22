@@ -1,5 +1,12 @@
 import * as T from './three.module.js';
 import { GLTFLoader } from './GLTFLoader.js';
+import { RoomEnvironment } from './RoomEnvironment.js';
+
+/* farby v hex sú sRGB a prevádzajú sa do lineárneho priestoru (správne PBR), textúry s farbou majú sRGBEncoding */
+T.ColorManagement.legacyMode = false;
+/* ?record=1: bez ovládania, bez vlastnej slučky; snímky po jednej cez __atlas.step(dt) (scripts/atlas_video) */
+const RECORD = new URLSearchParams(location.search).get('record') === '1';
+if (RECORD) document.documentElement.classList.add('record');
 
 const rad = d => d * Math.PI / 180;
 const V = (x, y, z) => new T.Vector3(x, y, z);
@@ -16,75 +23,108 @@ const renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true, pre
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.outputEncoding = T.sRGBEncoding;
 renderer.toneMapping = T.ACESFilmicToneMapping;
-renderer.toneMappingExposure = .74;
+renderer.toneMappingExposure = 1.15;
+renderer.physicallyCorrectLights = true;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = T.PCFSoftShadowMap;
 const scene = new T.Scene();
 const camera = new T.PerspectiveCamera(35, 1, 0.05, 800);
 
+/* osvetlenie z prostredia: neutrálna miestnosť (RoomEnvironment, three.js r149) cez PMREM, plus kľúčové svetlo s mäkkým tieňom */
 (function env() {
-  const c = document.createElement('canvas'); c.width = 512; c.height = 256;
-  const g = c.getContext('2d');
-  const gr = g.createLinearGradient(0, 0, 0, 256);
-  gr.addColorStop(0, '#e6eff3'); gr.addColorStop(.45, '#8198a3'); gr.addColorStop(.56, '#3b4b53'); gr.addColorStop(1, '#131b1f');
-  g.fillStyle = gr; g.fillRect(0, 0, 512, 256);
-  g.fillStyle = '#ffffff'; g.fillRect(50, 26, 100, 54); g.fillRect(330, 18, 130, 44);
-  g.fillStyle = '#ffe3c6'; g.fillRect(215, 58, 46, 30);
-  const tex = new T.CanvasTexture(c); tex.mapping = T.EquirectangularReflectionMapping; tex.encoding = T.sRGBEncoding;
   const pm = new T.PMREMGenerator(renderer);
-  scene.environment = pm.fromEquirectangular(tex).texture; pm.dispose();
+  scene.environment = pm.fromScene(new RoomEnvironment(), .04).texture; pm.dispose();
 })();
-const hemi = new T.HemisphereLight(0xe8f2f6, 0x26333a, .16); scene.add(hemi);
-const key = new T.DirectionalLight(0xfff1e0, 1.1); key.castShadow = true;
-key.shadow.mapSize.setScalar(window.innerWidth < 900 ? 1024 : 2048); key.shadow.bias = -0.0005; key.shadow.normalBias = .02; key.shadow.radius = 5;
+const hemi = new T.HemisphereLight(0xf4f1ea, 0x2a2420, .35); scene.add(hemi);
+const key = new T.DirectionalLight(0xfff2e2, 2.6); key.castShadow = true;
+key.shadow.mapSize.setScalar(window.innerWidth < 900 && !RECORD ? 1024 : 2048); key.shadow.bias = -0.0004; key.shadow.normalBias = .02; key.shadow.radius = 6;
 scene.add(key, key.target);
-const fill = new T.DirectionalLight(0xcfe2f2, .2); scene.add(fill, fill.target);
-const rim = new T.DirectionalLight(0x8fd4ff, .7); scene.add(rim, rim.target);
-const ground = new T.Mesh(new T.CircleGeometry(1, 64), new T.ShadowMaterial({ opacity: .38 }));
+const fill = new T.DirectionalLight(0xdfe8f2, .45); scene.add(fill, fill.target);
+const rim = new T.DirectionalLight(0xcfe6ff, 1.5); scene.add(rim, rim.target);
+const ground = new T.Mesh(new T.CircleGeometry(1, 64), new T.ShadowMaterial({ opacity: .42 }));
 ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
 
-/* ───────────── textúry a materiály ───────────── */
-function canvasTex(w, h, draw, rx, ry) {
-  const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h);
-  const t = new T.CanvasTexture(c); t.wrapS = t.wrapT = T.RepeatWrapping; t.repeat.set(rx || 1, ry || 1); return t;
-}
+/* ───────────── procedurálne textúry (generované pri štarte, žiadne súbory) ───────────── */
 const rnd = (() => { let s = 7; return () => (s = (s * 16807) % 2147483647) / 2147483647; })();
-const boneBump = canvasTex(256, 256, (g, w, h) => {
-  g.fillStyle = '#808080'; g.fillRect(0, 0, w, h);
-  for (let i = 0; i < 2600; i++) { const v = 90 + rnd() * 80 | 0; g.fillStyle = `rgb(${v},${v},${v})`; g.fillRect(rnd() * w, rnd() * h, 1 + rnd() * 2, 1 + rnd() * 2); }
-});
-/* vlákna: svetlá textúra, farbu svalu a šľachy nesú farby vrcholov */
-function fibres(g, w, h, light, dark) {
-  for (let i = 0; i < 460; i++) {
-    const x = rnd() * w, l = rnd();
-    g.strokeStyle = l > .5 ? light(.18 + rnd() * .3) : dark(.2 + rnd() * .35);
-    g.lineWidth = .6 + rnd() * 1.8; g.beginPath(); g.moveTo(x, 0); g.bezierCurveTo(x + 6, h * .3, x - 6, h * .7, x + (rnd() - .5) * 8, h); g.stroke();
-  }
+/* opakovateľný hodnotový šum na mriežke n×n, bilineárne, so zabalením okrajov */
+function valueNoise(n) {
+  const g = new Float32Array(n * n); for (let i = 0; i < g.length; i++) g[i] = rnd();
+  return (x, y) => {
+    const xi = Math.floor(x), yi = Math.floor(y), fx = smooth(x - xi), fy = smooth(y - yi);
+    const i0 = ((xi % n) + n) % n, j0 = ((yi % n) + n) % n, i1 = (i0 + 1) % n, j1 = (j0 + 1) % n;
+    return lerp(lerp(g[j0 * n + i0], g[j0 * n + i1], fx), lerp(g[j1 * n + i0], g[j1 * n + i1], fx), fy);
+  };
 }
-const fiberMap = canvasTex(256, 256, (g, w, h) => {
-  g.fillStyle = '#f3e9e6'; g.fillRect(0, 0, w, h);
-  fibres(g, w, h, a => `rgba(255,255,255,${a})`, a => `rgba(120,54,50,${a})`);
-});
-fiberMap.encoding = T.sRGBEncoding;
-const fiberBump = canvasTex(256, 256, (g, w, h) => {
-  g.fillStyle = '#808080'; g.fillRect(0, 0, w, h);
-  fibres(g, w, h, a => `rgba(230,230,230,${a})`, a => `rgba(40,40,40,${a})`);
-});
-const P = o => new T.MeshPhysicalMaterial(Object.assign({ envMapIntensity: .55 }, o));
+/* výšková mapa w×w → normálová mapa (Sobel), voliteľne aj mapa drsnosti a farby */
+function heightMaps(w, height, opt) {
+  const h = new Float32Array(w * w);
+  for (let y = 0; y < w; y++) for (let x = 0; x < w; x++) h[y * w + x] = height(x / w, y / w);
+  const at = (x, y) => h[((y + w) % w) * w + ((x + w) % w)];
+  const mk = () => { const c = document.createElement('canvas'); c.width = c.height = w; const g = c.getContext('2d'); return [c, g, g.createImageData(w, w)]; };
+  const [nc, ng, nd] = mk(), [rc, rg, rd] = mk(), [cc, cg, cd] = mk(), k = opt.strength;
+  for (let y = 0; y < w; y++) for (let x = 0; x < w; x++) {
+    const dx = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1)) - (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1));
+    const dy = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1)) - (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1));
+    let nx = -dx * k, ny = dy * k, nz = 1; const l = Math.hypot(nx, ny, nz); nx /= l; ny /= l; nz /= l;
+    const i = (y * w + x) * 4, v = h[y * w + x];
+    nd.data[i] = (nx * .5 + .5) * 255; nd.data[i + 1] = (ny * .5 + .5) * 255; nd.data[i + 2] = (nz * .5 + .5) * 255; nd.data[i + 3] = 255;
+    const r = clamp(opt.rough(v), 0, 1) * 255; rd.data[i] = rd.data[i + 1] = rd.data[i + 2] = r; rd.data[i + 3] = 255;
+    const a = clamp(opt.albedo(v), 0, 1.2) * 212; cd.data[i] = cd.data[i + 1] = cd.data[i + 2] = Math.min(255, a); cd.data[i + 3] = 255;
+  }
+  ng.putImageData(nd, 0, 0); rg.putImageData(rd, 0, 0); cg.putImageData(cd, 0, 0);
+  const tex = (c, srgb) => { const t = new T.CanvasTexture(c); t.wrapS = t.wrapT = T.RepeatWrapping; t.anisotropy = 4; if (srgb) t.encoding = T.sRGBEncoding; return t; };
+  return { normal: tex(nc), rough: tex(rc), albedo: tex(cc, true) };
+}
+/* kosť: jemná pórovitosť (husté drobné jamky) na mierne zvlnenom povrchu */
+const boneTex = (() => {
+  const n1 = valueNoise(16), n2 = valueNoise(64), n3 = valueNoise(160);
+  const pits = []; for (let i = 0; i < 900; i++) pits.push([rnd(), rnd(), .002 + rnd() * .006]);
+  const W = 512, grid = Array.from({ length: 32 * 32 }, () => []);
+  pits.forEach(p => grid[Math.floor(p[1] * 32) * 32 + Math.floor(p[0] * 32)].push(p));
+  return heightMaps(W, (u, v) => {
+    let hgt = .35 * n1(u * 16, v * 16) + .2 * n2(u * 64, v * 64) + .12 * n3(u * 160, v * 160);
+    const gx = Math.floor(u * 32), gy = Math.floor(v * 32);
+    for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) for (const p of grid[((gy + oy + 32) % 32) * 32 + ((gx + ox + 32) % 32)]) {
+      let dx = Math.abs(u - p[0]), dy = Math.abs(v - p[1]); dx = Math.min(dx, 1 - dx); dy = Math.min(dy, 1 - dy);
+      const d = Math.hypot(dx, dy); if (d < p[2]) hgt -= .5 * (1 - d / p[2]) ** 2;
+    }
+    return hgt;
+  }, { strength: 2.2, rough: v => .78 - v * .25, albedo: v => .9 + v * .18 });
+})();
+/* sval: pozdĺžne vlákna (os v) zoskupené do snopcov, s jemným priečnym pruhovaním */
+const fibreTex = (() => {
+  const n1 = valueNoise(32), nf = valueNoise(192), nm = valueNoise(64), nb = valueNoise(12);
+  return heightMaps(512, (u, v) => {
+    const warp = .025 * n1(u * 8, v * 3);
+    const fib = nf((u + warp) * 192, v * 5), mid = nm((u + warp) * 64, v * 3);
+    const bundle = smooth(Math.sin((u + warp * 2) * Math.PI * 2 * 9 + 4 * nb(u * 12, v * 2)) * .5 + .5);
+    return .45 * fib + .3 * mid + .35 * bundle;
+  }, { strength: 1.6, rough: v => .55 - v * .25, albedo: v => .76 + v * .32 });
+})();
+/* šľacha, väz, chrupka, podložka: jemné pozdĺžne ryhovanie, takmer hladké */
+const sheenTex = (() => {
+  const n1 = valueNoise(64), n2 = valueNoise(24);
+  return heightMaps(256, (u, v) => .6 * n1(u * 64, v * 6) + .4 * n2(u * 24, v * 24), { strength: .9, rough: v => .4 - v * .12, albedo: v => .95 + v * .08 });
+})();
+const P = o => new T.MeshPhysicalMaterial(Object.assign({ envMapIntensity: .9 }, o));
+const nScale = s => new T.Vector2(s, s);
+/* všetky materiály berú farbu z vrcholov: tie nesú tón tkaniva a zapečené zatienenie (ambient occlusion) */
 const M = {
-  skin: P({ color: 0xffffff, vertexColors: true, roughness: .55, clearcoat: .2, clearcoatRoughness: .5 }),
-  bone: P({ color: 0xffffff, vertexColors: true, roughness: .74, bumpMap: boneBump, bumpScale: .03, clearcoat: .05, clearcoatRoughness: .7 }),
-  boneGhost: P({ color: 0xdccfb2, roughness: .7, transparent: true, opacity: .13, depthWrite: false }),
-  cart: P({ color: 0xcfe6f2, roughness: .22, clearcoat: .7, clearcoatRoughness: .2, transparent: true, opacity: .86 }),
-  menisc: P({ color: 0xb9d2c8, roughness: .35, clearcoat: .5 }),
-  disc: P({ color: 0x9cc6d9, roughness: .4, clearcoat: .35, transparent: true, opacity: .93 }),
-  tendon: P({ color: 0xf1ecde, roughness: .3, clearcoat: .6, clearcoatRoughness: .25 }),
-  lig: P({ color: 0xd9d2bd, roughness: .4, clearcoat: .4 }),
-  muscle: P({ color: 0xffffff, vertexColors: true, map: fiberMap, bumpMap: fiberBump, bumpScale: .03, roughness: .5, clearcoat: .3, clearcoatRoughness: .45 }),
-  fluid: P({ color: 0x58b4ff, roughness: .08, transparent: true, opacity: .5, emissive: 0x0b4f8a, emissiveIntensity: .5, depthWrite: false }),
-  mat: P({ color: 0x0f4347, roughness: .85 }),
+  skin: P({ color: 0xffffff, vertexColors: true, roughness: .52, sheen: .6, sheenColor: 0xffc2a8, sheenRoughness: .55, clearcoat: .12, clearcoatRoughness: .6, specularIntensity: .45, normalMap: sheenTex.normal, normalScale: nScale(.12) }),
+  bone: P({ color: 0xffffff, vertexColors: true, roughness: 1, roughnessMap: boneTex.rough, normalMap: boneTex.normal, normalScale: nScale(.4), map: boneTex.albedo, clearcoat: .1, clearcoatRoughness: .55, sheen: .35, sheenColor: 0xf2dcc0, sheenRoughness: .7, specularIntensity: .55 }),
+  boneGhost: P({ color: 0xe6d8bd, roughness: .7, transparent: true, opacity: .14, depthWrite: false }),
+  cart: P({ color: 0xd2e2ea, vertexColors: true, roughness: .22, normalMap: sheenTex.normal, normalScale: nScale(.08), clearcoat: 1, clearcoatRoughness: .08, sheen: .5, sheenColor: 0xbfe1ff, sheenRoughness: .35, transparent: true, opacity: .9 }),
+  menisc: P({ color: 0xe9e6db, vertexColors: true, roughness: .3, normalMap: sheenTex.normal, normalScale: nScale(.25), clearcoat: .8, clearcoatRoughness: .18, sheen: .5, sheenColor: 0xdfe9ff }),
+  disc: P({ color: 0xd4e0e4, vertexColors: true, roughness: .3, normalMap: fibreTex.normal, normalScale: nScale(.2), clearcoat: .7, clearcoatRoughness: .2, sheen: .4, sheenColor: 0xd8ecff, transparent: true, opacity: .95 }),
+  tendon: P({ color: 0xefe9dc, vertexColors: true, roughness: .26, normalMap: sheenTex.normal, normalScale: nScale(.35), clearcoat: .7, clearcoatRoughness: .2, iridescence: .3, iridescenceIOR: 1.35, sheen: .6, sheenColor: 0xe3ecff, sheenRoughness: .3 }),
+  lig: P({ color: 0xe8e1cf, vertexColors: true, roughness: .3, normalMap: fibreTex.normal, normalScale: nScale(.3), clearcoat: .6, clearcoatRoughness: .25, iridescence: .25, iridescenceIOR: 1.35, sheen: .5, sheenColor: 0xe3ecff, sheenRoughness: .35 }),
+  muscle: P({ color: 0xffffff, vertexColors: true, map: fibreTex.albedo, normalMap: fibreTex.normal, normalScale: nScale(.55), roughness: 1, roughnessMap: fibreTex.rough, clearcoat: .45, clearcoatRoughness: .32, sheen: .35, sheenColor: 0xff8f7a, sheenRoughness: .45, specularIntensity: .7 }),
+  fluid: P({ color: 0x7cc3ee, vertexColors: true, roughness: .05, clearcoat: 1, clearcoatRoughness: .05, transparent: true, opacity: .42, emissive: 0x0d3f6e, emissiveIntensity: .35, depthWrite: false }),
+  mat: P({ color: 0x1c3a3d, vertexColors: true, roughness: .92, normalMap: sheenTex.normal, normalScale: nScale(.4), sheen: .4, sheenColor: 0x5f8a8c, sheenRoughness: .8 }),
 };
-const C = { cart: new T.Color(0xcfe6f2), worn: new T.Color(0xe7a55a), lab: new T.Color(0xb9d2c8), lesion: new T.Color(0xe5352b), disc: new T.Color(0x9cc6d9), discBad: new T.Color(0xc9793f), bone: new T.Color(0xd3c6a9), spur: new T.Color(0xe39a4c), red: new T.Color(0xff3b24), black: new T.Color(0x000000), act: new T.Color(0xff4a1c), muscle: new T.Color(0xa23c38), tendon: new T.Color(0xf1ecde), skin: new T.Color(0x8fa0aa), skinHL: new T.Color(0x18a57c) };
+/* tóny tkanív (sRGB): kosť slonovinová, sval tmavočervený, šľacha perleťová; nález = značky v tlmených farbách */
+const C = { cart: new T.Color(0xd2e2ea), worn: new T.Color(0xc99a5b), lab: new T.Color(0xe9e6db), lesion: new T.Color(0xb3261e), disc: new T.Color(0xd4e0e4), discBad: new T.Color(0xa77b45), bone: new T.Color(0xeee0c4), boneDeep: new T.Color(0xb8996a), spur: new T.Color(0xd09a5c), red: new T.Color(0xd8361f), black: new T.Color(0x000000), act: new T.Color(0xb8420e), muscle: new T.Color(0x74201c), muscleDeep: new T.Color(0x40100e), tendon: new T.Color(0xece5d6), skin: new T.Color(0xd7a58b), skinShade: new T.Color(0xb57d66), skinHL: new T.Color(0xc0453b) };
+const WHITE = new T.Color(0xffffff);
 
 const SPH = new T.SphereGeometry(1, 40, 28);
 function mesh(geo, mat, parent, x, y, z, sx, sy, sz) {
@@ -107,15 +147,19 @@ function cavity(geo) {
   for (let v = 0; v < n; v++) if (cnt[v]) out[v] = (acc[v * 3] * nor.getX(v) + acc[v * 3 + 1] * nor.getY(v) + acc[v * 3 + 2] * nor.getZ(v)) / len[v];
   return out;
 }
-const _col = new T.Color();
-function paint(geo, fn, k) {
+const _col = new T.Color(), _deep = new T.Color();
+/* farba vrcholu: tón tkaniva z fn, v preliačinách tmavší a sýtejší (deep), na hranách svetlejší; uloží sa aj základ pre zatienenie */
+function paint(geo, fn, k, deep) {
   const pos = geo.attributes.position, n = pos.count, cav = cavity(geo), col = new Float32Array(n * 3);
   for (let v = 0; v < n; v++) {
     fn(pos.getX(v), pos.getY(v), pos.getZ(v), _col);
-    const f = clamp(1 - k * cav[v], .5, 1.12);
+    const c = k * cav[v];
+    if (deep && c > 0) _col.lerp(_deep.copy(deep), clamp(c * 1.4, 0, .85));
+    const f = clamp(1 - c * .6, .55, 1.08);
     col[v * 3] = _col.r * f; col[v * 3 + 1] = _col.g * f; col[v * 3 + 2] = _col.b * f;
   }
   geo.setAttribute('color', new T.BufferAttribute(col, 3));
+  geo.userData.base = col.slice();
 }
 function uv(geo, fibreAxis) {
   const pos = geo.attributes.position, n = pos.count, a = new Float32Array(n * 2);
@@ -127,16 +171,126 @@ function uv(geo, fibreAxis) {
   }
   geo.setAttribute('uv', new T.BufferAttribute(a, 2));
 }
+const stain = valueNoise(8);
 function bone(geo, parent) {
-  uv(geo); paint(geo, (x, y, z, c) => c.copy(C.bone), 2.4);
+  uv(geo);
+  paint(geo, (x, y, z, c) => c.copy(C.bone).lerp(C.boneDeep, .16 * stain(x * .21 + z * .13, y * .17)), 2.6, C.boneDeep);
   return mesh(geo, M.bone, parent);
 }
 /* sval: farba vrcholu prechádza zo svalu do šľachy podľa tendon(x, y, z) v rozsahu 0–1 */
 function muscleGeo(geo, tendon, axis) {
   uv(geo, axis || 'y');
-  paint(geo, (x, y, z, c) => c.copy(C.muscle).lerp(C.tendon, tendon ? tendon(x, y, z) : 0), 1.1);
+  paint(geo, (x, y, z, c) => c.copy(C.muscle).lerp(C.muscleDeep, .3 * stain(x * .3, y * .12 + z * .2)).lerp(C.tendon, tendon ? smooth(tendon(x, y, z)) : 0), 1.3, C.muscleDeep);
   return geo;
 }
+/* vyhladené normály: priemer so susedmi po hranách, aby nízkopolygónový zdroj nepôsobil hranato */
+function smoothNormals(geo, iters) {
+  const nor = geo.attributes.normal, idx = geo.index.array, n = nor.count;
+  let cur = Float32Array.from(nor.array);
+  for (let it = 0; it < iters; it++) {
+    const acc = Float32Array.from(cur);
+    for (let i = 0; i < idx.length; i += 3) for (let k = 0; k < 3; k++) {
+      const a = idx[i + k] * 3, b = idx[i + (k + 1) % 3] * 3;
+      acc[a] += cur[b] * .5; acc[a + 1] += cur[b + 1] * .5; acc[a + 2] += cur[b + 2] * .5;
+      acc[b] += cur[a] * .5; acc[b + 1] += cur[a + 1] * .5; acc[b + 2] += cur[a + 2] * .5;
+    }
+    for (let v = 0; v < n * 3; v += 3) { const l = Math.hypot(acc[v], acc[v + 1], acc[v + 2]) || 1; acc[v] /= l; acc[v + 1] /= l; acc[v + 2] /= l; }
+    cur = acc;
+  }
+  nor.array.set(cur); nor.needsUpdate = true;
+}
+
+/* ───────────── zapečené zatienenie (ambient occlusion) ─────────────
+   Siete oblasti sa pri načítaní vložia do objemovej mriežky; z každého vrcholu sa vyšle 16 krátkych lúčov
+   do pologule okolo normály a zásahy stmavia farbu vrcholu. Bez post-processingu: beží aj na telefóne,
+   nechá vyhladzovanie hrán a priehľadné pozadie. Dve sady: s vrstvou svalov (úroveň 3) a bez nej (úroveň 2). */
+const AO_DIRS = (() => {
+  const d = [], n = 16;
+  for (let i = 0; i < n; i++) { const r = Math.sqrt((i + .5) / n), a = i * 2.39996; d.push([r * Math.cos(a), r * Math.sin(a), Math.sqrt(1 - r * r)]); }
+  return d;
+})();
+function bakeAO(st) {
+  st.G.updateMatrixWorld(true);
+  const all = [];
+  st.G.traverse(o => { if (o.isMesh && o.geometry.userData.glb) all.push(o); });
+  const occludes = o => !(o.material.transparent && o.material.opacity < .5);
+  const inL3 = o => { for (let p = o; p; p = p.parent) if (p === st.L3) return true; return false; };
+  const box = new T.Box3(); all.forEach(o => box.expandByObject(o));
+  const size = box.getSize(V(0, 0, 0)), cell = Math.max(size.x, size.y, size.z) / 112;
+  const nx = Math.ceil(size.x / cell) + 3, ny = Math.ceil(size.y / cell) + 3, nz = Math.ceil(size.z / cell) + 3;
+  const o0 = box.min.clone().subScalar(cell);
+  const world = o => { const pos = o.geometry.attributes.position, e = o.matrixWorld.elements, out = new Float32Array(pos.count * 3);
+    for (let v = 0; v < pos.count; v++) { const x = pos.getX(v), y = pos.getY(v), z = pos.getZ(v);
+      out[v * 3] = e[0] * x + e[4] * y + e[8] * z + e[12]; out[v * 3 + 1] = e[1] * x + e[5] * y + e[9] * z + e[13]; out[v * 3 + 2] = e[2] * x + e[6] * y + e[10] * z + e[14]; }
+    return out; };
+  const W = new Map(all.map(o => [o, world(o)]));
+  function grid(withL3) {
+    const g = new Uint8Array(nx * ny * nz);
+    for (const o of all) {
+      if (!occludes(o) || (!withL3 && inL3(o))) continue;
+      const P3 = W.get(o), idx = o.geometry.index.array;
+      for (let i = 0; i < idx.length; i += 3) {
+        const a = idx[i] * 3, b = idx[i + 1] * 3, c = idx[i + 2] * 3;
+        const e1 = Math.hypot(P3[b] - P3[a], P3[b + 1] - P3[a + 1], P3[b + 2] - P3[a + 2]), e2 = Math.hypot(P3[c] - P3[a], P3[c + 1] - P3[a + 1], P3[c + 2] - P3[a + 2]);
+        const steps = Math.max(1, Math.ceil(Math.max(e1, e2) / (cell * .6)));
+        for (let s = 0; s <= steps; s++) for (let t = 0; t <= steps - s; t++) {
+          const u = s / steps, w = t / steps, r = 1 - u - w;
+          const x = (P3[a] * r + P3[b] * u + P3[c] * w - o0.x) / cell | 0, y = (P3[a + 1] * r + P3[b + 1] * u + P3[c + 1] * w - o0.y) / cell | 0, z = (P3[a + 2] * r + P3[b + 2] * u + P3[c + 2] * w - o0.z) / cell | 0;
+          g[(z * ny + y) * nx + x] = 1;
+        }
+      }
+    }
+    return g;
+  }
+  const t = V(0, 0, 0), b2 = V(0, 0, 0), nn = V(0, 0, 0), nm = new T.Matrix3(), MAX = 14;
+  function trace(o, g) {
+    const P3 = W.get(o), nor = o.geometry.attributes.normal, n = nor.count, ao = new Float32Array(n);
+    nm.getNormalMatrix(o.matrixWorld);
+    for (let v = 0; v < n; v++) {
+      nn.set(nor.getX(v), nor.getY(v), nor.getZ(v)).applyMatrix3(nm).normalize();
+      t.set(Math.abs(nn.x) < .9 ? 1 : 0, Math.abs(nn.x) < .9 ? 0 : 1, 0).cross(nn).normalize(); b2.crossVectors(nn, t);
+      const px = P3[v * 3] + nn.x * cell * 1.6, py = P3[v * 3 + 1] + nn.y * cell * 1.6, pz = P3[v * 3 + 2] + nn.z * cell * 1.6;
+      let occ = 0;
+      for (const d of AO_DIRS) {
+        const dx = t.x * d[0] + b2.x * d[1] + nn.x * d[2], dy = t.y * d[0] + b2.y * d[1] + nn.y * d[2], dz = t.z * d[0] + b2.z * d[1] + nn.z * d[2];
+        for (let k = 1; k <= MAX; k++) {
+          const x = (px + dx * k * cell - o0.x) / cell | 0, y = (py + dy * k * cell - o0.y) / cell | 0, z = (pz + dz * k * cell - o0.z) / cell | 0;
+          if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) break;
+          if (g[(z * ny + y) * nx + x]) { occ += 1 - (k - 1) / MAX; break; }
+        }
+      }
+      ao[v] = clamp(1 - 1.15 * occ / AO_DIRS.length, .28, 1);
+    }
+    // jeden krok vyhladenia po hranách siete
+    const idx = o.geometry.index.array, acc = Float32Array.from(ao), cnt = new Float32Array(n).fill(1);
+    for (let i = 0; i < idx.length; i += 3) for (let k = 0; k < 3; k++) { const a = idx[i + k], c = idx[i + (k + 1) % 3]; acc[a] += ao[c]; cnt[a]++; acc[c] += ao[a]; cnt[c]++; }
+    for (let v = 0; v < n; v++) ao[v] = acc[v] / cnt[v];
+    return ao;
+  }
+  const g2 = grid(false), g3 = grid(true), sets = new Map();
+  for (const o of all) {
+    const geo = o.geometry;
+    if (!geo.attributes.color) geo.setAttribute('color', new T.BufferAttribute(new Float32Array(geo.attributes.position.count * 3).fill(1), 3));
+    if (!geo.userData.base) geo.userData.base = geo.attributes.color.array.slice();
+    const a3 = trace(o, g3);
+    sets.set(o, { 2: inL3(o) ? a3 : trace(o, g2), 3: a3 });
+  }
+  st.setAO = level => {
+    for (const [o, s] of sets) {
+      const ao = s[level === 3 ? 3 : 2], base = o.geometry.userData.base, col = o.geometry.attributes.color.array;
+      for (let v = 0; v < ao.length; v++) { col[v * 3] = base[v * 3] * ao[v]; col[v * 3 + 1] = base[v * 3 + 1] * ao[v]; col[v * 3 + 2] = base[v * 3 + 2] * ao[v]; }
+      o.geometry.attributes.color.needsUpdate = true;
+    }
+  };
+}
+/* primitívy (schematické značky) majú farbu vrcholov bielu, aby s nimi fungovali materiály s vertexColors */
+function whiteColors(root) {
+  root.traverse(o => {
+    if (!o.isMesh || o.geometry.attributes.color || !o.geometry.attributes.position) return;
+    o.geometry.setAttribute('color', new T.BufferAttribute(new Float32Array(o.geometry.attributes.position.count * 3).fill(1), 3));
+  });
+}
+
 /* sieť naviazaná na pohyblivé skupiny (najviac 4), váhy dáva weights(x, y, z) */
 function skin(geo, mat, bones, weights, parent) {
   const pos = geo.attributes.position, n = pos.count, si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
@@ -210,8 +364,8 @@ function buildFigure(D) {
     const on = new Set(names.map(k => JN.indexOf(PART[k])));
     for (let v = 0; v < n; v++) {
       let t = 0; for (let k = 0; k < 4; k++) if (on.has(ji[v * 4 + k])) t += sw[v * 4 + k];
-      _col.copy(C.skin).lerp(C.skinHL, smooth(t));
-      const f = clamp(1 - .7 * cav[v], .7, 1.08);
+      _col.copy(C.skin).lerp(C.skinShade, clamp(cav[v] * 1.6, 0, .7)).lerp(C.skinHL, .72 * smooth(t));
+      const f = clamp(1 - .5 * cav[v], .72, 1.06);
       col[v * 3] = _col.r * f; col[v * 3 + 1] = _col.g * f; col[v * 3 + 2] = _col.b * f;
     }
     geo.attributes.color.needsUpdate = true;
@@ -281,7 +435,7 @@ function buildKnee(D) {
   const eff = [mesh(SPH, M.fluid, fem, pc.x, Pt.top + 1.7, F.front + .2, 2.4, 2.1, .85), mesh(SPH, M.fluid, fem, hw - .5, 1.2, F.front * .5, .8, 1.5, 1.0), mesh(SPH, M.fluid, fem, .5 - hw, 1.2, F.front * .5, .8, 1.5, 1.0)];
   const hiat = mesh(SPH, M.fluid, tib, Tp.plateau.lat[0] - .9, Tp.top - .6, Tp.back + .1, .95, 1.15, .75);
   eff.concat([hiat]).forEach(m => { m.castShadow = false; m.userData.s = m.scale.clone(); m.renderOrder = 5; });
-  const clickMat = new T.MeshBasicMaterial({ color: 0xffd23c, transparent: true, opacity: 0, depthTest: false });
+  const clickMat = new T.MeshBasicMaterial({ color: 0xe8a640, transparent: true, opacity: 0, depthTest: false });
   const click = new T.Mesh(new T.SphereGeometry(.55, 20, 14), clickMat); click.position.set(Pt.med[0] + .25, pc.y - .35, pc.z + .15); click.renderOrder = 15; pat.add(click);
   // úroveň 3: svaly a šľachy zo siete, väzy ako spojnice
   const act = M.muscle.clone(); act.emissive = C.act.clone(); act.emissiveIntensity = 0;
@@ -333,7 +487,7 @@ function buildSpine(D) {
   const base = new T.Group(); S.add(base);
   bone(g.sacrum, base);
   mesh(g.hip_l, M.boneGhost, base).castShadow = false; mesh(g.hip_r, M.boneGhost, base).castShadow = false;
-  const spurMat = P({ color: C.spur.getHex(), roughness: .6 });
+  const spurMat = P({ color: C.spur.getHex(), roughness: 1, roughnessMap: boneTex.rough, normalMap: boneTex.normal, normalScale: nScale(.6), sheen: .3, sheenColor: 0xf2dcc0 });
   const facetMat = M.cart.clone(); facetMat.emissive = C.red.clone(); facetMat.emissiveIntensity = 0; facetMat.transparent = false;
   const facetHot = facetMat.clone();
   const discMats = [M.disc.clone(), M.disc, M.disc];
@@ -426,7 +580,7 @@ function buildShoulder(D) {
   const okArc = mesh(new T.TorusGeometry(1, .16, 12, 48, rad(255)), M.menisc, lg); okArc.rotation.z = rad(100);
   const cystAt = gc.clone().addScaledVector(gback, G.b + .5).addScaledVector(gn, -.7).addScaledVector(gup, .4);
   const cyst = mesh(SPH, M.fluid, scap, cystAt.x, cystAt.y, cystAt.z, .95, .85, .8); cyst.castShadow = false; cyst.renderOrder = 5; cyst.userData.s = cyst.scale.clone();
-  const painMat = new T.MeshBasicMaterial({ color: 0xff3b24, transparent: true, opacity: 0, depthWrite: false });
+  const painMat = new T.MeshBasicMaterial({ color: 0xd8361f, transparent: true, opacity: 0, depthWrite: false });
   const painAt = V(.1, (R + X.acromion.c[1]) / 2 + .1, X.acromion.c[2] * .5);
   const pain = mesh(SPH, painMat, scap, painAt.x, painAt.y, painAt.z, 2.1, .7, 1.7); pain.castShadow = false; pain.renderOrder = 6;
   // ramenná kosť; hlavica je spriehľadnená, aby bolo vidno jamku a jej lem
@@ -479,8 +633,10 @@ function need(k) {
     pending[k] = true;
     loader.load('/movement-atlas/mesh-' + k + '.glb', gltf => {
       const parts = {};
-      gltf.scene.traverse(o => { if (o.isMesh) { o.geometry.computeVertexNormals(); parts[o.name] = o.geometry; } });
+      gltf.scene.traverse(o => { if (o.isMesh) { o.geometry.computeVertexNormals(); smoothNormals(o.geometry, k === 'figure' ? 1 : 2); o.geometry.userData.glb = true; parts[o.name] = o.geometry; } });
       const st = BUILD[k]({ parts, X: gltf.scene.userData });
+      whiteColors(st.G);
+      if (k !== 'figure') bakeAO(st);
       st.G.visible = false; scene.add(st.G); stages[k] = st;
       if (stageKey() === k) { activate(true); cam.dist = goal.dist; syncUI(); }
       if (k === 'figure') need(S.region);
@@ -570,21 +726,21 @@ const REG = {
     find: ['RTG neukázal posun stavca (bez listézy).', 'Priestor medzi posledným driekovým stavcom a krížovou kosťou (L5/S1) je zaniknutý. Platnička tam stratila výšku.', 'Malé kĺby driekovej chrbtice sú difúzne opotrebované (spondylartróza).', 'Peter udáva pocit vychýlenia stavca v spodnej časti chrbta.'],
     peter: ['L5 sedí takmer priamo na krížovej kosti.', 'Segment L5/S1 sa takmer nehýbe, pohyb preberajú vyššie segmenty.', 'V záklone sa viac zaťažujú malé kĺby (červená).'],
     normal: ['Platnička má plnú výšku a pruží.', 'Pohyb sa delí rovnomerne medzi segmenty.', 'Hlboké svaly chrbta držia segment stabilne (oranžová žiara).'],
-    legend: [['#ece3cf', 'kosť'], ['#9cc6d9', 'platnička'], ['#c9793f', 'znížená platnička'], ['#e39a4c', 'kostné výrastky'], ['#a23c38', 'svaly']],
+    legend: [['#eee0c4', 'kosť'], ['#d4e0e4', 'platnička'], ['#a77b45', 'znížená platnička'], ['#d09a5c', 'kostné výrastky'], ['#74201c', 'svaly']],
     motion: 'Model ukazuje predklon a záklon.' },
   knee: { name: 'Pravé koleno', sub: 'Preskakovanie na vnútornej strane vedľa jabĺčka',
     warn: 'Správa z 11. 11. 2026 cituje MR ako léziu menisku a chondropatiu IV. stupňa. Popis rádiológa uvádza menisky bez trhliny a chondropatiu I.–II. stupňa. Model vychádza z popisu rádiológa. Pred záťažou to treba overiť u ortopéda.',
     find: ['Preskakovanie vedľa jabĺčka na vnútornej strane, bez bolesti, napríklad pri výpadoch.', 'MR: stredne veľký výpotok v kĺbe.', 'MR: mierne nerovná chrupka jabĺčka a žliabku stehnovej kosti (I.–II. stupeň).', 'MR: tekutina okolo neporušenej šľachy podkolenného svalu.', 'Menisky a väzy sú bez trhliny, chondromatóza sa nepotvrdila.', 'Hybnosť je plná a nebolestivá, citlivá je vonkajšia kĺbová štrbina.'],
     peter: ['V kĺbe je viac tekutiny (modrá).', 'Chrupka jabĺčka je mierne zdrsnená (oranžová).', 'Okolo 35–55° ohybu jabĺčko krátko preskočí (žltý bod).'],
     normal: ['Kĺb je bez výpotku.', 'Jabĺčko kĺže v žliabku hladko a stredom.', 'Svaly okolo kolena vedú pohyb (oranžová žiara).'],
-    legend: [['#ece3cf', 'kosť'], ['#cfe6f2', 'chrupka'], ['#b9d2c8', 'menisky'], ['#58b4ff', 'tekutina'], ['#f1ecde', 'šľachy a väzy'], ['#a23c38', 'svaly']],
+    legend: [['#eee0c4', 'kosť'], ['#d2e2ea', 'chrupka'], ['#e9e6db', 'menisky'], ['#7cc3ee', 'tekutina'], ['#ece5d6', 'šľachy a väzy'], ['#74201c', 'svaly']],
     motion: 'Model ukazuje ohyb kolena od vystretia po 90°.' },
   shoulder: { name: 'Ľavé rameno', sub: 'Bolesť pri zdvihnutí ruky nad horizontálu (2025)',
     warn: 'Pre rameno ortopéd rehabilitáciu nepredpísal, odporučil tejpovať pri záťaži. Posledný záznam je z apríla 2025. Cviky sú návrh na posúdenie fyzioterapeutom.',
     find: ['Február 2025: tri mesiace bolesť bez úrazu, hlavne nad horizontálou. Test na impingement bol pozitívny.', 'MR: poškodený horný až zadný lem kĺbovej jamky (labrum).', 'MR: cysta za zadným okrajom jamky, najskôr vychádza z poškodeného lemu.', 'Šľachy rotátorovej manžety sú bez poškodenia, kĺb bez zápalu.', 'Po obstreku do kĺbu sa stav zlepšil.'],
     peter: ['Lem jamky je vzadu a hore poškodený (červená).', 'Za jamkou je cysta (modrá).', 'Nad horizontálou sa ozýva priestor pod nadpleckom (červená zóna).'],
     normal: ['Lem jamky je celistvý a prehlbuje jamku.', 'Lopatka sa otáča spolu s rukou v pomere asi 1 : 2.', 'Rotátorová manžeta drží hlavicu v strede jamky (oranžová žiara).'],
-    legend: [['#ece3cf', 'kosť'], ['#cfe6f2', 'chrupka'], ['#b9d2c8', 'lem jamky'], ['#e5352b', 'poškodený lem'], ['#58b4ff', 'cysta'], ['#a23c38', 'svaly']],
+    legend: [['#eee0c4', 'kosť'], ['#d2e2ea', 'chrupka'], ['#e9e6db', 'lem jamky'], ['#b3261e', 'poškodený lem'], ['#7cc3ee', 'cysta'], ['#74201c', 'svaly']],
     motion: 'Model ukazuje upaženie od tela až nad hlavu.' },
 };
 
@@ -628,6 +784,7 @@ function activate(snap) {
     }
   } else {
     active.L3.visible = S.level === 3;
+    if (active.setAO) active.setAO(S.level);
     const c = active.cam; setGoal({ az: c.az, el: c.el, dist: c.dist * (S.level === 3 ? .92 : 1), t: c.t }, snap);
   }
   rebuildLabels();
@@ -655,7 +812,7 @@ function rebuildLabels() {
   } else defs = active.labels;
   for (const d of defs) {
     const el = document.createElement(d.region ? 'button' : 'div');
-    el.className = 'lab ' + d.k + (d.region && d.region === S.region ? ' sel' : ''); el.textContent = d.t;
+    el.className = 'lab ' + d.k + (d.region && d.region === S.region ? ' sel' : ''); el.textContent = tr(d.t);
     if (d.region) el.addEventListener('click', () => { transition(() => { S.region = d.region; S.level = 2; }); });
     labelsEl.appendChild(el);
     const ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
@@ -676,7 +833,8 @@ function layoutLabels(W, H) {
   }
   const narrow = W < 560;
   const left = narrow ? vis.slice().sort((a, b) => a.y - b.y) : vis.filter(L => L.x < W * .5).sort((a, b) => a.y - b.y), right = narrow ? [] : vis.filter(L => L.x >= W * .5).sort((a, b) => a.y - b.y);
-  const top = W < 560 ? 104 : 64, bot = H - 128;
+  /* pri nahrávaní je hore nadpis a dole odznak, popis a zdroj videa */
+  const top = RECORD ? H * .22 : W < 560 ? 104 : 64, bot = H - (RECORD ? H * .25 : 128);
   for (const [arr, side] of [[left, -1], [right, 1]]) {
     let prev = top - 30;
     for (const L of arr) {
@@ -693,6 +851,9 @@ function layoutLabels(W, H) {
 
 /* ───────────── slučka ───────────── */
 const badge = $('#badge'), caption = $('#caption'), scrub = $('#scrub');
+/* tr: preklad textov na scéne; stránka je po slovensky, nahrávanie anglickej verzie videa ho nahradí cez __atlas.setTr */
+let tr = s => s;
+const setCap = s => { caption.textContent = tr(s); };
 let last = performance.now(), W = 0, H = 0, scrubbing = false;
 const perf = { n: 0, ms: 0, max: 0 };
 function resize() {
@@ -705,17 +866,23 @@ function exPhase(tm) { // zdvih 35 %, výdrž 15 %, návrat 35 %, pauza 15 %
   if (tm < .35) return smooth(tm / .35); if (tm < .5) return 1; if (tm < .85) return 1 - smooth((tm - .5) / .35); return 0;
 }
 function frame(now) {
-  const raw = now - last, dt = Math.min(.05, raw / 1000); last = now; S.time += dt;
+  const raw = now - last; last = now;
   if (active) { perf.n++; perf.ms += raw; if (raw > perf.max) perf.max = raw; }
+  tick(Math.min(.05, raw / 1000));
+  requestAnimationFrame(frame);
+}
+/* jeden krok animácie o dt sekúnd a vykreslenie; v režime ?record=1 ho volá nahrávanie s pevným krokom */
+function tick(dt) {
+  S.time += dt;
   if (S.playing && !scrubbing) { S.tm = (S.tm + dt * S.speed / (S.ex ? 5.5 : 6)) % 1; scrub.value = Math.round(S.tm * 1000); }
   if (S.mode === 'compare') { S.cmpT += dt; S.mT = (S.cmpT % 6) < 3 ? 1 : 0; } else S.mT = S.mode === 'peter' ? 1 : 0;
   S.m += (S.mT - S.m) * (1 - Math.exp(-dt * 5));
   const k = stageKey();
-  if (!active) caption.textContent = '';
+  if (!active) setCap('');
   else if (k === 'figure') {
     if (S.ex) {
       const u = exPhase(S.tm); applyPose(S.ex.A, S.ex.B, u); groundFigure(S.ex.anchor, S.ex._at);
-      caption.textContent = u < .5 ? S.ex.caps[0] : S.ex.caps[1];
+      setCap(u < .5 ? S.ex.caps[0] : S.ex.caps[1]);
     } else {
       for (const n in fig.hot) {
         const h = fig.hot[n]; _w.copy(h.src[1]); h.src[0].localToWorld(_w);
@@ -723,18 +890,18 @@ function frame(now) {
         const ph = (S.time * .9 + (n === 'knee' ? .3 : n === 'spine' ? .6 : 0)) % 1, sel = n === S.region;
         h.ring.scale.setScalar((sel ? 1.2 : .9) + ph * 1.6); h.ring.material.opacity = (1 - ph) * (sel ? 1 : .6); h.dot.scale.setScalar(sel ? 1.35 : 1);
       }
-      caption.textContent = 'Tri oblasti z ortopedických správ. Kliknite na štítok alebo zvoľte úroveň 2.';
+      setCap('Tri oblasti z ortopedických správ. Kliknite na štítok alebo zvoľte úroveň 2.');
     }
   } else {
     active.update(S.tm, S.m, S);
     const pm = S.m > .5;
-    if (k === 'knee') { const f = active.st.flex; caption.textContent = `Ohyb kolena ${Math.round(f)}°` + (pm && f > 34 && f < 58 ? ' · tu Peter cíti preskočenie' : ''); }
-    else if (k === 'spine') { const s = active.st.s; caption.textContent = (s > .15 ? 'Predklon' : s < -.15 ? 'Záklon' : 'Stredná poloha') + (pm ? ' · L5/S1 sa takmer nehýbe' : ' · pohyb rozložený rovnomerne'); }
-    else { const a = active.st.abd; caption.textContent = `Upaženie ${Math.round(a)}°` + (pm && a > 90 ? ' · nad horizontálou sa ozývala bolesť' : ''); }
+    if (k === 'knee') { const f = active.st.flex; setCap(`Ohyb kolena ${Math.round(f)}°` + (pm && f > 34 && f < 58 ? ' · tu Peter cíti preskočenie' : '')); }
+    else if (k === 'spine') { const s = active.st.s; setCap((s > .15 ? 'Predklon' : s < -.15 ? 'Záklon' : 'Stredná poloha') + (pm ? ' · L5/S1 sa takmer nehýbe' : ' · pohyb rozložený rovnomerne')); }
+    else { const a = active.st.abd; setCap(`Upaženie ${Math.round(a)}°` + (pm && a > 90 ? ' · nad horizontálou sa ozývala bolesť' : '')); }
   }
   const showBadge = k !== 'figure' && !!active;
   badge.style.display = showBadge ? '' : 'none';
-  if (showBadge) { const pm = S.mT > .5; badge.className = pm ? 'peter' : 'normal'; badge.textContent = pm ? 'Petrov nález' : 'Zdravý stav'; }
+  if (showBadge) { const pm = S.mT > .5; badge.className = pm ? 'peter' : 'normal'; badge.textContent = tr(pm ? 'Petrov nález' : 'Zdravý stav'); }
   if (S.autoRot) goal.az += dt * .35;
   const f = 1 - Math.exp(-dt * 6);
   cam.az += (goal.az - cam.az) * f; cam.el += (goal.el - cam.el) * f; cam.dist += (goal.dist - cam.dist) * f; cam.t.lerp(goal.t, f);
@@ -743,7 +910,6 @@ function frame(now) {
   camera.lookAt(cam.t); camera.updateMatrixWorld();
   renderer.render(scene, camera);
   layoutLabels(W, H);
-  requestAnimationFrame(frame);
 }
 
 /* ───────────── ovládanie ───────────── */
@@ -819,6 +985,14 @@ function renderPanel(r) {
 }
 
 /* ───────────── štart ───────────── */
-window.__atlas = { S, perf, ready: () => !!active, loaded: () => Object.keys(stages), view(az, el, dist, x, y, z) { goal.az = cam.az = az; goal.el = cam.el = el; goal.dist = cam.dist = dist; goal.t.set(x, y, z); cam.t.copy(goal.t); }, set(o) { Object.assign(S, o); if (o.exRef) S.ex = EX[o.exRef[0]][o.exRef[1]]; activate(true); cam.dist = goal.dist; syncUI(); renderPanel(S.region); }, EX };
+window.__atlas = {
+  S, perf, EX, ready: () => !!active, loaded: () => Object.keys(stages),
+  view(az, el, dist, x, y, z) { goal.az = cam.az = az; goal.el = cam.el = el; goal.dist = cam.dist = dist; goal.t.set(x, y, z); cam.t.copy(goal.t); },
+  set(o) { Object.assign(S, o); if (o.exRef) S.ex = EX[o.exRef[0]][o.exRef[1]]; activate(true); cam.dist = goal.dist; syncUI(); renderPanel(S.region); },
+  /* nahrávanie (?record=1): kamera k cieľu bez dobehu, krok o pevné dt, preklad textov na scéne */
+  snap() { cam.az = goal.az; cam.el = goal.el; cam.dist = goal.dist; cam.t.copy(goal.t); },
+  goal, step(dt) { tick(dt); },
+  setTr(fn) { tr = fn || (s => s); rebuildLabels(); },
+};
 resize(); renderPanel(S.region); activate(true); cam.dist = goal.dist; syncUI();
-requestAnimationFrame(frame);
+if (!RECORD) requestAnimationFrame(frame);
