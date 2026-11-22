@@ -30,9 +30,14 @@ only listed in the admin panel, as before this decision.
 
 Caps (per patient): ``MAX_ITEMS_PER_DAY`` quarantined mails and
 ``MAX_FILES_PER_DAY`` files per 24 h, ``MAX_PENDING_ITEMS`` pending items,
-``MAX_PENDING_BYTES`` pending bytes; globally the holding store's
-``HOLDING_MAX_BYTES`` (held + quarantined bytes) and ``MIN_FREE_BYTES`` free
-on the ``DATA_DIR`` filesystem.
+``MAX_PENDING_BYTES`` pending bytes and ``MAX_RECEIVED_BYTES_30D`` bytes
+received in 30 days (every state: a reject-and-resend loop cannot grow the
+store, since nothing is deleted); globally its OWN budget
+``QUARANTINE_MAX_PENDING_BYTES`` over pending items only (never the trial
+holding store's ``HOLDING_MAX_BYTES``, so a stranger's flood never blocks a
+trial) and the holding store's ``MIN_FREE_BYTES`` free-space guard on the
+``DATA_DIR`` filesystem. Retained bytes of rejected / expired items are shown
+in the admin overview (``admin_overview``): what a future purge would free.
 
 Storage: one AES-GCM file per attachment under
 ``<DATA_DIR>/quarantine/<item_uuid>/<n>.bin`` (dirs 0700, files 0600, tmp +
@@ -99,6 +104,11 @@ MAX_ITEMS_PER_DAY = 10  # quarantined mails per patient per 24 h
 MAX_FILES_PER_DAY = 30  # quarantined files per patient per 24 h
 MAX_PENDING_ITEMS = 20  # pending items per patient
 MAX_PENDING_BYTES = 200 * 1024 * 1024  # pending bytes per patient
+# bytes received per patient in a rolling 30 days, whatever the state (a
+# rejected or expired item keeps its encrypted file, #734)
+MAX_RECEIVED_BYTES_30D = 500 * 1024 * 1024
+# all patients' PENDING bytes; separate from the trial holding store's budget
+QUARANTINE_MAX_PENDING_BYTES = 2 * 1024 * 1024 * 1024
 NOTIFY_SENDER_INTERVAL_S = 3600  # one notification per sender and patient per hour
 MAX_NOTICES_PER_DAY = 3  # notification e-mails per patient per 24 h
 MAX_ITEMS_PER_NOTICE = 5  # items with buttons in one e-mail; the rest: dashboard
@@ -106,10 +116,16 @@ NOTICE_RETRY_S = 900  # after a refused send
 TOKEN_BYTES = 32
 TOKEN_TTL_S = 7 * 86400
 EXPIRE_AFTER_DAYS = 30
+# rejected / expired items stay restorable this long (maintainer decision
+# 2026-11-22); the later purge removes only their encrypted files
+TRASH_DAYS = 30
 CLAIM_STALE_MIN = 30
 
 LINK_BASE = "https://oncofiles.com/q/"
 DASHBOARD_URL = "https://oncofiles.com/dashboard"
+# mailer kind and Brevo `X-Mailin-Tag` of the notification (exclude it
+# from click tracking in Brevo's settings; see notify_due)
+QUARANTINE_MAIL_TAG = "inbound_quarantine"
 
 REASONS = ("unknown_sender", "auth_failed")
 
@@ -131,7 +147,9 @@ PERMANENT_SKIPS = frozenset(
 
 _MAGIC = b"q1"
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{40,64}$")
-_SENDER_SAFE = re.compile(r"[^A-Za-z0-9.!#$%&*+/=?^_`{|}~@-]")
+# address characters only, and none that shapes a URL (/ ? = & %): the
+# sender is shown as plain text and must never turn into a link target
+_SENDER_SAFE = re.compile(r"[^A-Za-z0-9.!#$*+^_`{|}~@-]")
 
 _last_failed: dict[str, float] = {}
 
@@ -283,10 +301,25 @@ def token_hash(token: str) -> str:
     return hmac.new(quarantine_token_key(), b"lookup|" + token.encode(), hashlib.sha256).hexdigest()
 
 
-def _binding(action: str, patient_id: str, item_uuid: str, token: str) -> str:
+def recipient_hash(caregiver_email: str | None) -> str:
+    """Keyed hash of the canonical first caregiver address (the link's
+    recipient). '' when there is none: such a link never resolves."""
+    from oncofiles.email_identity import canonical_email
     from oncofiles.secrets_keys import quarantine_token_key
 
-    msg = f"bind|{action}|{patient_id}|{item_uuid}|{token}".encode()
+    first = parseaddr(str(caregiver_email or "").split(",", 1)[0].strip())[1]
+    canon = canonical_email(first) if first else ""
+    if not canon:
+        return ""
+    return hmac.new(
+        quarantine_token_key(), b"recipient|" + canon.encode(), hashlib.sha256
+    ).hexdigest()
+
+
+def _binding(action: str, patient_id: str, item_uuid: str, recipient: str, token: str) -> str:
+    from oncofiles.secrets_keys import quarantine_token_key
+
+    msg = f"bind|{action}|{patient_id}|{item_uuid}|{recipient}|{token}".encode()
     return hmac.new(quarantine_token_key(), msg, hashlib.sha256).hexdigest()
 
 
@@ -366,14 +399,21 @@ async def quarantine_mail(db, patient_id: str, th: str, msg, reason: str, progre
     if await db.quarantine_source_exists(source, patient_id=patient_id):
         return Outcome("duplicate")
     now = _now()
-    usage = await db.quarantine_usage(patient_id=patient_id, since=_iso(now - timedelta(days=1)))
+    usage = await db.quarantine_usage(
+        patient_id=patient_id,
+        since=_iso(now - timedelta(days=1)),
+        since_30d=_iso(now - timedelta(days=30)),
+    )
     if usage["items_today"] >= MAX_ITEMS_PER_DAY:
         return Outcome("listed", "quarantine_daily_cap")
     if usage["pending_items"] >= MAX_PENDING_ITEMS:
         return Outcome("listed", "quarantine_pending_cap")
     declared = sum((a.declared_size or len(a.data or b"")) for a in msg.attachments)
-    if usage["pending_bytes"] + min(declared, inbound_email.MAX_BYTES_PER_MAIL) > MAX_PENDING_BYTES:
+    declared = min(declared, inbound_email.MAX_BYTES_PER_MAIL)
+    if usage["pending_bytes"] + declared > MAX_PENDING_BYTES:
         return Outcome("listed", "quarantine_bytes_cap")
+    if usage["received_bytes_30d"] + declared > MAX_RECEIVED_BYTES_30D:
+        return Outcome("listed", "quarantine_received_cap")
 
     skipped: Counter = Counter(msg.parse_skips)
     temporary: set[str] | None = set() if progress is not None else None
@@ -412,9 +452,10 @@ async def quarantine_mail(db, patient_id: str, th: str, msg, reason: str, progre
         return Outcome("listed", "quarantine_file_cap", skipped=skipped)
     if usage["pending_bytes"] + total > MAX_PENDING_BYTES:
         return Outcome("listed", "quarantine_bytes_cap", skipped=skipped)
-    held = await db.holding_bytes() + await db.quarantine_bytes_total()
-    if held + total > holding_store.HOLDING_MAX_BYTES:
-        return Outcome("listed", "holding_full", skipped=skipped)
+    if usage["received_bytes_30d"] + total > MAX_RECEIVED_BYTES_30D:
+        return Outcome("listed", "quarantine_received_cap", skipped=skipped)
+    if await db.quarantine_pending_bytes_total() + total > QUARANTINE_MAX_PENDING_BYTES:
+        return Outcome("listed", "quarantine_full", skipped=skipped)
     if _free_bytes() - total < holding_store.MIN_FREE_BYTES:
         return Outcome("listed", "disk_low", skipped=skipped)
 
@@ -482,8 +523,23 @@ def notice_text(entries: list[dict], more: int) -> tuple[str, str]:
         sk += ["", f"Odosielateľ: {e['sender']}", f"Príloh: {e['count']} ({types})"]
         en += ["", f"Sender: {e['sender']}", f"Attachments: {e['count']} ({types})"]
         if e["reason"] == "auth_failed":
-            sk.append("Pozor: odosielateľa sa nepodarilo overiť.")
-            en.append("Warning: the sender could not be verified.")
+            # infra review of #970: the From may be the caregiver's OWN address
+            # (forged). No approve link: only reject here; approving needs the
+            # signed-in dashboard, which shows the warning.
+            sk += [
+                "POZOR: správa sa tvári, že je od vás, ale váš poskytovateľ pošty ju nepodpísal.",
+                "Ak ste ju neposlali vy, odmietnite ju. Schváliť sa dá len po prihlásení: "
+                + DASHBOARD_URL,
+                f"Odmietnuť: {e['reject']}",
+            ]
+            en += [
+                "WARNING: this mail claims to be from you, but it is not signed by your "
+                "mail provider.",
+                "If you did not send it, reject it. Approving is possible only after "
+                "signing in: " + DASHBOARD_URL,
+                f"Reject: {e['reject']}",
+            ]
+            continue
         sk += [f"Schváliť: {e['approve']}", f"Odmietnuť: {e['reject']}"]
         en += [f"Approve: {e['approve']}", f"Reject: {e['reject']}"]
     if more:
@@ -503,17 +559,26 @@ def notice_text(entries: list[dict], more: int) -> tuple[str, str]:
     return subject, body
 
 
-async def _issue_tokens(db, item: dict) -> dict[str, str]:
+def link_actions(refusal_reason: str) -> tuple[str, ...]:
+    """The e-mail actions of an item: an unverified claim of the caregiver's
+    own address (``auth_failed``) gets NO approve link (infra review of #970)."""
+    return ("reject",) if refusal_reason == "auth_failed" else ("approve", "reject")
+
+
+async def _issue_tokens(db, item: dict, recipient: str) -> dict[str, str]:
+    """The links for ``item`` (``link_actions``), bound to the caregiver
+    address they go to (``recipient`` = ``recipient_hash`` of it)."""
     expires = _iso(_now() + timedelta(seconds=TOKEN_TTL_S))
     links = {}
-    for action in ("approve", "reject"):
+    for action in link_actions(item["refusal_reason"]):
         token = secrets.token_urlsafe(TOKEN_BYTES)
         await db.insert_quarantine_token(
             patient_id=item["patient_id"],
             quarantine_id=item["id"],
             action=action,
             token_hash=token_hash(token),
-            binding_hash=_binding(action, item["patient_id"], item["item_uuid"], token),
+            binding_hash=_binding(action, item["patient_id"], item["item_uuid"], recipient, token),
+            recipient_hash=recipient,
             expires_at=expires,
         )
         links[action] = LINK_BASE + token
@@ -572,7 +637,8 @@ async def notify_due(db, patient_id: str) -> int:
         return 0
     patient = await db.get_patient(patient_id)
     to = _recipient(patient) if patient is not None else ""
-    if not to:
+    recipient = recipient_hash(to)
+    if not to or not recipient:
         return 0
     notice_key = secrets.token_hex(8)
     at = _iso(now)
@@ -587,7 +653,7 @@ async def notify_due(db, patient_id: str) -> int:
         except Exception:
             logger.warning("quarantine: item %d metadata unreadable", it["id"])
             continue
-        links = await _issue_tokens(db, it)
+        links = await _issue_tokens(db, it, recipient)
         entries.append(
             {
                 "sender": sender,
@@ -598,11 +664,19 @@ async def notify_due(db, patient_id: str) -> int:
             }
         )
     subject, body = notice_text(entries, len(due) - len(entries))
+    # Click tracking (infra review of #970): Brevo documents NO SMTP header that
+    # turns click tracking off per message (searched 2026-11-22:
+    # https://developers.brevo.com/changelog only has `removeTrackingPixel`,
+    # API, Enterprise, open pixel only; https://help.brevo.com/hc/en-us/articles/11643306229906
+    # only an account-wide anonymisation). The mailer puts every tag into
+    # `X-Mailin-Tag`, so these mails carry the recognisable tag
+    # `inbound_quarantine` for infra to exclude from tracking in Brevo's
+    # settings. The tokens are single use and bound to the caregiver anyway.
     ok = await mailer.send_mail(
         [to],
         subject,
         body,
-        tags=["inbound_quarantine"],
+        tags=[QUARANTINE_MAIL_TAG],
         headers={"Auto-Submitted": "auto-generated"},
     )
     if not ok:
@@ -626,6 +700,7 @@ async def run_maintenance(db) -> dict:
     expired = await db.expire_quarantine_items(
         before=_iso(now - timedelta(days=EXPIRE_AFTER_DAYS)),
         stale_before=_iso(now - timedelta(minutes=CLAIM_STALE_MIN)),
+        at=_iso(now),
     )
     if expired:
         _counters()["quarantine_expired"] += expired
@@ -755,6 +830,8 @@ async def _approve_locked(db, pid: str, item_id: int, decided_by: str, via: str)
         "caller_email_hash": decided_by,
     }
     if leftover:
+        if filed:
+            await db.add_quarantine_filed(item_id, patient_id=pid, filed=filed)
         await db.release_quarantine_claim(item_id, patient_id=pid, lease=lease)
         await _journal(db, pid, "approve", {**detail, "code": leftover}, status="retry_later")
         logger.info(
@@ -772,7 +849,7 @@ async def _approve_locked(db, pid: str, item_id: int, decided_by: str, via: str)
         at=_iso(_now()),
         decided_by=decided_by,
         decided_via=via,
-        filed_count=filed,
+        filed_count=int(item.get("filed_count") or 0) + filed,
         lease=lease,
     )
     if not ok:
@@ -815,7 +892,43 @@ async def reject(db, patient_id: str, item_id: int, *, decided_by: str, via: str
         )
     _counters()["quarantine_rejected"] += 1
     logger.info("quarantine: rejected patient %s item=%d", patient_id[:4], int(item_id))
-    return {"result": "rejected"}
+    # files an earlier, partial approve already filed stay filed (create-only
+    # path, nothing is deleted); the answer says how many
+    item = await db.get_quarantine_item(int(item_id), patient_id=patient_id)
+    return {"result": "rejected", "already_filed": int((item or {}).get("filed_count") or 0)}
+
+
+async def restore(db, patient_id: str, item_id: int, *, decided_by: str) -> dict:
+    """Trash → pending (maintainer decision 2026-11-22): a rejected or expired
+    item decided within ``TRASH_DAYS``. Dashboard only (never an e-mail
+    link); idempotent (``already`` when it is pending); issues no new e-mail
+    link and voids the item's unused ones."""
+    from oncofiles import inbound_email
+
+    async with inbound_email.PROCESS_LOCK, inbound_email._state.lock(patient_id):
+        now = _now()
+        ok = await db.restore_quarantine_item(
+            int(item_id),
+            patient_id=patient_id,
+            since=_iso(now - timedelta(days=TRASH_DAYS)),
+            at=_iso(now),
+        )
+        if not ok:
+            item = await db.get_quarantine_item(int(item_id), patient_id=patient_id)
+            if item is None:
+                return {"result": "not_found"}
+            if item["state"] == "pending":
+                return {"result": "already"}
+            return {"result": "not_restorable", "state": item["state"]}
+        await _journal(
+            db,
+            patient_id,
+            "restore",
+            {"item_id": int(item_id), "via": "dashboard", "caller_email_hash": decided_by},
+        )
+    _counters()["quarantine_restored"] += 1
+    logger.info("quarantine: restored patient %s item=%d", patient_id[:4], int(item_id))
+    return {"result": "restored"}
 
 
 # ── action links (/q/<token>) ────────────────────────────────────────────
@@ -823,7 +936,10 @@ async def reject(db, patient_id: str, item_id: int, *, decided_by: str, via: str
 
 async def resolve_link(db, token: str) -> dict | None:
     """The live token row for ``token`` (pending item, unused, unexpired,
-    binding intact), else None. Reads only."""
+    binding intact, issued to the patient's CURRENT caregiver address), else
+    None. Reads only. A caregiver change also voids the patient's outstanding
+    tokens when it is written (``db.update_patient``); this check is the
+    second layer for any other path."""
     if not configured() or not isinstance(token, str) or not _TOKEN_RE.match(token):
         return None
     row = await db.find_quarantine_token(token_hash(token))
@@ -831,8 +947,17 @@ async def resolve_link(db, token: str) -> dict | None:
         return None
     if str(row["expires_at"]) <= _iso(_now()):
         return None
-    expected = _binding(row["action"], row["patient_id"], row["item_uuid"], token)
-    if not hmac.compare_digest(expected, row["binding_hash"]):
+    if row["action"] not in link_actions(str(row.get("refusal_reason") or "")):
+        # an approve link of an unverified caregiver claim is never issued;
+        # one that exists anyway is refused (infra review of #970)
+        return None
+    stored = str(row.get("recipient_hash") or "")
+    expected = _binding(row["action"], row["patient_id"], row["item_uuid"], stored, token)
+    if not stored or not hmac.compare_digest(expected, row["binding_hash"]):
+        return None
+    patient = await db.get_patient(row["patient_id"])
+    current = recipient_hash(getattr(patient, "caregiver_email", None) if patient else None)
+    if not current or not hmac.compare_digest(current, stored):
         return None
     return row
 
@@ -877,60 +1002,112 @@ async def act_on_link(db, token: str, csrf: str) -> str:
     used_at = _iso(_now())
     if not await db.use_quarantine_token(row["token_id"], patient_id=pid, at=used_at):
         return "invalid"
-    patient = await db.get_patient(pid)
-    decided_by = caller_email_hash(_recipient(patient)) if patient is not None else None
-    decided_by = decided_by or "email_link"
-    if row["action"] == "approve":
-        result = await approve(
+    code = "error"
+    try:
+        patient = await db.get_patient(pid)
+        decided_by = caller_email_hash(_recipient(patient)) if patient is not None else None
+        decided_by = decided_by or "email_link"
+        decide = approve if row["action"] == "approve" else reject
+        result = await decide(
             db, pid, row["quarantine_id"], decided_by=decided_by, via="email_link"
         )
-    else:
-        result = await reject(
-            db, pid, row["quarantine_id"], decided_by=decided_by, via="email_link"
-        )
-    code = result["result"]
+        code = result["result"]
+    finally:
+        # the token is spent only by a decision; an error, a busy item or a
+        # file that could not be filed now gives it back (infra review of #970)
+        if code not in ("approved", "rejected", "already", "not_found", "not_pending"):
+            await db.release_quarantine_token(row["token_id"], patient_id=pid, at=used_at)
     if code in ("approved", "rejected"):
         return code
     if code in ("retry_later", "busy"):
-        await db.release_quarantine_token(row["token_id"], patient_id=pid, at=used_at)
         return "retry_later"
     return "invalid"
+
+
+# ── admin overview ───────────────────────────────────────────────────────
+
+
+async def admin_overview(db) -> dict:
+    """Counts and bytes per state over all patients (admin zone): pending
+    bytes against ``QUARANTINE_MAX_PENDING_BYTES`` and the retained bytes of
+    rejected / expired items a future lifecycle purge would free. No ids,
+    no addresses, no names."""
+    if not configured():
+        return {"enabled": False}
+    by_state = await db.quarantine_state_totals()
+    retained = sum(by_state.get(s, {}).get("bytes", 0) for s in ("rejected", "expired"))
+    return {
+        "enabled": True,
+        "by_state": by_state,
+        "pending_bytes": by_state.get("pending", {}).get("bytes", 0),
+        "pending_budget_bytes": QUARANTINE_MAX_PENDING_BYTES,
+        "retained_bytes": retained,
+    }
 
 
 # ── dashboard ────────────────────────────────────────────────────────────
 
 
+def _card_item(item: dict) -> dict | None:
+    try:
+        sender, files = _item_view(item)
+    except Exception:
+        logger.warning("quarantine: item %d metadata unreadable", item["id"])
+        return None
+    return {
+        "id": item["id"],
+        "sender": sender,
+        "received_at": item["received_at"],
+        "reason": item["refusal_reason"],
+        "files": [
+            {"name": f["name"], "type": file_type(f["name"]), "size": int(f["size"])} for f in files
+        ],
+        "total_bytes": int(item["total_bytes"]),
+        "filed_count": int(item.get("filed_count") or 0),
+    }
+
+
 async def dashboard_view(db, patient_id: str, *, caregiver: bool) -> dict:
     """The card's data. The caregiver sees each pending item (sender, time,
-    file names, types, sizes); anyone else (an admin's read-only view) only
-    the count."""
+    file names, types, sizes; ``reason`` ``auth_failed`` = claims to be from
+    the caregiver but is not signed) and the trash (rejected / expired items
+    still restorable, with ``days_left``); anyone else (an admin's read-only
+    view) only the count."""
     if not configured():
-        return {"enabled": False, "pending": 0, "items": []}
+        return {"enabled": False, "pending": 0, "items": [], "trash": []}
     if not caregiver:
         return {
             "enabled": True,
             "read_only": True,
             "pending": await db.count_quarantine_pending(patient_id=patient_id),
             "items": [],
+            "trash": [],
         }
     out = []
     for item in await db.list_quarantine_items(patient_id=patient_id, limit=MAX_PENDING_ITEMS):
-        try:
-            sender, files = _item_view(item)
-        except Exception:
-            logger.warning("quarantine: item %d metadata unreadable", item["id"])
+        view = _card_item(item)
+        if view is not None:
+            out.append(view)
+    now = _now()
+    trash = []
+    for item in await db.list_quarantine_trash(
+        patient_id=patient_id, since=_iso(now - timedelta(days=TRASH_DAYS))
+    ):
+        view = _card_item(item)
+        if view is None:
             continue
-        out.append(
-            {
-                "id": item["id"],
-                "sender": sender,
-                "received_at": item["received_at"],
-                "reason": item["refusal_reason"],
-                "files": [
-                    {"name": f["name"], "type": file_type(f["name"]), "size": int(f["size"])}
-                    for f in files
-                ],
-                "total_bytes": int(item["total_bytes"]),
-            }
-        )
-    return {"enabled": True, "read_only": False, "pending": len(out), "items": out}
+        try:
+            decided = datetime.strptime(item["decided_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=UTC
+            )
+            days_left = max(0, TRASH_DAYS - (now - decided).days)
+        except (TypeError, ValueError):
+            days_left = 0
+        trash.append({**view, "state": item["state"], "days_left": days_left})
+    return {
+        "enabled": True,
+        "read_only": False,
+        "pending": len(out),
+        "items": out,
+        "trash": trash,
+    }

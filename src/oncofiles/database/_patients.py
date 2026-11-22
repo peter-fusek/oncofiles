@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from oncofiles.models import Patient
@@ -245,11 +245,23 @@ class PatientsMixin:
             params.append(preferred_lang)
         if not updates:
             return await self.get_patient(patient_id)
+        caregiver_changed = False
+        if caregiver_email is not None:
+            before = await self.get_patient(patient_id)
+            old = (getattr(before, "caregiver_email", None) or "") if before else ""
+            caregiver_changed = old.strip().lower() != caregiver_email.strip().lower()
         updates.append("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
         params.append(patient_id)
         sql = f"UPDATE patients SET {', '.join(updates)} WHERE patient_id = ?"
         async with self.db.execute(sql, params):
             await self.db.commit()
+        if caregiver_changed:
+            # #950 quarantine: action links sent to the old caregiver address
+            # stop working (resolve_link also re-checks the recipient).
+            await self.void_quarantine_tokens(
+                patient_id=patient_id,
+                at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            )
         return await self.get_patient(patient_id)
 
     # ── Token management ─────────────────────────────────────────────────

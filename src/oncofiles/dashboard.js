@@ -48,7 +48,7 @@
     var DEMO_BLOCKED_ACTIONS = {
       showOnboarding: 1, showGdriveSetup: 1, showGdriveSetupAndToggle: 1, triggerManualSync: 1,
       generateShareCode: 1, togglePatientArchive: 1, logout: 1, rotateInboundAddress: 1,
-      approveQuarantine: 1, rejectQuarantine: 1
+      approveQuarantine: 1, rejectQuarantine: 1, restoreQuarantine: 1
     };
 
     window._dispatch = function (spec, target) {
@@ -1095,7 +1095,7 @@
       var list = document.getElementById('quarantine-list');
       if (!card || !list) return;
       clearEl(list);
-      if (!data || !data.enabled || !data.pending) { hideQuarantineCard(); return; }
+      if (!data || !data.enabled || (!data.pending && !(data.trash || []).length)) { hideQuarantineCard(); return; }
       if (data.read_only) {
         var ro = document.createElement('p');
         ro.className = 'section-meta';
@@ -1129,7 +1129,9 @@
           mark.setAttribute('aria-hidden', 'true');
           warn.appendChild(mark);
           var wt = document.createElement('span');
-          setI18n(wt, ' Odosielateľa sa nepodarilo overiť.', ' The sender could not be verified.');
+          // infra review of #970: the From may be the caregiver's own address
+          setI18n(wt, ' Správa sa tvári, že je od vás, ale váš poskytovateľ pošty ju nepodpísal. Schváľte ju, len ak ste ju naozaj poslali vy.',
+            ' This mail claims to be from you, but it is not signed by your mail provider. Approve it only if you really sent it.');
           warn.appendChild(wt);
           box.appendChild(warn);
         }
@@ -1158,7 +1160,58 @@
         box.appendChild(actions);
         list.appendChild(box);
       });
+      renderQuarantineTrash(list, data.trash || []);
       card.hidden = false;
+    }
+
+    // Trash ("Kôš", maintainer decision 2026-11-22): rejected / expired items
+    // stay restorable for 30 days; Restore puts one back to pending (dashboard
+    // only, never an e-mail link). Collapsed by default (<details>).
+    function renderQuarantineTrash(list, trash) {
+      if (!trash.length) return;
+      var box = document.createElement('details');
+      box.className = 'quarantine-trash';
+      var sum = document.createElement('summary');
+      setI18n(sum, 'Kôš (' + trash.length + ')', 'Trash (' + trash.length + ')');
+      box.appendChild(sum);
+      var note = document.createElement('p');
+      note.className = 'section-meta';
+      setI18n(note, 'Odmietnuté a vypršané prílohy sa dajú obnoviť 30 dní; potom sa ich súbory vymažú.',
+        'Rejected and expired attachments can be restored for 30 days; then their files are deleted.');
+      box.appendChild(note);
+      trash.forEach(function (item) {
+        var row = document.createElement('div');
+        row.className = 'quarantine-item';
+        var head = document.createElement('p');
+        head.className = 'quarantine-sender';
+        var addr = document.createElement('code');
+        addr.textContent = item.sender || '?';
+        var meta = document.createElement('span');
+        meta.className = 'section-meta';
+        var days = Number(item.days_left) || 0;
+        var stateSk = item.state === 'expired' ? 'vypršalo' : 'odmietnuté';
+        var stateEn = item.state === 'expired' ? 'expired' : 'rejected';
+        setI18n(meta, ' · ' + stateSk + ' · zostáva ' + days + ' d', ' · ' + stateEn + ' · ' + days + ' days left');
+        head.appendChild(addr);
+        head.appendChild(meta);
+        row.appendChild(head);
+        var ul = document.createElement('ul');
+        ul.className = 'quarantine-files';
+        (item.files || []).forEach(function (f) {
+          var li = document.createElement('li');
+          li.textContent = (f.name || '?') + ' \u00b7 ' + (f.type || '?') + ' \u00b7 ' + quarantineSize(f.size);
+          ul.appendChild(li);
+        });
+        row.appendChild(ul);
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'copy-btn';
+        btn.setAttribute('data-action', 'restoreQuarantine|' + item.id + '|@this');
+        setI18n(btn, 'Obnoviť', 'Restore');
+        row.appendChild(btn);
+        box.appendChild(row);
+      });
+      list.appendChild(box);
     }
 
     async function loadQuarantine() {
@@ -1186,8 +1239,17 @@
         if (resp.ok && action === 'approve') {
           quarantineStatus('Schválené: prílohy idú do dokumentov pacienta.',
             'Approved: the attachments go into the patient’s documents.');
+        } else if (resp.ok && action === 'restore') {
+          quarantineStatus('Obnovené: prílohy znova čakajú na vaše rozhodnutie.',
+            'Restored: the attachments wait for your decision again.');
         } else if (resp.ok) {
-          quarantineStatus('Odmietnuté: prílohy sa nespracujú.', 'Rejected: the attachments are not processed.');
+          var filedBefore = Number(data.already_filed) || 0;
+          if (filedBefore) {
+            quarantineStatus('Odmietnuté. ' + filedBefore + ' súbor(ov) už bolo zaradených skôr a zostáva v dokumentoch.',
+              'Rejected. ' + filedBefore + ' file(s) were already filed earlier and stay in the documents.');
+          } else {
+            quarantineStatus('Odmietnuté: prílohy sa nespracujú.', 'Rejected: the attachments are not processed.');
+          }
         } else {
           quarantineStatus('Teraz sa to nepodarilo (' + String(data.code || data.result || resp.status) + '). Skúste to neskôr.',
             'This did not work right now (' + String(data.code || data.result || resp.status) + '). Try again later.');
@@ -1200,6 +1262,7 @@
 
     function approveQuarantine(itemId, btn) { return decideQuarantine(itemId, 'approve', btn); }
     function rejectQuarantine(itemId, btn) { return decideQuarantine(itemId, 'reject', btn); }
+    function restoreQuarantine(itemId, btn) { return decideQuarantine(itemId, 'restore', btn); }
 
     // Admin zone: mail to patient addresses that was not filed (counts only).
     var INBOUND_REASON_TEXT = {
@@ -1390,6 +1453,18 @@
         body.appendChild(alertLine);
       }
       renderTrialFunnel(body, data && data.trial_funnel);
+      // #950 quarantine: pending bytes against its own budget, and the retained
+      // bytes of rejected / expired items a future lifecycle purge would free.
+      var q = data && data.quarantine;
+      if (q && q.enabled) {
+        var mb = function (n) { return (Number(n || 0) / 1048576).toFixed(1) + ' MB'; };
+        var qLine = document.createElement('p');
+        qLine.className = 'curated-ops-meta';
+        setI18n(qLine,
+          'Karanténa: čaká ' + mb(q.pending_bytes) + ' z ' + mb(q.pending_budget_bytes) + '; odmietnuté a vypršané zaberajú ' + mb(q.retained_bytes) + ' (nič sa nemaže).',
+          'Quarantine: pending ' + mb(q.pending_bytes) + ' of ' + mb(q.pending_budget_bytes) + '; rejected and expired hold ' + mb(q.retained_bytes) + ' (nothing is deleted).');
+        body.appendChild(qLine);
+      }
       var senders = (data && data.senders) || [];
       if (!senders.length) {
         var empty = document.createElement('p');
@@ -1967,7 +2042,7 @@
 
     // #857: version of the privacy + terms text the consent checkbox refers to.
     // Must equal oncofiles.patient_consent.CONSENT_VERSION (a test keeps them equal).
-    var CONSENT_VERSION = '2026-11-21b';
+    var CONSENT_VERSION = '2026-11-22';
 
     async function wizardStep1Submit() {
       var btn = document.getElementById('wiz-create-btn');

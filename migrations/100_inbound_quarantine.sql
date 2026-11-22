@@ -26,13 +26,22 @@
 --                   (one key per sent mail, for the per-day cap).
 --   claimed_at:     short lease while an approval files the files.
 --   decided_by:     keyed caller hash (never an address); decided_via:
---                   dashboard | email_link.
+--                   dashboard | email_link | expiry. decided_at of a rejected /
+--                   expired item starts its 30-day trash: the caregiver can
+--                   restore it to pending in the dashboard (restored_at; the
+--                   expiry then counts from it). After the trash only the
+--                   encrypted files go and the row stays 'purged' (separate
+--                   PR with a #734 allowlist entry; nothing deleted here).
 --
 -- inbound_quarantine_tokens: single-use action links of the notification.
 --   token_hash:     keyed HMAC of the random token (the token itself is only
---                   in the e-mail); binding_hash binds it to action + patient +
---                   item; expires_at = created + 7 days; used_at marks a used
---                   token.
+--                   in the e-mail); recipient_hash = keyed hash of the
+--                   canonical caregiver address the link was sent to;
+--                   binding_hash binds the token to action + patient + item +
+--                   recipient; a link resolves only while the patient's
+--                   current caregiver address has the same recipient_hash, and
+--                   a caregiver change marks every unused link used;
+--                   expires_at = created + 7 days; used_at marks a used token.
 --
 -- Retention: no row and no file is ever deleted (#734). Removing rejected or
 -- expired quarantine files needs a RUNBOOK lifecycle entry and a reviewed
@@ -57,6 +66,7 @@ CREATE TABLE IF NOT EXISTS inbound_quarantine (
     decided_by TEXT,
     decided_via TEXT,
     filed_count INTEGER NOT NULL DEFAULT 0,
+    restored_at TEXT,
     UNIQUE (patient_id, source_hash)
 );
 
@@ -70,6 +80,7 @@ CREATE TABLE IF NOT EXISTS inbound_quarantine_tokens (
     action TEXT NOT NULL,
     token_hash TEXT NOT NULL UNIQUE,
     binding_hash TEXT NOT NULL,
+    recipient_hash TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     used_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))

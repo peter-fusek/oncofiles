@@ -616,6 +616,8 @@
     .quarantine-sender code { word-break: break-all; }
     .quarantine-files { margin: 0.25rem 0 0.5rem 1.25rem; font-size: 0.8125rem; word-break: break-word; }
     .quarantine-warn { font-size: 0.8125rem; }
+    .quarantine-trash { margin-top: 0.75rem; border-top: 1px solid var(--rule); padding-top: 0.5rem; }
+    .quarantine-trash summary { cursor: pointer; font-weight: 600; }
     /* #950 phase 2: first steps of a welcome@ trial. */
     .trial-card[hidden] { display: none; }
     .trial-card { margin-top: 1.25rem; border-left: 4px solid var(--peach); }

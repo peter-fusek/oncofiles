@@ -186,7 +186,13 @@ async def test_forged_caregiver_is_quarantined_with_a_warning(idb, drive, mails)
     assert item["refusal_reason"] == "auth_failed"
     [note] = notices(mails)
     assert note["to"] == [CARER]  # the real caregiver, never a reply "to the sender"
-    assert "could not be verified" in note["text"]
+    # infra review of #970: no approve link for an unverified claim of the
+    # caregiver's own address; reject + the dashboard only
+    assert "not signed by your mail provider" in note["text"]
+    assert "Approve:" not in note["text"] and "Schváliť:" not in note["text"]
+    assert len(set(links(note["text"]))) == 1 and "/dashboard" in note["text"]
+    tokens = await rows(idb, "SELECT action FROM inbound_quarantine_tokens")
+    assert [t["action"] for t in tokens] == ["reject"]
 
 
 async def test_loop_mail_is_still_ignored(idb, drive, mails):
@@ -418,6 +424,7 @@ async def test_dashboard_card_for_the_caregiver_and_counts_for_an_admin(idb, dri
         "read_only": True,
         "pending": 1,
         "items": [],
+        "trash": [],
     }
     foreign = await _call(server.api_inbound_quarantine, _dash_request(idb, "synth950-b"), CARER)
     unknown = await _call(server.api_inbound_quarantine, _dash_request(idb, "synth950-zz"), CARER)
@@ -512,15 +519,115 @@ async def test_file_and_byte_caps(idb, drive, mails, monkeypatch):
     assert await rows(idb, "SELECT * FROM inbound_quarantine") == []
 
 
-async def test_global_holding_limit_applies(idb, drive, mails, monkeypatch):
+async def test_quarantine_has_its_own_pending_budget_and_trials_are_unaffected(
+    idb, drive, mails, monkeypatch
+):
+    """Security review of #970: a stranger's quarantine flood never counts
+    against the trial holding store's budget."""
     from oncofiles import holding_store
 
-    monkeypatch.setattr(holding_store, "HOLDING_MAX_BYTES", 1000)
-    assert (await quarantine_one(idb)).outcome == "unmatched"
-    monkeypatch.setattr(holding_store, "HOLDING_MAX_BYTES", 10**12)
+    # the holding budget is far below what the quarantine holds: quarantine
+    # still works (it never reads HOLDING_MAX_BYTES) ...
+    monkeypatch.setattr(holding_store, "HOLDING_MAX_BYTES", 30_000)
+    for i in range(3):
+        result = await quarantine_one(
+            idb,
+            sender=f"flood{i}@example.test",
+            files=[(f"Synth{i}.pdf", pdf(400 + i), "application/pdf")],
+        )
+        assert result.outcome == "quarantined"
+    # ... and a trial's holding write is checked against held bytes only
+    await idb.db.execute(
+        "INSERT INTO trial_accounts (patient_id, sender_hash, source, trial_ends_at) "
+        "VALUES (?, ?, 'welcome_email', ?)",
+        (PID, "synthetic-trial-hash-950q", ago(days=-30)),
+    )
+    await idb.db.commit()
+    assert await idb.holding_bytes() == 0
+    await holding_store.check_limits(idb, PID, 1000)  # no HoldingRefusedError
+    # the quarantine's own budget counts pending items only
+    monkeypatch.setattr(inbound_quarantine, "QUARANTINE_MAX_PENDING_BYTES", 70_000)
+    assert (await quarantine_one(idb, sender="flood9@example.test")).outcome == "unmatched"
+    assert inbound_email._state.counters["quarantine_listed_quarantine_full"] == 1
+    await idb.db.execute("UPDATE inbound_quarantine SET state = 'rejected'")
+    await idb.db.commit()
+    assert (await quarantine_one(idb, sender="flood9@example.test")).outcome == "quarantined"
+
+
+async def test_free_space_guard_still_applies(idb, drive, mails, monkeypatch):
     monkeypatch.setattr(inbound_quarantine, "_free_bytes", lambda: 1)
     assert (await quarantine_one(idb)).outcome == "unmatched"
     assert await rows(idb, "SELECT * FROM inbound_quarantine") == []
+
+
+async def test_reject_and_resend_loop_is_stopped_by_the_rolling_cap(idb, drive, mails, monkeypatch):
+    monkeypatch.setattr(inbound_quarantine, "MAX_RECEIVED_BYTES_30D", 50_000)
+    outcomes = []
+    for i in range(4):
+        result = await quarantine_one(
+            idb, files=[(f"Loop{i}.pdf", pdf(500 + i), "application/pdf")]
+        )
+        outcomes.append(result.outcome)
+        for item in await rows(idb, "SELECT id FROM inbound_quarantine WHERE state = 'pending'"):
+            await inbound_quarantine.reject(
+                idb, PID, item["id"], decided_by="synthetic-hash", via="dashboard"
+            )
+    assert outcomes == ["quarantined", "quarantined", "unmatched", "unmatched"]
+    assert inbound_email._state.counters["quarantine_listed_quarantine_received_cap"] == 2
+
+
+async def test_admin_overview_reports_retained_bytes(idb, drive, mails):
+    await quarantine_one(idb)
+    await quarantine_one(idb, sender="other950q@example.test")
+    [first, _second] = await rows(idb, "SELECT id, total_bytes FROM inbound_quarantine ORDER BY id")
+    await inbound_quarantine.reject(idb, PID, first["id"], decided_by="h", via="dashboard")
+    resp = await _call(
+        server.api_inbound_unmatched, _dash_request(idb), "admin950@example.test", admin=True
+    )
+    q = json.loads(resp.body)["quarantine"]
+    assert q["retained_bytes"] == first["total_bytes"]
+    assert q["by_state"]["rejected"]["items"] == 1 and q["by_state"]["pending"]["items"] == 1
+    assert q["pending_budget_bytes"] == inbound_quarantine.QUARANTINE_MAX_PENDING_BYTES
+    flat = json.dumps(q)
+    assert "@" not in flat and PID not in flat
+
+
+async def test_link_dies_when_the_caregiver_changes(idb, drive, mails):
+    approve, reject = await _tokens(idb, mails)
+    neutral = (await get_page(idb, "n" * 43)).body
+    csrf = csrf_of((await get_page(idb, approve)).body)
+    await idb.update_patient(PID, caregiver_email="new.carer950q@example.test")
+    assert (await get_page(idb, approve)).body == neutral
+    assert (await post_link(idb, approve, csrf)).body == neutral
+    tokens = await rows(idb, "SELECT used_at FROM inbound_quarantine_tokens")
+    assert tokens and all(t["used_at"] for t in tokens)  # voided at the change
+    assert drive.files == []
+
+
+async def test_recipient_check_catches_a_change_outside_update_patient(idb, drive, mails):
+    approve, _reject = await _tokens(idb, mails)
+    neutral = (await get_page(idb, "m" * 43)).body
+    # a raw write that bypasses update_patient: the recipient check still holds
+    await idb.db.execute(
+        "UPDATE patients SET caregiver_email = ? WHERE patient_id = ?",
+        ("other.address950q@example.test", PID),
+    )
+    await idb.db.commit()
+    assert (await get_page(idb, approve)).body == neutral
+    # back to the caregiver the link was sent to (Gmail variant, same canonical
+    # address): valid again
+    variant = CARER.replace("synthetic.", "synthetic").replace("@gmail", "+x@gmail")
+    await idb.db.execute(
+        "UPDATE patients SET caregiver_email = ? WHERE patient_id = ?", (variant, PID)
+    )
+    await idb.db.commit()
+    assert (await get_page(idb, approve)).body != neutral
+
+
+async def test_same_caregiver_update_keeps_the_links(idb, drive, mails):
+    approve, _reject = await _tokens(idb, mails)
+    await idb.update_patient(PID, caregiver_email=CARER.upper())
+    assert b'name="csrf"' in (await get_page(idb, approve)).body
 
 
 async def test_old_pending_items_expire_and_nothing_is_deleted(idb, drive, mails):
@@ -609,3 +716,248 @@ def test_claude_md_documents_the_834_exception():
 
 def test_counter_types():
     assert isinstance(inbound_quarantine.Outcome("listed").skipped, Counter)
+
+
+# ── infra review of #970 ─────────────────────────────────────────────────
+
+
+async def test_q_refuses_an_approve_token_of_an_unverified_claim(idb, drive, mails):
+    """Even a planted approve token for an ``auth_failed`` item is refused;
+    approving is possible only signed in on the dashboard."""
+    await quarantine_one(idb, sender=CARER, auth="fail")
+    [item] = await rows(idb, "SELECT * FROM inbound_quarantine")
+    token = "a" * 43
+    recipient = inbound_quarantine.recipient_hash(CARER)
+    await idb.insert_quarantine_token(
+        patient_id=PID,
+        quarantine_id=item["id"],
+        action="approve",
+        token_hash=inbound_quarantine.token_hash(token),
+        binding_hash=inbound_quarantine._binding(
+            "approve", PID, item["item_uuid"], recipient, token
+        ),
+        recipient_hash=recipient,
+        expires_at=ago(days=-7),
+    )
+    neutral = (await get_page(idb, "b" * 43)).body
+    assert (await get_page(idb, token)).body == neutral
+    assert (await post_link(idb, token, inbound_quarantine.csrf_for(token))).body == neutral
+    assert drive.files == []
+    ok = await _call(
+        server.api_inbound_quarantine_decide,
+        _dash_request(
+            idb, body={"patient_id": "synth950-a", "item_id": item["id"], "action": "approve"}
+        ),
+        CARER,
+    )
+    assert ok.status_code == 200 and len(drive.files) == 1
+
+
+def test_dashboard_card_warns_about_an_unsigned_claim():
+    js = (Path(server.__file__).parent / "dashboard.js").read_text()
+    assert "not signed by your mail provider" in js
+    assert "váš poskytovateľ pošty ju nepodpísal" in js
+
+
+def test_access_log_masks_q_tokens_and_query_strings():
+    from oncofiles.app_log import AccessLogFilter, attach_access_log_filter
+
+    token = "Q" * 43
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("192.0.2.7:5000", "GET", f"/q/{token}?x=1", "1.1", 200),
+        None,
+    )
+    assert AccessLogFilter().filter(record)
+    line = record.getMessage()
+    assert token not in line and "/q/[redacted]" in line and line.endswith(" 200")
+    other = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("192.0.2.7:5000", "GET", f"/api/documents?patient_id={PID}&limit=5", "1.1", 200),
+        None,
+    )
+    AccessLogFilter().filter(other)
+    msg = other.getMessage()
+    assert PID not in msg and "/api/documents?[redacted]" in msg
+    assert len(other.args) == 5  # uvicorn's AccessFormatter unpacks five args
+    attach_access_log_filter()
+    attach_access_log_filter()
+    flt = [f for f in logging.getLogger("uvicorn.access").filters if isinstance(f, AccessLogFilter)]
+    assert len(flt) == 1
+    # set up where logging is set up (stderr and the #706 file alike)
+    src = (Path(server.__file__)).read_text()
+    setup = src[src.index("def _setup_logging") : src.index("async def lifespan")]
+    assert "attach_access_log_filter()" in setup
+
+
+async def test_notice_carries_the_recognisable_brevo_tag(idb, drive, mails):
+    await quarantine_one(idb)
+    [note] = notices(mails)
+    assert note["tags"] == [inbound_quarantine.QUARANTINE_MAIL_TAG] == ["inbound_quarantine"]
+
+
+async def test_link_token_is_given_back_when_the_decision_raises(idb, drive, mails, monkeypatch):
+    approve, _reject = await _tokens(idb, mails)
+    csrf = csrf_of((await get_page(idb, approve)).body)
+
+    async def _boom(*a, **k):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(inbound_quarantine, "approve", _boom)
+    with pytest.raises(RuntimeError):
+        await inbound_quarantine.act_on_link(idb, approve, csrf)
+    [tok] = await rows(
+        idb, "SELECT used_at FROM inbound_quarantine_tokens WHERE action = 'approve'"
+    )
+    assert tok["used_at"] is None
+
+
+async def test_reject_after_a_partial_approve_reports_what_was_filed(idb, drive, mails):
+    from oncofiles import dashboard_upload
+
+    files = [(f"Part{i}.pdf", pdf(600 + i), "application/pdf") for i in range(2)]
+    await quarantine_one(idb, files=files)
+    [item] = await rows(idb, "SELECT id FROM inbound_quarantine")
+    real = dashboard_upload.handle_upload
+    calls = {"n": 0}
+
+    async def _second_fails(db, pid, uploads, **kw):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return dashboard_upload.refusal("no_drive", 409)
+        return await real(db, pid, uploads, **kw)
+
+    import oncofiles.dashboard_upload as du
+
+    du.handle_upload, saved = _second_fails, du.handle_upload
+    try:
+        first = await inbound_quarantine.approve(
+            idb, PID, item["id"], decided_by="h", via="dashboard"
+        )
+    finally:
+        du.handle_upload = saved
+    assert first["result"] == "retry_later" and first["filed"] == 1
+    out = await inbound_quarantine.reject(idb, PID, item["id"], decided_by="h", via="dashboard")
+    assert out == {"result": "rejected", "already_filed": 1}
+
+
+def test_safe_sender_drops_url_shaping_characters():
+    assert inbound_quarantine.safe_sender("a/b?c=d&e%f@example.test") == "abcdef@example.test"
+
+
+# ── trash and restore (maintainer decision 2026-11-22) ───────────────────
+
+
+async def _rejected_item(idb, mails):
+    await quarantine_one(idb)
+    [item] = await rows(idb, "SELECT id FROM inbound_quarantine")
+    await inbound_quarantine.reject(idb, PID, item["id"], decided_by="h", via="dashboard")
+    return item["id"]
+
+
+def _restore_body(pid, item_id):
+    return {"patient_id": pid, "item_id": item_id, "action": "restore"}
+
+
+async def test_restore_within_thirty_days_goes_back_to_pending(idb, drive, mails):
+    item_id = await _rejected_item(idb, mails)
+    view = await inbound_quarantine.dashboard_view(idb, PID, caregiver=True)
+    [trashed] = view["trash"]
+    assert trashed["state"] == "rejected" and trashed["days_left"] == 30
+    route = server.api_inbound_quarantine_decide
+    ok = await _call(route, _dash_request(idb, body=_restore_body("synth950-a", item_id)), CARER)
+    assert ok.status_code == 200 and json.loads(ok.body)["result"] == "restored"
+    again = await _call(route, _dash_request(idb, body=_restore_body("synth950-a", item_id)), CARER)
+    assert json.loads(again.body)["result"] == "already"  # idempotent
+    [row] = await rows(idb, "SELECT state, restored_at FROM inbound_quarantine")
+    assert row["state"] == "pending" and row["restored_at"]
+    # no new e-mail link, and every old one is void: decide in the dashboard
+    assert len(notices(mails)) == 1
+    tokens = await rows(idb, "SELECT used_at FROM inbound_quarantine_tokens")
+    assert all(t["used_at"] for t in tokens)
+    approve = links(notices(mails)[0]["text"])[0]
+    assert b'name="csrf"' not in (await get_page(idb, approve)).body
+    [entry] = await rows(
+        idb, "SELECT * FROM activity_log WHERE tool_name = 'inbound_quarantine_restore'"
+    )
+    assert entry["patient_id"] == PID
+
+
+async def test_restore_of_a_foreign_patients_item_is_unknown(idb, drive, mails):
+    item_id = await _rejected_item(idb, mails)
+    route = server.api_inbound_quarantine_decide
+    foreign = await _call(
+        route, _dash_request(idb, body=_restore_body("synth950-a", item_id)), OTHER_CARER
+    )
+    unknown = await _call(
+        route, _dash_request(idb, body=_restore_body("synth950-zz", item_id)), OTHER_CARER
+    )
+    assert foreign.status_code == unknown.status_code == 404 and foreign.body == unknown.body
+    admin = await _call(
+        route,
+        _dash_request(idb, body=_restore_body("synth950-a", item_id)),
+        "admin950@example.test",
+        admin=True,
+    )
+    assert admin.status_code == 403
+    [row] = await rows(idb, "SELECT state FROM inbound_quarantine")
+    assert row["state"] == "rejected"
+
+
+async def test_the_q_link_cannot_restore(idb, drive, mails):
+    approve, reject = await _tokens(idb, mails)
+    csrf = csrf_of((await get_page(idb, reject)).body)
+    await post_link(idb, reject, csrf)
+    neutral = (await get_page(idb, "r" * 43)).body
+    for token in (approve, reject):
+        assert (await get_page(idb, token)).body == neutral
+        assert (await post_link(idb, token, inbound_quarantine.csrf_for(token))).body == neutral
+    [row] = await rows(idb, "SELECT state FROM inbound_quarantine")
+    assert row["state"] == "rejected"
+    # the link table only knows approve / reject
+    from oncofiles.database._inbound_quarantine import QUARANTINE_ACTIONS
+
+    assert QUARANTINE_ACTIONS == ("approve", "reject")
+
+
+async def test_restore_after_the_trash_period_is_refused(idb, drive, mails):
+    item_id = await _rejected_item(idb, mails)
+    await idb.db.execute("UPDATE inbound_quarantine SET decided_at = ?", (ago(days=31),))
+    await idb.db.commit()
+    out = await inbound_quarantine.restore(idb, PID, item_id, decided_by="h")
+    assert out == {"result": "not_restorable", "state": "rejected"}
+    view = await inbound_quarantine.dashboard_view(idb, PID, caregiver=True)
+    assert view["trash"] == []
+
+
+async def test_a_restored_expired_item_does_not_expire_again_at_once(idb, drive, mails):
+    await quarantine_one(idb)
+    await idb.db.execute("UPDATE inbound_quarantine SET received_at = ?", (ago(days=40),))
+    await idb.db.commit()
+    await inbound_quarantine.run_maintenance(idb)
+    [item] = await rows(idb, "SELECT id, state FROM inbound_quarantine")
+    assert item["state"] == "expired"
+    assert (await inbound_quarantine.restore(idb, PID, item["id"], decided_by="h"))[
+        "result"
+    ] == "restored"
+    await inbound_quarantine.run_maintenance(idb)
+    [after] = await rows(idb, "SELECT state FROM inbound_quarantine")
+    assert after["state"] == "pending"
+
+
+def test_demo_twin_has_a_trash_entry():
+    from oncofiles import demo_dashboard
+
+    built = demo_dashboard.build([], "0.0.0-test")
+    [trashed] = built["inbound_quarantine"]["trash"]
+    assert trashed["state"] == "rejected" and trashed["days_left"] > 0
+    js = (Path(server.__file__).parent / "dashboard.js").read_text()
+    assert "restoreQuarantine: 1" in js and "'Kôš (' + trash.length" in js

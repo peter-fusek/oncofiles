@@ -17,7 +17,8 @@ QUARANTINE_ACTIONS = ("approve", "reject")
 
 _COLS = """id, patient_id, item_uuid, source_hash, sender_hash, sender_enc, files_enc,
            refusal_reason, file_count, total_bytes, state, received_at, notified_at,
-           notice_key, claimed_at, decided_at, decided_by, decided_via, filed_count"""
+           notice_key, claimed_at, decided_at, decided_by, decided_via, filed_count,
+           restored_at"""
 
 
 class InboundQuarantineMixin(DatabaseBase):
@@ -28,17 +29,19 @@ class InboundQuarantineMixin(DatabaseBase):
         ) as cursor:
             return await cursor.fetchone() is not None
 
-    async def quarantine_usage(self, *, patient_id: str, since: str) -> dict:
+    async def quarantine_usage(self, *, patient_id: str, since: str, since_30d: str) -> dict:
         """Counts for the caps: items and files received since ``since``,
-        pending items and their bytes."""
+        bytes received since ``since_30d`` (every state), pending items and
+        their bytes."""
         async with self.db.execute(
             """SELECT
                  COALESCE(SUM(CASE WHEN received_at >= ? THEN 1 ELSE 0 END), 0),
                  COALESCE(SUM(CASE WHEN received_at >= ? THEN file_count ELSE 0 END), 0),
                  COALESCE(SUM(CASE WHEN state = 'pending' THEN 1 ELSE 0 END), 0),
-                 COALESCE(SUM(CASE WHEN state = 'pending' THEN total_bytes ELSE 0 END), 0)
+                 COALESCE(SUM(CASE WHEN state = 'pending' THEN total_bytes ELSE 0 END), 0),
+                 COALESCE(SUM(CASE WHEN received_at >= ? THEN total_bytes ELSE 0 END), 0)
                FROM inbound_quarantine WHERE patient_id = ?""",
-            (since, since, patient_id),
+            (since, since, since_30d, patient_id),
         ) as cursor:
             row = await cursor.fetchone()
         return {
@@ -46,16 +49,38 @@ class InboundQuarantineMixin(DatabaseBase):
             "files_today": int(row[1]),
             "pending_items": int(row[2]),
             "pending_bytes": int(row[3]),
+            "received_bytes_30d": int(row[4]),
         }
 
-    async def quarantine_bytes_total(self) -> int:
-        """Bytes of every quarantined file on disk (all states: nothing is
-        deleted), for the global holding limit."""
+    async def quarantine_pending_bytes_total(self) -> int:
+        """Bytes of every PENDING item (all patients), for the quarantine's
+        own global budget."""
         async with self.db.execute(
-            "SELECT COALESCE(SUM(total_bytes), 0) FROM inbound_quarantine"
+            "SELECT COALESCE(SUM(total_bytes), 0) FROM inbound_quarantine WHERE state = 'pending'"
         ) as cursor:
             row = await cursor.fetchone()
         return int(row[0] or 0)
+
+    async def quarantine_state_totals(self) -> dict:
+        """{state: {items, files, bytes}} over all patients (admin overview)."""
+        async with self.db.execute(
+            """SELECT state, COUNT(*), COALESCE(SUM(file_count), 0),
+                      COALESCE(SUM(total_bytes), 0)
+               FROM inbound_quarantine GROUP BY state"""
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return {r[0]: {"items": int(r[1]), "files": int(r[2]), "bytes": int(r[3])} for r in rows}
+
+    async def void_quarantine_tokens(self, *, patient_id: str, at: str) -> int:
+        """Mark every unused action link of the patient used (the caregiver
+        address changed: links sent to the old address must stop working)."""
+        cursor = await self.db.execute(
+            """UPDATE inbound_quarantine_tokens SET used_at = ?
+               WHERE patient_id = ? AND used_at IS NULL""",
+            (at, patient_id),
+        )
+        await self.db.commit()
+        return int(cursor.rowcount or 0)
 
     async def insert_quarantine_item(
         self,
@@ -204,6 +229,7 @@ class InboundQuarantineMixin(DatabaseBase):
         action: str,
         token_hash: str,
         binding_hash: str,
+        recipient_hash: str,
         expires_at: str,
     ) -> None:
         if action not in QUARANTINE_ACTIONS:
@@ -211,10 +237,20 @@ class InboundQuarantineMixin(DatabaseBase):
         pid = require_patient_id(patient_id)
         await self.db.execute(
             """INSERT INTO inbound_quarantine_tokens
-                 (patient_id, quarantine_id, action, token_hash, binding_hash, expires_at)
-               SELECT ?, id, ?, ?, ?, ? FROM inbound_quarantine
+                 (patient_id, quarantine_id, action, token_hash, binding_hash,
+                  recipient_hash, expires_at)
+               SELECT ?, id, ?, ?, ?, ?, ? FROM inbound_quarantine
                WHERE id = ? AND patient_id = ?""",
-            (pid, action, token_hash, binding_hash, expires_at, int(quarantine_id), pid),
+            (
+                pid,
+                action,
+                token_hash,
+                binding_hash,
+                recipient_hash,
+                expires_at,
+                int(quarantine_id),
+                pid,
+            ),
         )
         await self.db.commit()
 
@@ -223,8 +259,8 @@ class InboundQuarantineMixin(DatabaseBase):
         without a patient filter: the token is the routing key of the link."""
         async with self.db.execute(
             """SELECT t.id AS token_id, t.patient_id, t.quarantine_id, t.action,
-                      t.binding_hash, t.expires_at, t.used_at,
-                      q.item_uuid, q.state
+                      t.binding_hash, t.recipient_hash, t.expires_at, t.used_at,
+                      q.item_uuid, q.state, q.refusal_reason
                FROM inbound_quarantine_tokens t
                JOIN inbound_quarantine q ON q.id = t.quarantine_id
                                         AND q.patient_id = t.patient_id
@@ -268,6 +304,15 @@ class InboundQuarantineMixin(DatabaseBase):
         await self.db.commit()
         return bool(cursor.rowcount)
 
+    async def add_quarantine_filed(self, item_id: int, *, patient_id: str, filed: int) -> None:
+        """A partial approve: count the files it filed (the item stays pending)."""
+        await self.db.execute(
+            """UPDATE inbound_quarantine SET filed_count = filed_count + ?
+               WHERE id = ? AND patient_id = ? AND state = 'pending'""",
+            (int(filed), int(item_id), patient_id),
+        )
+        await self.db.commit()
+
     async def release_quarantine_claim(self, item_id: int, *, patient_id: str, lease: str) -> None:
         await self.db.execute(
             """UPDATE inbound_quarantine SET claimed_at = NULL
@@ -285,12 +330,14 @@ class InboundQuarantineMixin(DatabaseBase):
         at: str,
         decided_by: str,
         decided_via: str,
-        filed_count: int = 0,
+        filed_count: int | None = None,
         lease: str | None = None,
         stale_before: str | None = None,
     ) -> bool:
         """pending → ``state``. With ``lease`` (approve) only under that claim;
-        without it (reject) only while no fresh approval claim holds the item."""
+        without it (reject) only while no fresh approval claim holds the item.
+        ``filed_count`` None keeps the stored count (a reject after a partial
+        approve)."""
         if state not in ("approved", "rejected"):
             raise ValueError("bad decision state")
         if lease is not None:
@@ -300,14 +347,14 @@ class InboundQuarantineMixin(DatabaseBase):
         cursor = await self.db.execute(
             f"""UPDATE inbound_quarantine
                 SET state = ?, decided_at = ?, decided_by = ?, decided_via = ?,
-                    filed_count = ?, claimed_at = NULL
+                    filed_count = COALESCE(?, filed_count), claimed_at = NULL
                 WHERE id = ? AND patient_id = ? AND state = 'pending' AND {cond}""",
             (
                 state,
                 at,
                 decided_by,
                 decided_via,
-                int(filed_count),
+                None if filed_count is None else int(filed_count),
                 int(item_id),
                 patient_id,
                 *extra,
@@ -316,13 +363,49 @@ class InboundQuarantineMixin(DatabaseBase):
         await self.db.commit()
         return bool(cursor.rowcount)
 
-    async def expire_quarantine_items(self, *, before: str, stale_before: str) -> int:
-        """Mark pending items received before ``before`` expired (nothing deleted)."""
+    async def list_quarantine_trash(self, *, patient_id: str, since: str, limit: int = 50):
+        """Rejected / expired items decided since ``since`` (the trash)."""
+        async with self.db.execute(
+            f"""SELECT {_COLS} FROM inbound_quarantine
+                WHERE patient_id = ? AND state IN ('rejected', 'expired') AND decided_at >= ?
+                ORDER BY decided_at DESC, id DESC LIMIT ?""",
+            (patient_id, since, int(limit)),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def restore_quarantine_item(
+        self, item_id: int, *, patient_id: str, since: str, at: str
+    ) -> bool:
+        """Trash → pending (rejected / expired, decided since ``since``). Every
+        unused e-mail link of the item is voided first: a restored item is
+        decided in the dashboard only."""
         cursor = await self.db.execute(
-            """UPDATE inbound_quarantine SET state = 'expired'
-               WHERE state = 'pending' AND received_at < ?
+            """UPDATE inbound_quarantine
+               SET state = 'pending', decided_at = NULL, decided_by = NULL,
+                   decided_via = NULL, restored_at = ?, claimed_at = NULL
+               WHERE id = ? AND patient_id = ? AND state IN ('rejected', 'expired')
+                 AND decided_at >= ?""",
+            (at, int(item_id), patient_id, since),
+        )
+        if cursor.rowcount:
+            await self.db.execute(
+                """UPDATE inbound_quarantine_tokens SET used_at = ?
+                   WHERE patient_id = ? AND quarantine_id = ? AND used_at IS NULL""",
+                (at, patient_id, int(item_id)),
+            )
+        await self.db.commit()
+        return bool(cursor.rowcount)
+
+    async def expire_quarantine_items(self, *, before: str, stale_before: str, at: str) -> int:
+        """Mark pending items received (or restored) before ``before`` expired;
+        ``decided_at`` = ``at`` starts their trash period. Nothing deleted."""
+        cursor = await self.db.execute(
+            """UPDATE inbound_quarantine
+               SET state = 'expired', decided_at = ?, decided_by = NULL, decided_via = 'expiry'
+               WHERE state = 'pending' AND COALESCE(restored_at, received_at) < ?
                  AND (claimed_at IS NULL OR claimed_at < ?)""",
-            (before, stale_before),
+            (at, before, stale_before),
         )
         await self.db.commit()
         return int(cursor.rowcount or 0)

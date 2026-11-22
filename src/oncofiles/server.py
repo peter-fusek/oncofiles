@@ -224,11 +224,18 @@ def _setup_logging() -> None:
     logging.basicConfig(level=level, format=fmt, stream=sys.stderr, force=True)
     # #706: survives container recreates when APP_LOG_DIR is set (off locally).
     # Every root handler (stderr and the file) carries the same redaction filter.
-    from oncofiles.app_log import attach_redaction, file_handler_from_env
+    from oncofiles.app_log import (
+        attach_access_log_filter,
+        attach_redaction,
+        file_handler_from_env,
+    )
 
     root = logging.getLogger()
     for h in root.handlers:
         attach_redaction(h)
+    # #970 infra review: uvicorn's access log never carries a /q/<token> link
+    # or a query string (masked on the logger, before any handler).
+    attach_access_log_filter()
     handler = file_handler_from_env(fmt, level)
     if handler is not None:
         root.addHandler(handler)
@@ -2553,8 +2560,8 @@ async def privacy_policy(request: Request) -> HTMLResponse:
         _PRIVACY_HTML = _legal_page(
             "Privacy Policy",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 21, 2026 ·
-Consent version 2026-11-21b</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 22, 2026 ·
+Consent version 2026-11-22</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2622,9 +2629,11 @@ address agrees to the <a href="/terms">terms of service</a> and to the processin
 documents as described in this policy; the sender receives an e-mail saying so, with the link to
 the terms. Only attachments sent from the patient's caregiver address (with the sender
 confirmed by the mail system) are added to the patient's folder, where they are processed like
-any other document. The text of the e-mail is not stored and is not read by any AI model. Mail
-from other senders is not added; we only count it, with a keyed hash of the sender, never the
-sender's address itself. Documents removed after an unclaimed trial can still be restored from
+any other document. The text of the e-mail is not stored and is not read by any AI model.
+Documents sent to a patient's address by anyone other than the caregiver are held encrypted in
+quarantine until the caregiver approves or rejects them; rejected or expired items stay in a
+30-day trash and are then deleted (approved ones are filed normally), and the sender gets no
+reply. Documents removed after an unclaimed trial can still be restored from
 encrypted backups for up to 6 months.</p>
 <p lang="sk"><strong>Dokumenty poslané e-mailom.</strong> Každý pacient môže mať súkromnú
 e-mailovú adresu pre dokumenty. Kto pošle dokumenty na túto adresu, súhlasí s
@@ -2632,8 +2641,10 @@ e-mailovú adresu pre dokumenty. Kto pošle dokumenty na túto adresu, súhlasí
 zásad; odosielateľ dostane e-mail, ktorý to uvádza, s odkazom na podmienky. Do priečinka
 pacienta sa pridajú len prílohy poslané z adresy opatrovateľa pacienta (s odosielateľom
 potvrdeným poštovým systémom) a spracujú sa ako každý iný dokument. Text e-mailu sa neukladá a
-nečíta ho žiadny AI model. Pošta od iných odosielateľov sa nepridáva; iba ju započítame, s
-kľúčovaným odtlačkom odosielateľa, nikdy nie so samotnou adresou. Dokumenty odstránené po
+nečíta ho žiadny AI model. Dokumenty, ktoré na adresu pacienta pošle ktokoľvek iný než
+opatrovateľ, čakajú zašifrované v karanténe, kým ich opatrovateľ neschváli alebo neodmietne;
+odmietnuté alebo vypršané položky zostávajú 30 dní v koši a potom sa vymažú (schválené sa
+zaradia ako zvyčajne) a odosielateľ nedostane žiadnu odpoveď. Dokumenty odstránené po
 nevyužitej skúšobnej dobe sa ešte najviac 6 mesiacov dajú obnoviť zo šifrovaných záloh.</p>
 <p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
 unrelated to managing your medical documents.</p>
@@ -2735,8 +2746,8 @@ async def terms_of_service(request: Request) -> HTMLResponse:
         _TERMS_HTML = _legal_page(
             "Terms of Service",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 21, 2026 ·
-Consent version 2026-11-21b</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 22, 2026 ·
+Consent version 2026-11-22</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
@@ -7445,9 +7456,9 @@ async def api_inbound_quarantine(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/api/inbound-quarantine/decide", methods=["POST"])
 async def api_inbound_quarantine_decide(request: Request) -> JSONResponse:
-    """Approve or reject one quarantined item (#950 quarantine).
+    """Approve, reject or restore (trash → pending) one quarantined item (#950).
 
-    Body ``{"patient_id", "item_id", "action": "approve" | "reject"}``:
+    Body ``{"patient_id", "item_id", "action": "approve" | "reject" | "restore"}``:
     ``_dashboard_body_patient`` (#867) then the #921 write refusal (only the
     caregiver decides). A foreign or unknown item id is the same 404.
     """
@@ -7474,7 +7485,7 @@ async def api_inbound_quarantine_decide(request: Request) -> JSONResponse:
         item_id = int(body.get("item_id"))
     except (TypeError, ValueError):
         return JSONResponse({"error": "bad_request"}, status_code=400)
-    if action not in ("approve", "reject"):
+    if action not in ("approve", "reject", "restore"):
         return JSONResponse({"error": "bad_request"}, status_code=400)
     from oncofiles import inbound_quarantine
     from oncofiles.secrets_keys import caller_email_hash
@@ -7482,15 +7493,26 @@ async def api_inbound_quarantine_decide(request: Request) -> JSONResponse:
     if not inbound_quarantine.configured():
         return JSONResponse({"enabled": False}, status_code=409)
     decided_by = caller_email_hash(_get_dashboard_email(request) or "") or "dashboard"
-    decide = inbound_quarantine.approve if action == "approve" else inbound_quarantine.reject
     try:
-        result = await decide(db_inst, patient_id, item_id, decided_by=decided_by, via="dashboard")
+        if action == "restore":
+            # trash → pending: dashboard only, never an e-mail link
+            result = await inbound_quarantine.restore(
+                db_inst, patient_id, item_id, decided_by=decided_by
+            )
+        else:
+            decide = (
+                inbound_quarantine.approve if action == "approve" else inbound_quarantine.reject
+            )
+            result = await decide(
+                db_inst, patient_id, item_id, decided_by=decided_by, via="dashboard"
+            )
     except Exception:
         logger.exception("API inbound-quarantine decide error")
         return JSONResponse({"error": "internal error"}, status_code=500)
     if result.get("result") == "not_found":
         return _patient_not_found()
-    status = 200 if result.get("result") in ("approved", "rejected", "already") else 409
+    ok_codes = ("approved", "rejected", "restored", "already")
+    status = 200 if result.get("result") in ok_codes else 409
     return JSONResponse(result, status_code=status)
 
 
@@ -7688,6 +7710,16 @@ async def api_inbound_unmatched(request: Request) -> JSONResponse:
     except Exception as exc:
         logger.warning("API inbound-unmatched: trial funnel failed (%s)", type(exc).__name__)
         out["trial_funnel"] = None
+    # #950 quarantine: items / files / bytes per state; pending bytes against
+    # the quarantine's own budget and the retained bytes of rejected / expired
+    # items (what a future lifecycle purge would free). Counts only.
+    from oncofiles import inbound_quarantine
+
+    try:
+        out["quarantine"] = await inbound_quarantine.admin_overview(db_inst)
+    except Exception as exc:
+        logger.warning("API inbound-unmatched: quarantine overview failed (%s)", type(exc).__name__)
+        out["quarantine"] = None
     return JSONResponse(out)
 
 

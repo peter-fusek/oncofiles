@@ -524,6 +524,21 @@ def build(showcase_documents: list[dict], version: str) -> dict:
                         {"name": "vysledky_2027-04-13.pdf", "type": "PDF", "size": 184320},
                     ],
                     "total_bytes": 184320,
+                    "filed_count": 0,
+                }
+            ],
+            # the trash ("Kôš"): a rejected item still restorable (invented)
+            "trash": [
+                {
+                    "id": 2,
+                    "sender": "neznamy@example.test",
+                    "received_at": "2027-04-09T17:40:00Z",
+                    "reason": "unknown_sender",
+                    "files": [{"name": "faktura_2027.pdf", "type": "PDF", "size": 51200}],
+                    "total_bytes": 51200,
+                    "filed_count": 0,
+                    "state": "rejected",
+                    "days_left": 25,
                 }
             ],
         },
