@@ -7417,6 +7417,66 @@ async def api_inbound_address_rotate(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/curated/confirm-review", methods=["POST"])
+async def api_curated_confirm_review(request: Request) -> JSONResponse:
+    """The caregiver confirms a filed curated document in review "as is" (#919).
+
+    Body ``{"patient_id": …, "document_id": …}``. ``_dashboard_body_patient``
+    (#867: unknown and foreign are the same 404), then the #921 write refusal
+    (an admin who is not this patient's caregiver, and the operator bearer,
+    get 403 ``read_only``), and the Origin check of the dashboard POSTs (auth
+    is an Authorization header, never a cookie). The rest is
+    ``tools.curated.confirm_review_for``: the #900 override line in the
+    sidecar only, then a re-index of that document. The dashboard asks for a
+    second, armed click first. No #852 gate: a caregiver acting on an existing
+    patient is not onboarding.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    bad_origin = _cross_origin(request)
+    if bad_origin is not None:
+        return bad_origin
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    patient_id, acl_err = await _dashboard_body_patient(
+        request, db_inst, str(body.get("patient_id") or "")
+    )
+    if acl_err is not None:
+        return acl_err
+    ro_err = await _dashboard_write_refusal(request, db_inst, patient_id)
+    if ro_err is not None:
+        return ro_err
+    raw_id = body.get("document_id")
+    if isinstance(raw_id, bool) or not isinstance(raw_id, int | str):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    try:
+        document_id = int(raw_id)
+    except ValueError:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if document_id <= 0:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    from oncofiles.secrets_keys import caller_email_hash
+    from oncofiles.tools import curated as curated_tools
+
+    try:
+        status, payload = await curated_tools.confirm_review_for(
+            db_inst,
+            patient_id,
+            document_id,
+            caller_hash=caller_email_hash(_get_dashboard_email(request) or ""),
+        )
+        return JSONResponse(payload, status_code=status)
+    except Exception:
+        logger.exception("API curated confirm-review error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
 @mcp.custom_route("/api/inbound-unmatched", methods=["GET"])
 async def api_inbound_unmatched(request: Request) -> JSONResponse:
     """Admin zone: mail to patient addresses that was not filed (#950).

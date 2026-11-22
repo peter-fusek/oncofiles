@@ -734,6 +734,15 @@
     .doc-detail-cols { display: flex; gap: 1rem; }
     .detail-steps { margin-bottom: 1rem; padding-bottom: 0.875rem; border-bottom: 1px solid var(--border); }
     .detail-steps h4 { font: 700 1rem/1.2 var(--display); color: var(--ink); margin-bottom: 0.5rem; }
+    /* #919: caregiver confirms a reviewed document as is (two-click arming) */
+    .detail-confirm-review { margin: -0.25rem 0 1rem; padding: 0.625rem 0.75rem; border: 1px solid var(--rule-2); border-radius: 8px; font: 0.875rem/1.45 var(--sans); color: var(--ink-2); }
+    .detail-confirm-review p { margin-bottom: 0.5rem; max-width: 46rem; }
+    .confirm-review-btn { min-height: 2.5rem; padding: 0.3125rem 0.875rem; font: 600 0.875rem/1.2 var(--sans); color: var(--navy); background: var(--coral); border: 1px solid var(--coral); border-radius: 8px; cursor: pointer; }
+    .confirm-review-btn:hover, .confirm-review-btn:focus-visible { border-color: var(--navy); }
+    .confirm-review-btn.armed { background: transparent; border-color: var(--err); color: var(--err); border-width: 2px; }
+    .confirm-review-btn:disabled { opacity: 0.6; cursor: default; }
+    .confirm-review-status { margin: 0.5rem 0 0; color: var(--ink); }
+    .confirm-review-status:empty { display: none; }
     .step-list { list-style: none; display: grid; gap: 0.3125rem; font: 0.875rem/1.45 var(--sans); color: var(--ink-2); }
     .step-list li { display: flex; align-items: baseline; gap: 0.5rem; }
     .step-list li .step-mark { transform: translateY(-0.0625rem); }

@@ -5000,6 +5000,152 @@ async def restore_sidecar_for(
     return out
 
 
+# ── #919: a caregiver confirms a reviewed filed document "as is" (dashboard) ──
+
+
+async def _audit_confirm_review(
+    db, pid: str, document_id: int, codes: list[str], result: str, caller_hash: str | None
+) -> None:
+    """One activity_log row per confirm attempt that reached Drive: the
+    document id, the codes set aside, the keyed caller hash and the result.
+    Never a filename, the sidecar text or an e-mail."""
+    from oncofiles.models import ActivityLogEntry
+
+    try:
+        await db.insert_activity_log(
+            ActivityLogEntry(
+                patient_id=pid,
+                session_id="curated-confirm-review",
+                agent_id="dashboard",
+                tool_name="curated_confirm_review",
+                input_summary=json.dumps(
+                    {"document_id": document_id, "caller_email_hash": caller_hash}
+                ),
+                output_summary=json.dumps({"result": result, "codes_set_aside": codes}),
+                status="ok" if result == "confirmed" else "error",
+                tags=json.dumps(["curated", "confirm_review", "dashboard"]),
+            )
+        )
+    except Exception:
+        logger.exception("could not write the activity_log row for a review confirm")
+
+
+async def confirm_review_for(
+    db, pid: str, document_id: int, *, caller_hash: str | None = None
+) -> tuple[int, dict]:
+    """Confirm a filed curated document in review "as is" (#919): ``(status, body)``.
+
+    The caller has passed the dashboard ACL (caregiver of ``pid``). Checks the
+    row (curated mirror row, ``review_needed``, a sidecar, only
+    ``confirm_review.CONFIRMABLE_CODES``), refuses while a run, job, index or
+    restore is active for the patient, then holds ``patient_lock`` and writes
+    the #900 override line into the sidecar inside ``contract_writes()``
+    through ``drive_ops`` (``confirm_review.confirm``: the sidecar's current
+    text is checked again first), and re-indexes that one document. A second
+    confirm is idempotent (200 ``already_resolved``, nothing written). Any
+    Drive error → 502, nothing else changed.
+    """
+    from oncofiles import document_stage
+    from oncofiles.curated import confirm_review
+    from oncofiles.server import _create_patient_clients
+
+    doc = await db.get_document(document_id, patient_id=pid)  # SQL-scoped: foreign = None
+    if doc is None or doc.deleted_at is not None:
+        return 404, {"error": "not_found"}
+    meta = document_stage._metadata(doc.structured_metadata)
+    if not doc.gdrive_id or not document_stage.is_curated_row(doc.file_id, meta) or not meta:
+        return 409, {"error": "not_curated"}
+    curated = document_stage._curated(meta)
+    if curated.get("review_override") is True:
+        return 200, {"result": "already_resolved", "already_resolved": True}
+    if not document_stage._review_needed(meta):
+        return 409, {"error": "not_in_review"}
+    sidecar_id = curated.get("sidecar_id")
+    if not sidecar_id or meta.get("text_source"):
+        return 409, {"error": "no_sidecar"}
+    codes = document_stage.review_reason_codes(meta)
+    if confirm_review.hard_codes(codes):
+        return 409, {"error": "hard_check", "codes": confirm_review.hard_codes(codes)}
+    if _busy(pid) or run_block_reason(pid) or (_restoring.get(pid) or {}).get("state") == "running":
+        return 409, {"error": "busy"}
+    # the slot is reserved before any await: two calls can never both start,
+    # and run_active() counts it (CI deploys wait for the write + index)
+    _restoring[pid] = job = {
+        "kind": "confirm_review", "state": "running", "document_id": document_id,
+        "started_at": datetime.now(UTC).isoformat(),
+    }  # fmt: skip
+    status, out = 500, {"error": "internal"}
+    try:
+        async with patient_lock(pid):
+            try:
+                clients = await _create_patient_clients(db, pid)
+            except Exception as exc:
+                logger.warning("curated confirm-review: Drive client failed (%s)",
+                               type(exc).__name__)  # fmt: skip
+                status, out = 502, {"error": "drive_failed"}
+                return status, out
+            if not clients or clients[0] is None:
+                status, out = 409, {"error": "drive_not_connected"}
+                return status, out
+            gdrive = clients[0]
+            today = datetime.now(UTC).date()
+
+            def _blocking():
+                from oncofiles.curated.drive_ops import DriveOps
+
+                own = gdrive.dedicated_copy()
+                try:
+                    with own.contract_writes():
+                        return confirm_review.confirm(DriveOps(own), sidecar_id, today)
+                finally:
+                    own.close()
+
+            try:
+                done = await asyncio.to_thread(_blocking)
+            except confirm_review.AlreadyResolvedError:
+                status, out = 200, {"result": "already_resolved", "already_resolved": True}
+            except confirm_review.ConfirmRefusedError as exc:
+                status, out = 409, {"error": exc.code}
+            except Exception as exc:
+                logger.warning(
+                    "curated confirm-review: document_id=%s drive write failed (%s)",
+                    document_id, type(exc).__name__,
+                )  # fmt: skip
+                status, out = 502, {"error": "drive_failed"}
+                await _audit_confirm_review(db, pid, document_id, codes, "drive_failed",
+                                            caller_hash)  # fmt: skip
+            else:
+                # the sidecar is written; a failed re-index only delays the
+                # dashboard row until the next index (startup, run, nightly)
+                try:
+                    index = await _index_patient_lock_held(db, pid, force_ids={document_id})
+                    index_state = index.get("status") or ("errors" if index.get("errors") else "ok")
+                except Exception as exc:
+                    logger.warning(
+                        "curated confirm-review: document_id=%s re-index failed (%s)",
+                        document_id, type(exc).__name__,
+                    )  # fmt: skip
+                    index_state = "failed"
+                status, out = (
+                    200,
+                    {
+                        "result": "confirmed",
+                        "codes": done["codes"],
+                        "index": index_state,
+                    },
+                )
+                await _audit_confirm_review(db, pid, document_id, done["codes"], "confirmed",
+                                            caller_hash)  # fmt: skip
+            logger.info(
+                "curated confirm-review: document_id=%s codes=%s status=%s result=%s",
+                document_id, ",".join(codes), status, out.get("result") or out.get("error"),
+            )  # fmt: skip
+            return status, out
+    finally:
+        job.update(state="done" if status == 200 else "failed",
+                   finished_at=datetime.now(UTC).isoformat())  # fmt: skip
+
+
 async def curated_restore_sidecar(
     ctx: Context,
     document_id: int,
