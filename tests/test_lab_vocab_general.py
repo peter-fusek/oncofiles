@@ -29,7 +29,7 @@ def _cand(label, value, unit=None, *, evidence=None, date=DAY):
     return {
         "label_as_printed": label, "value": value, "comparator": None,
         "unit_as_printed": unit, "ref_range_as_printed": None, "flag_as_printed": None,
-        "date_as_printed": date, "date_role": "sample", "evidence": evidence,
+        "date_as_printed": date, "date_role": "sample", "date_evidence": date, "evidence": evidence,
         "page_number": 1,
     }  # fmt: skip
 
@@ -271,9 +271,9 @@ def test_anchor_helper_rejects_other_shapes():
 
 
 def test_versions_are_bumped():
-    assert verifier.VERIFIER_VERSION == 4
+    assert verifier.VERIFIER_VERSION >= 4  # v5: #933
     assert indexer.INDEX_VERSION >= 20
     v = scorecard.versions(extractor=llm_extract.EXTRACTOR_VERSION,
                            verifier=verifier.VERIFIER_VERSION,
                            clinical_extractor="llm-clinical-v1", clinical_verifier=5)  # fmt: skip
-    assert v["verifier_version"] == 4
+    assert v["verifier_version"] == verifier.VERIFIER_VERSION

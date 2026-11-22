@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 from oncofiles.database import Database
 from oncofiles.tools.hygiene import _build_reconciliation_report
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 from tests.helpers import make_doc
 
 
@@ -25,7 +25,7 @@ def _mock_gdrive_listing(files: list[dict]) -> MagicMock:
 
 async def _insert(db: Database, **fields):
     doc = make_doc(**fields)
-    return await db.insert_document(doc, patient_id=ERIKA_UUID)
+    return await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
 
 async def test_report_splits_external_location_from_missing(db: Database):
@@ -56,7 +56,9 @@ async def test_report_splits_external_location_from_missing(db: Database):
     # sync-root listing contains ONLY the "present" file
     gdrive = _mock_gdrive_listing([{"id": "gd_present", "name": present.filename}])
 
-    report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
+    report = await _build_reconciliation_report(
+        db, gdrive, folder_id="root", patient_id=PRIMARY_TEST_UUID
+    )
 
     assert [e["id"] for e in report["in_db_external_location"]] == [external.id]
     assert [e["id"] for e in report["in_db_deleted_remote"]] == []
@@ -74,7 +76,9 @@ async def test_report_splits_deleted_remote_from_missing(db: Database):
     await db.update_sync_state(gone.id, "deleted_remote")
 
     gdrive = _mock_gdrive_listing([])  # empty root — gone isn't there
-    report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
+    report = await _build_reconciliation_report(
+        db, gdrive, folder_id="root", patient_id=PRIMARY_TEST_UUID
+    )
 
     assert [e["id"] for e in report["in_db_deleted_remote"]] == [gone.id]
     assert [e["id"] for e in report["in_db_not_gdrive"]] == []
@@ -104,7 +108,9 @@ async def test_report_healthy_excludes_classified_classes(db: Database):
     await db.update_sync_state(deleted.id, "deleted_remote")
 
     gdrive = _mock_gdrive_listing([])
-    report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
+    report = await _build_reconciliation_report(
+        db, gdrive, folder_id="root", patient_id=PRIMARY_TEST_UUID
+    )
 
     # Both docs are accounted for in their classified buckets
     assert len(report["in_db_external_location"]) == 1
@@ -118,20 +124,22 @@ async def test_report_healthy_excludes_classified_classes(db: Database):
 
 
 async def test_zip_in_gdrive_is_expected_orphan_not_unexpected(db: Database):
-    """The exact bug Peter observed on Michal's dashboard: 2 SK-insurance-portal
-    ZIPs (8053156100-PDG...zip) sit in the sync folder forever (sync correctly
+    """The exact bug seen on an external user's dashboard: 2 SK-insurance-portal
+    ZIPs (<number>-PDG...zip) sit in the sync folder forever (sync correctly
     skips them as unsupported) but the reconciler classified them as orphans,
     displaying as scary red "2 orphans" count. Post-fix: they land in
     expected_orphans with reason="unsupported_extension" so the dashboard
     can render info-gray."""
     gdrive = _mock_gdrive_listing(
         [
-            {"id": "gd_zip1", "name": "8053156100-PDG2200001063145.zip"},
-            {"id": "gd_zip2", "name": "8053156100-PDG2400001331201.zip"},
+            {"id": "gd_zip1", "name": "9990000000-PDG2700000000001.zip"},
+            {"id": "gd_zip2", "name": "9990000000-PDG2700000000002.zip"},
         ]
     )
 
-    report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
+    report = await _build_reconciliation_report(
+        db, gdrive, folder_id="root", patient_id=PRIMARY_TEST_UUID
+    )
 
     # No red-orphan noise
     assert report["in_gdrive_not_db"] == []
@@ -158,7 +166,9 @@ async def test_system_file_reason_distinct_from_unsupported(db: Database):
         ]
     )
 
-    report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
+    report = await _build_reconciliation_report(
+        db, gdrive, folder_id="root", patient_id=PRIMARY_TEST_UUID
+    )
 
     # .metadata.json is filtered out upstream of the orphan loop
     assert len(report["expected_orphans"]) == 3
@@ -180,7 +190,9 @@ async def test_supported_extension_missing_from_db_is_real_orphan(db: Database):
         ]
     )
 
-    report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
+    report = await _build_reconciliation_report(
+        db, gdrive, folder_id="root", patient_id=PRIMARY_TEST_UUID
+    )
 
     assert len(report["in_gdrive_not_db"]) == 1
     assert report["in_gdrive_not_db"][0]["name"] == "20300101_JanaTestova_NOU_Labs_Bloods.pdf"
@@ -197,7 +209,9 @@ async def test_extensionless_file_is_real_orphan(db: Database):
         ]
     )
 
-    report = await _build_reconciliation_report(db, gdrive, folder_id="root", patient_id=ERIKA_UUID)
+    report = await _build_reconciliation_report(
+        db, gdrive, folder_id="root", patient_id=PRIMARY_TEST_UUID
+    )
 
     assert len(report["in_gdrive_not_db"]) == 1
     assert report["expected_orphans"] == []
@@ -209,8 +223,8 @@ async def test_extensionless_file_is_real_orphan(db: Database):
 async def test_report_does_not_leak_other_patient_db_docs(db: Database):
     """#481 Issue B: when called with patient_id=A, the report's DB side must
     only count docs owned by A. Pre-fix (Mar 2026), the dashboard could show
-    patient B's doc count next to patient A's filter — the symptom Peter
-    observed on Michal's dashboard showing 112 docs while Michal had 0.
+    patient B's doc count next to patient A's filter — the symptom seen
+    on an external user's dashboard: 112 docs shown for a patient who had 0.
 
     The patient_id kwarg propagates straight to db.list_documents — this
     test pins that contract so future refactors can't drop it.
@@ -254,7 +268,7 @@ async def test_report_does_not_leak_other_patient_db_docs(db: Database):
     )
 
     jana_report = await _build_reconciliation_report(
-        db, gdrive, folder_id="root", patient_id=ERIKA_UUID
+        db, gdrive, folder_id="root", patient_id=PRIMARY_TEST_UUID
     )
     # Jana's DB count is 1 — Bob's doc must not appear in any DB-side bucket
     jana_db_filenames = {e["filename"] for e in jana_report["in_db_not_gdrive"]}

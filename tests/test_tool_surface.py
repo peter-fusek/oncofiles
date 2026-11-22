@@ -27,7 +27,7 @@ import httpx
 import pytest
 
 from oncofiles.tool_surface import OPERATOR_TOOLS, OPS_MCP_PATH, USER_TOOLS
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 OPERATOR_TOKEN = "synthetic-operator-token-887"
 
@@ -64,6 +64,21 @@ def test_deprecated_tools_are_operator_only(registered):
     }
     assert deprecated, "expected deprecated tools to exist"
     assert sorted(deprecated - OPERATOR_TOOLS) == []
+
+
+def test_interpretation_tools_are_operator_only():
+    """#928 (design #711 §4.4): tools that compute clinical interpretation in
+    code or read legacy tables curated patients lack are not user tools."""
+    moved = {
+        "add_clinical_analysis",
+        "analyze_labs",
+        "compare_labs",
+        "fetch_clinical_trials",
+        "get_lab_safety_check",
+        "get_precycle_checklist",
+    }
+    assert moved <= OPERATOR_TOOLS
+    assert not moved & USER_TOOLS
 
 
 def test_in_process_listing_is_the_full_surface(registered):
@@ -338,7 +353,7 @@ async def test_cli_shares_the_server_job_registry(live_server, monkeypatch):
         )
         assert code == 0, err
         assert json.loads(out)["state"] == "running"
-        assert curated._reocr_jobs[ERIKA_UUID]["state"] == "running"
+        assert curated._reocr_jobs[PRIMARY_TEST_UUID]["state"] == "running"
 
         code, out, err = await _cli(
             ["curated_reocr", "--patient", "q1b", "--json", '{"dry_run": true}'],
@@ -353,7 +368,7 @@ async def test_cli_shares_the_server_job_registry(live_server, monkeypatch):
         assert code == 0 and json.loads(out)["state"] == "running"
     finally:
         release.set()
-        job = curated._reocr_jobs.pop(ERIKA_UUID, None) or {}
+        job = curated._reocr_jobs.pop(PRIMARY_TEST_UUID, None) or {}
         task = job.get("task")
         if task is not None:
             await asyncio.wait_for(task, 5)

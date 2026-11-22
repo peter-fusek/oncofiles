@@ -1,6 +1,6 @@
 """Regression lock: activity_log cross-patient read scoping + backfill admin gate.
 
-Closes the last Michal-sweep gap discovered during the "no misses" pass:
+Closes the last gap of the external-user security sweep discovered during the "no misses" pass:
 `search_activity_log` / `get_activity_stats` / `add_activity_log` previously
 never used the `activity_log.patient_id` column (added migration 029).
 Any caller could enumerate every patient's tool-call history.
@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 from oncofiles.database import Database
 from oncofiles.models import ActivityLogEntry
 from oncofiles.persistent_oauth import _verified_caller_is_admin
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 
 def _mock_ctx(db: Database) -> MagicMock:
@@ -45,14 +45,14 @@ async def test_search_activity_log_filters_by_caller_pid(db: Database):
     from oncofiles.tools.activity import search_activity_log
 
     other_pid = "other-patient-00000000-0000-0000-0000"
-    await _seed_activity(db, ERIKA_UUID, 3)
+    await _seed_activity(db, PRIMARY_TEST_UUID, 3)
     await _seed_activity(db, other_pid, 5)
 
     _verified_caller_is_admin.set(False)
     # Patch the pid resolver to return caller's pid.
     from oncofiles import patient_middleware
 
-    token = patient_middleware._current_patient_id.set(ERIKA_UUID)
+    token = patient_middleware._current_patient_id.set(PRIMARY_TEST_UUID)
     try:
         ctx = _mock_ctx(db)
         raw = await search_activity_log(ctx)
@@ -70,7 +70,7 @@ async def test_search_activity_log_admin_sees_all(db: Database):
     from oncofiles.tools.activity import search_activity_log
 
     other_pid = "other-patient-00000000-0000-0000-0000"
-    await _seed_activity(db, ERIKA_UUID, 3)
+    await _seed_activity(db, PRIMARY_TEST_UUID, 3)
     await _seed_activity(db, other_pid, 5)
 
     _verified_caller_is_admin.set(True)
@@ -96,13 +96,13 @@ async def test_get_activity_stats_filters_by_caller_pid(db: Database):
     from oncofiles.tools.activity import get_activity_stats
 
     other_pid = "other-patient-00000000-0000-0000-0000"
-    await _seed_activity(db, ERIKA_UUID, 2)
+    await _seed_activity(db, PRIMARY_TEST_UUID, 2)
     await _seed_activity(db, other_pid, 4)
 
     _verified_caller_is_admin.set(False)
     from oncofiles import patient_middleware
 
-    token = patient_middleware._current_patient_id.set(ERIKA_UUID)
+    token = patient_middleware._current_patient_id.set(PRIMARY_TEST_UUID)
     try:
         ctx = _mock_ctx(db)
         raw = await get_activity_stats(ctx)
@@ -126,14 +126,16 @@ async def test_add_activity_log_refuses_and_stores_nothing(db: Database):
     _verified_caller_is_admin.set(False)
     from oncofiles import patient_middleware
 
-    token = patient_middleware._current_patient_id.set(ERIKA_UUID)
+    token = patient_middleware._current_patient_id.set(PRIMARY_TEST_UUID)
     try:
         ctx = _mock_ctx(db)
         out = json.loads(
             await add_activity_log(ctx, session_id="s1", agent_id="agent", tool_name="search")
         )
         assert out["error"] == "deprecated"
-        entries = await db.search_activity_log(ActivityLogQuery(patient_id=ERIKA_UUID, limit=10))
+        entries = await db.search_activity_log(
+            ActivityLogQuery(patient_id=PRIMARY_TEST_UUID, limit=10)
+        )
         assert not any(e.session_id == "s1" for e in entries)
     finally:
         patient_middleware._current_patient_id.reset(token)
@@ -150,7 +152,7 @@ async def test_search_activity_log_non_admin_no_pid_refuses_to_enumerate(db: Dat
     """
     from oncofiles.tools.activity import search_activity_log
 
-    await _seed_activity(db, ERIKA_UUID, 2)
+    await _seed_activity(db, PRIMARY_TEST_UUID, 2)
     _verified_caller_is_admin.set(False)
     from oncofiles import patient_middleware
 
@@ -171,7 +173,7 @@ async def test_get_activity_stats_non_admin_no_pid_refuses_to_enumerate(db: Data
     """
     from oncofiles.tools.activity import get_activity_stats
 
-    await _seed_activity(db, ERIKA_UUID, 3)
+    await _seed_activity(db, PRIMARY_TEST_UUID, 3)
     _verified_caller_is_admin.set(False)
     from oncofiles import patient_middleware
 

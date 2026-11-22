@@ -10,18 +10,29 @@ for every API path the dashboard calls an answer of the same shape:
     documents  ~ GET /api/documents
     details    ~ GET /api/doc-detail/{id}   (keyed by document id)
     activity   ~ GET /api/activity
+    inbound_address ~ GET /api/inbound-address   (#950, invented address)
+    trial_status ~ GET /api/trial-status   (#950 phase 2, not a trial)
+    thumbnails ~ GET /api/doc-thumbnails  (keyed by document id; the script
+                 answers each request with the ids it asked for, #948)
 
 Everything is made up (names, institution, values, dates in 2027), per the
 synthetic-fixtures rule. A few text fields carry an English twin (``*_en``)
 so the demo reads naturally in both languages; real API rows never have them.
+The previews are SVG drawings of the invented pages (``demo_thumbnails``).
 No database, no Drive, no model: a pure function of constants.
 """
 
 from __future__ import annotations
 
+import re
+
+from oncofiles import dashboard_inbox, demo_thumbnails
 from oncofiles.document_stage import stage_of
+from oncofiles.inbound_email import INBOUND_DOMAIN, TERMS_URL
 
 PATIENT_ID = "demo-patient"
+# Invented, never derived from any key: the demo address cannot reach a patient.
+DEMO_INBOUND_TOKEN = "7mq3x9k2ta"
 _HOSPITAL = ("Nemocnica Príkladov", "Example Hospital")
 _FILE_TOKENS = ("JanaTestova_NemPrikladov", "JaneDoe_ExampleHospital")
 
@@ -49,6 +60,45 @@ def _page_texts(doc: dict) -> list[tuple[str, str]]:
 
 def _name(date: str, slug: str, en: bool = False) -> str:
     return f"{date.replace('-', '')}_{_FILE_TOKENS[1 if en else 0]}_{slug}.pdf"
+
+
+# #921: a curated folder names its files by the README standard with hyphens
+# (``curated.naming``: date-Patient-Institution-Type-Doctor-Department[-Subject]),
+# so the dashboard demo shows its "named" rows that way. The legacy underscore
+# names stay the source (the landing and /demo/assistant still use them).
+_LEGACY_NAME = re.compile(
+    r"^(?P<date>\d{8})_(?P<patient>[A-Za-z]+)_(?P<inst>[A-Za-z]+)_(?P<cat>[A-Za-z]+)"
+    r"_(?P<desc>[A-Za-z0-9]+)\.(?P<ext>[a-z0-9]+)$"
+)
+_README_TYPE = {"CT": "Imaging", "DischargeSummary": "Discharge"}
+_DOCTOR = "Hruskova"  # invented surname, the same in both languages
+_DEPARTMENT = {  # README DocumentType -> (sk, en) department token
+    "Labs": ("Biochemia", "Biochemistry"),
+    "Imaging": ("Radiologia", "Radiology"),
+    "Pathology": ("Patologia", "Pathology"),
+    "Discharge": ("Chirurgia", "Surgery"),
+}
+
+
+def _standard_name(name: str, en: bool) -> str:
+    """The README-standard form of a demo name; any other name is returned as is."""
+    from oncofiles.curated.naming import NameFields, build_filename
+
+    m = _LEGACY_NAME.match(name or "")
+    if not m:
+        return name
+    doc_type = _README_TYPE.get(m["cat"], m["cat"])
+    dept = _DEPARTMENT.get(doc_type, ("Onkologia", "Oncology"))[1 if en else 0]
+    fields = NameFields(
+        date=m["date"],
+        patient=m["patient"],
+        institution=m["inst"],
+        doc_type=doc_type,
+        doctor=_DOCTOR,
+        hospital=dept,
+        subject=m["desc"],
+    )
+    return build_filename(fields, m["ext"])
 
 
 # Documents that exist only in the dashboard demo, so that every state is on
@@ -155,16 +205,29 @@ _EXTRA = [
     ),
     (
         11,
-        None,
-        "2027-04-14T07:58:00",
-        "other",
-        "IMG_2291.jpg",
-        "IMG_2291.jpg",
-        "",
-        "",
-        [],
-        False,
-        False,
+        "2027-04-13",
+        "2027-04-13T19:05:00",
+        "labs",
+        "20270413_JanaTestova_NemPrikladov_Labs_BloodCountPhoto.jpg",
+        "20270413_JaneDoe_ExampleHospital_Labs_BloodCountPhoto.jpg",
+        "Fotografia výsledkov krvného obrazu (mobil).",
+        "Phone photo of blood count results.",
+        [
+            (
+                "Nemocnica Príkladov – Oddelenie klinickej biochémie\nVýsledky vyšetrenia\n"
+                "Pacientka: Jana Testová (vymyslená)\nOdber: 13.04.2027 07:20\n\n"
+                "WBC    6,4    ×10⁹/L    4,0–10,0\nHGB    127    g/L    120–160\n"
+                "PLT    241    ×10⁹/L    150–400\nCRP    3,8    mg/L    < 5,0\n\n"
+                "Vymyslený výsledok pre ukážku.",
+                "Example Hospital – Clinical Biochemistry\nTest results\n"
+                "Patient: Jane Doe (invented)\nSampled: 13 Apr 2027 07:20\n\n"
+                "WBC    6.4    ×10⁹/L    4.0–10.0\nHGB    127    g/L    120–160\n"
+                "PLT    241    ×10⁹/L    150–400\nCRP    3.8    mg/L    < 5.0\n\n"
+                "Invented result for the demo.",
+            )
+        ],
+        True,
+        True,
         None,
     ),
     (
@@ -189,6 +252,27 @@ _EXTRA = [
         False,
         "review_needed",
     ),
+]
+
+# How the preview of a demo-only document is drawn, when not as a printed page:
+# (style, title sk, title en). The sk/en titles name a page whose text has none.
+_PICTURE = {
+    10: ("scan", "Laboratórny výsledok", "Lab report"),
+    11: ("printout_photo", "", ""),
+    12: ("note_photo", "", ""),
+}
+
+# A photo the caregiver just added, still waiting in the inbox (the shape of
+# one entry of ``tools.curated.inbox_snapshot``; invented id and time).
+_INBOX = [
+    {
+        "id": "demo-inbox-1",
+        "name": "IMG_2291.jpg",
+        "size": 2_310_000,
+        "mime": "image/jpeg",
+        "modified": "2027-04-14T07:58:00",
+        "review": False,
+    }
 ]
 
 # Upload times of the six showcase documents (ids 1–6), a day or two after the
@@ -216,8 +300,8 @@ def _row(
     stage = stage_of(extracted=has_text, named=named, filed=filed, attention=attention)
     return {
         "id": doc_id,
-        "filename": name,
-        "filename_en": name_en,
+        "filename": _standard_name(name, en=False),
+        "filename_en": _standard_name(name_en, en=True),
         "category": category,
         "date": date,
         "institution": _HOSPITAL[0] if named else None,
@@ -234,6 +318,7 @@ def _row(
         "fully_complete": False,
         "curated": True,
         "attention_reason": attention,
+        "review_reasons": [],  # #919: codes; the demo shows the generic help text
         **stage,
     }
 
@@ -265,8 +350,18 @@ def build(showcase_documents: list[dict], version: str) -> dict:
     """The ``dashboard`` section of ``/api/demo-data``."""
     rows: list[dict] = []
     details: dict[str, dict] = {}
+    pictures: list[dict] = []
 
     for doc in showcase_documents:
+        pictures.append(
+            {
+                "id": doc["id"],
+                "category": doc["category"],
+                "title": doc.get("title_sk", ""),
+                "title_en": doc.get("title_en", ""),
+                "lines": (doc.get("pages") or [{}])[0].get("lines") or [],
+            }
+        )
         uploaded = _plus_days(doc["date"], 1) + _SHOWCASE_UPLOADED.get(doc["id"], "T09:00:00")
         row = _row(
             doc["id"],
@@ -300,6 +395,23 @@ def build(showcase_documents: list[dict], version: str) -> dict:
         )
         rows.append(row)
         details[str(doc_id)] = _detail(row, (s_sk, s_en), pages)
+        style, title_sk, title_en = _PICTURE.get(doc_id, ("printed", "", ""))
+        pictures.append(
+            {
+                "id": doc_id,
+                "category": cat,
+                "style": style,
+                "title": title_sk,
+                "title_en": title_en,
+                "text": pages[0][0] if pages else "",
+                "text_en": pages[0][1] if pages else "",
+            }
+        )
+
+    # Files still in the inbox: the same rows GET /api/documents builds from the
+    # probe's snapshot (dashboard_inbox), so they have no detail entry.
+    inbox_rows = dashboard_inbox.rows(_INBOX, set())
+    rows.extend(inbox_rows)
 
     rows.sort(key=lambda r: r["uploaded_at"], reverse=True)
     ready = sum(1 for r in rows if r["stage"] == "ready")
@@ -309,6 +421,7 @@ def build(showcase_documents: list[dict], version: str) -> dict:
         "ready": ready,
         "attention": attention_n,
         "in_progress": len(rows) - ready - attention_n,
+        "inbox": len(inbox_rows),
         "extracted": sum(1 for r in rows if r["steps"]["extracted"]),
         "named": sum(1 for r in rows if r["steps"]["named"]),
         "filed": sum(1 for r in rows if r["steps"]["filed"]),
@@ -380,6 +493,20 @@ def build(showcase_documents: list[dict], version: str) -> dict:
             "documents": rows,
         },
         "details": details,
+        # #950: the demo twin of GET /api/inbound-address (an invented address
+        # with an invented Gmail-style prefix; rotating it is blocked in the demo).
+        "inbound_address": {
+            "enabled": True,
+            "address": f"jana.example-{DEMO_INBOUND_TOKEN}@{INBOUND_DOMAIN}",
+            "domain": INBOUND_DOMAIN,
+            "version": 1,
+            "created_at": "2027-01-19T15:20:00Z",
+            "terms_url": TERMS_URL,
+        },
+        # #950 phase 2: the demo twin of GET /api/trial-status (the demo
+        # patient did not start through welcome@, so no first-steps card).
+        "trial_status": {"trial": False},
+        "thumbnails": demo_thumbnails.build(pictures),
         "activity": {
             "events": [
                 run("2027-04-13T19:05:00", "auto", 1, 0, waiting=1),

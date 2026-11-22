@@ -31,7 +31,7 @@ from oncofiles.enhance import (
 )
 from oncofiles.filename_parser import rename_to_standard
 from oncofiles.models import DocumentCategory
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 # ── Option A: rename_to_standard never writes "Unknown" back ──────────
 
@@ -41,7 +41,7 @@ def test_rename_returns_input_when_institution_unknown_no_override():
     no override available; rename must return the input UNCHANGED so the
     next sweep doesn't re-write the same Unknown filename."""
     src = "20270326_JanaTestova_Unknown_ChemoSheet_JanaTestovaUnkn.pdf"
-    out = rename_to_standard(src, patient_id=ERIKA_UUID)
+    out = rename_to_standard(src, patient_id=PRIMARY_TEST_UUID)
     assert out == src, (
         "rename_to_standard must return the input unchanged when institution "
         "is Unknown and no override is provided (#404 Option A)"
@@ -52,7 +52,7 @@ def test_rename_writes_real_institution_when_override_provided():
     """Sanity: the loop-break only applies when there's NO override. With a
     real override the rename produces the standard-format filename."""
     src = "20270326_JanaTestova_Unknown_ChemoSheet_JanaTestovaUnkn.pdf"
-    out = rename_to_standard(src, patient_id=ERIKA_UUID, institution_override="NOU")
+    out = rename_to_standard(src, patient_id=PRIMARY_TEST_UUID, institution_override="NOU")
     assert out != src
     assert "_NOU_" in out
     assert "Unknown" not in out
@@ -62,7 +62,7 @@ def test_rename_returns_input_when_institution_field_already_filename_unknown():
     """Even if the parsed filename's institution is the literal 'Unknown'
     token, no override → unchanged. Belt-and-suspenders against the loop."""
     src = "20280101_JanaTestova_Unknown_Labs_Description.pdf"
-    out = rename_to_standard(src, patient_id=ERIKA_UUID)
+    out = rename_to_standard(src, patient_id=PRIMARY_TEST_UUID)
     assert out == src
 
 
@@ -138,14 +138,14 @@ def test_primary_clinic_allowlist_is_locked():
 @pytest.mark.asyncio
 async def test_backfill_uses_patient_context_for_chemo_sheet(db):
     """Chemo sheet with no providers → fills institution from patient_context."""
-    patient_context._contexts[ERIKA_UUID] = {
+    patient_context._contexts[PRIMARY_TEST_UUID] = {
         "name": "Jana Testova",
         "primary_institution": "NOU",
     }
     try:
         doc = make_doc(filename="20270326_chemo.pdf", institution=None)
         doc.category = DocumentCategory.CHEMO_SHEET
-        inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+        inserted = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
         # Set structured_metadata with empty providers — the dropout case.
         await db.update_structured_metadata(inserted.id, json.dumps({"providers": []}))
 
@@ -160,20 +160,20 @@ async def test_backfill_uses_patient_context_for_chemo_sheet(db):
             row = await cursor.fetchone()
         assert row["institution"] == "NOU"
     finally:
-        patient_context._contexts.pop(ERIKA_UUID, None)
+        patient_context._contexts.pop(PRIMARY_TEST_UUID, None)
 
 
 @pytest.mark.asyncio
 async def test_backfill_skips_fallback_for_labs_category(db):
     """Labs from external lab → MUST NOT be misattributed to primary clinic."""
-    patient_context._contexts[ERIKA_UUID] = {
+    patient_context._contexts[PRIMARY_TEST_UUID] = {
         "name": "Jana Testova",
         "primary_institution": "NOU",
     }
     try:
         doc = make_doc(filename="20270326_labs.pdf", institution=None)
         doc.category = DocumentCategory.LABS
-        inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+        inserted = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
         await db.update_structured_metadata(inserted.id, json.dumps({"providers": []}))
 
         stats = await backfill_missing_institutions(db.db)
@@ -187,42 +187,42 @@ async def test_backfill_skips_fallback_for_labs_category(db):
         # Labs stay NULL — better than misattributed to NOU.
         assert row["institution"] in (None, "")
     finally:
-        patient_context._contexts.pop(ERIKA_UUID, None)
+        patient_context._contexts.pop(PRIMARY_TEST_UUID, None)
 
 
 @pytest.mark.asyncio
 async def test_backfill_skips_fallback_when_no_primary_institution(db):
     """Patient with no primary_institution config → no fallback. Doc stays NULL."""
-    patient_context._contexts[ERIKA_UUID] = {"name": "Jana Testova"}
+    patient_context._contexts[PRIMARY_TEST_UUID] = {"name": "Jana Testova"}
     try:
         doc = make_doc(filename="20270326_chemo.pdf", institution=None)
         doc.category = DocumentCategory.CHEMO_SHEET
-        inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+        inserted = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
         await db.update_structured_metadata(inserted.id, json.dumps({"providers": []}))
 
         stats = await backfill_missing_institutions(db.db)
         assert stats["still_missing"] >= 1
         assert stats["updated_from_patient_context"] == 0
     finally:
-        patient_context._contexts.pop(ERIKA_UUID, None)
+        patient_context._contexts.pop(PRIMARY_TEST_UUID, None)
 
 
 @pytest.mark.asyncio
 async def test_backfill_provider_path_still_takes_precedence(db):
     """When providers DO infer an institution, use that — not the fallback.
     The fallback is the safety net, not the override."""
-    patient_context._contexts[ERIKA_UUID] = {
+    patient_context._contexts[PRIMARY_TEST_UUID] = {
         "name": "Jana Testova",
         "primary_institution": "OUSA",  # different from what providers infer
     }
     try:
         doc = make_doc(filename="20270326_chemo.pdf", institution=None)
         doc.category = DocumentCategory.CHEMO_SHEET
-        inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+        inserted = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
         # Providers list a NOU doctor — should resolve to NOU, NOT the
         # patient_context's primary_institution value.
         await db.update_structured_metadata(
-            inserted.id, json.dumps({"providers": ["MUDr. Stefan Porsok, PhD., NOU Klenova"]})
+            inserted.id, json.dumps({"providers": ["MUDr. Jana Testova, PhD., NOU Klenova"]})
         )
 
         stats = await backfill_missing_institutions(db.db)
@@ -236,4 +236,4 @@ async def test_backfill_provider_path_still_takes_precedence(db):
             row = await cursor.fetchone()
         assert row["institution"] == "NOU"
     finally:
-        patient_context._contexts.pop(ERIKA_UUID, None)
+        patient_context._contexts.pop(PRIMARY_TEST_UUID, None)

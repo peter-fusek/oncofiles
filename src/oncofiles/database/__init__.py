@@ -18,10 +18,14 @@ from ._facts import FactsMixin
 from ._gmail import GmailMixin
 from ._hard_extract import HardExtractMixin
 from ._hard_facts import HardFactsMixin
+from ._inbound import InboundAddressMixin
+from ._inbound_claimed import InboundClaimedJobsMixin
+from ._inbound_jobs import InboundJobsMixin
 from ._onboarding import OnboardingEventsMixin
 from ._operational import OperationalMixin
 from ._patients import PatientsMixin
 from ._prompt_log import PromptLogMixin
+from ._trials import TrialsMixin
 from ._verification import FactVerificationMixin
 
 
@@ -43,6 +47,10 @@ class Database(
     PromptLogMixin,
     AnalyticsMixin,
     DashboardAccessLogMixin,
+    InboundAddressMixin,
+    InboundJobsMixin,
+    InboundClaimedJobsMixin,
+    TrialsMixin,
     DatabaseBase,
 ):
     """Async database for document metadata: a local SQLite file via aiosqlite (#617)."""

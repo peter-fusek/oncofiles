@@ -23,7 +23,7 @@ import inspect
 
 from oncofiles.database import Database
 
-ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+PRIMARY_TEST_UUID = "00000000-0000-4000-8000-000000000001"
 
 # The verbatim error prod returned, for the whole month.
 PROJECT_DELETED = (
@@ -59,7 +59,7 @@ def test_insufficient_file_permissions_is_not_hard_auth():
     """#445 guard. `insufficientFilePermissions` means a single file is owned
     by someone else and shared read-only — sync survives it file-by-file.
     Classifying it here would permanently light up the health endpoint for
-    Mattias-class patients whose Drive files are merely shared."""
+    patients whose Drive files are merely shared."""
     from oncofiles.server import _hard_auth_reason
 
     exc = Exception(
@@ -219,14 +219,14 @@ async def test_get_last_successful_sync_ignores_failed_runs(db: Database):
     """The whole point: `get_sync_stats_summary.last_sync_at` is
     MAX(started_at) over ALL rows, so it stays fresh while every run fails.
     This helper must only see completed runs."""
-    sid = await db.insert_sync_history(trigger="nightly", patient_id=ERIKA_UUID)
+    sid = await db.insert_sync_history(trigger="nightly", patient_id=PRIMARY_TEST_UUID)
     await db.complete_sync_history(sid, status="failed", error_message="403 project deleted")
 
-    assert await db.get_last_successful_sync(patient_id=ERIKA_UUID) is None
+    assert await db.get_last_successful_sync(patient_id=PRIMARY_TEST_UUID) is None
 
-    ok = await db.insert_sync_history(trigger="nightly", patient_id=ERIKA_UUID)
+    ok = await db.insert_sync_history(trigger="nightly", patient_id=PRIMARY_TEST_UUID)
     await db.complete_sync_history(ok, status="completed", duration_s=1.0)
-    assert await db.get_last_successful_sync(patient_id=ERIKA_UUID) is not None
+    assert await db.get_last_successful_sync(patient_id=PRIMARY_TEST_UUID) is not None
 
 
 async def test_get_last_successful_sync_is_patient_scoped(db: Database):
@@ -234,7 +234,7 @@ async def test_get_last_successful_sync_is_patient_scoped(db: Database):
     sid = await db.insert_sync_history(trigger="nightly", patient_id="someone-else")
     await db.complete_sync_history(sid, status="completed", duration_s=1.0)
 
-    assert await db.get_last_successful_sync(patient_id=ERIKA_UUID) is None
+    assert await db.get_last_successful_sync(patient_id=PRIMARY_TEST_UUID) is None
     assert await db.get_last_successful_sync(patient_id="someone-else") is not None
 
 
@@ -243,7 +243,7 @@ async def test_get_last_successful_sync_requires_patient_id_keyword(db: Database
     import pytest
 
     with pytest.raises(TypeError):
-        await db.get_last_successful_sync(ERIKA_UUID)  # type: ignore[misc]
+        await db.get_last_successful_sync(PRIMARY_TEST_UUID)  # type: ignore[misc]
 
 
 # ── C4: alerting ──────────────────────────────────────────────────────────

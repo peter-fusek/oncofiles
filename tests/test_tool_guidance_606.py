@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from oncofiles.database import Database
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 LEGACY_SYNC_TOOLS = ("gdrive_sync", "sync_from_gdrive", "sync_to_gdrive")
 
@@ -75,11 +75,11 @@ async def test_rename_skips_curated_rows(db: Database):
 
     await db.insert_document(
         make_doc(file_id="gdrive:synthetic-curated-1", filename="old style scan.pdf"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     await db.insert_document(
         make_doc(file_id="legacy-1", filename="old style legacy.pdf"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     ctx = MagicMock()
     ctx.request_context.lifespan_context = {"db": db, "files": MagicMock()}
@@ -132,7 +132,7 @@ async def _finished_run(db, pid):
 async def test_status_of_a_finished_run_carries_as_of(db: Database):
     from oncofiles.tools import curated as tool
 
-    run = await _finished_run(db, ERIKA_UUID)
+    run = await _finished_run(db, PRIMARY_TEST_UUID)
     out = json.loads(await tool.curated_folder_status(_status_ctx(db)))
     assert out["state"] == "done"
     assert out["as_of"] == run["finished_at"] and out["as_of"]
@@ -144,8 +144,8 @@ async def test_status_adds_the_live_probe_count_of_this_patient_only(db: Databas
     from oncofiles.tools import curated as tool
 
     other = "00000000-0000-4000-8000-0000000000aa"
-    await _finished_run(db, ERIKA_UUID)
-    mine = tool._stats(ERIKA_UUID)
+    await _finished_run(db, PRIMARY_TEST_UUID)
+    mine = tool._stats(PRIMARY_TEST_UUID)
     mine.last_probe_at = "2027-03-04T05:06:07+00:00"
     mine.pending_inbox_count = 3
     mine.runs_blocked["reocr_job"] = 2  # operator counter: must stay out
@@ -163,29 +163,29 @@ async def test_status_adds_the_live_probe_count_of_this_patient_only(db: Databas
 async def test_status_without_a_run_or_while_running_still_shows_live(db: Database):
     from oncofiles.tools import curated as tool
 
-    st = tool._stats(ERIKA_UUID)
+    st = tool._stats(PRIMARY_TEST_UUID)
     st.last_probe_at = "2027-03-04T05:06:07+00:00"
     st.pending_inbox_count = 0
     out = json.loads(await tool.curated_folder_status(_status_ctx(db)))
     assert out["state"] == "none" and out["live"]["pending_inbox_count"] == 0
-    tool._runs[ERIKA_UUID] = {"state": "running", "dry_run": True}
+    tool._runs[PRIMARY_TEST_UUID] = {"state": "running", "dry_run": True}
     try:
         out = json.loads(await tool.curated_folder_status(_status_ctx(db)))
     finally:
-        tool._runs.pop(ERIKA_UUID, None)
+        tool._runs.pop(PRIMARY_TEST_UUID, None)
     assert out["state"] == "running" and out["live"]["as_of"].startswith("2027-03-04")
 
 
 def test_a_probe_without_a_count_is_not_reported_as_live():
     from oncofiles.tools import curated as tool
 
-    tool._stats(ERIKA_UUID).last_probe_at = "2027-03-04T05:06:07+00:00"
-    assert tool.live_probe(ERIKA_UUID) is None
+    tool._stats(PRIMARY_TEST_UUID).last_probe_at = "2027-03-04T05:06:07+00:00"
+    assert tool.live_probe(PRIMARY_TEST_UUID) is None
     assert tool.live_probe("00000000-0000-4000-8000-0000000000bb") is None
 
 
 def test_public_heartbeat_has_no_per_patient_counts():
     from oncofiles.tools import curated as tool
 
-    tool._stats(ERIKA_UUID).pending_inbox_count = 7
+    tool._stats(PRIMARY_TEST_UUID).pending_inbox_count = 7
     assert set(tool.heartbeat()) == {"curated_last_probe_age_s", "curated_loop_suspected"}

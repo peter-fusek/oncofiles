@@ -86,7 +86,7 @@ async def rename_documents_to_standard(
         en_descriptions: Optional JSON object mapping doc_id → English description
                         (e.g. '{"15": "BloodResultsPreCycle3", "42": "CTAbdomen"}').
                         If not provided, keeps existing descriptions.
-        patient_slug: Optional — explicit patient slug (e.g. 'mattias-cesnak'). Required
+        patient_slug: Optional — explicit patient slug (e.g. 'jana-testova'). Required
             in stateless HTTP contexts where select_patient() state does not persist
             across tool calls (#429). Stdio + single-patient bearer flows can omit.
     """

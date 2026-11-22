@@ -15,7 +15,7 @@ import pytest
 from oncofiles.database import Database
 from oncofiles.models import ClinicalRecord
 from oncofiles.tools import clinical_records as cr_tools
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 # These tests verify slug-routing across patients — admin scope per #497/#498.
 pytestmark = pytest.mark.usefixtures("admin_scope")
@@ -86,9 +86,9 @@ async def test_add_clinical_record_targets_slug_patient(db: Database):
     # Record was created under SECOND_UUID via slug routing; fetch under that scope.
     stored = await db.get_clinical_record(stored_id, patient_id=SECOND_UUID)
     assert stored.patient_id == SECOND_UUID
-    assert stored.patient_id != ERIKA_UUID
+    assert stored.patient_id != PRIMARY_TEST_UUID
     # Defence-in-depth: from Jana's scope the row is invisible (#499).
-    assert await db.get_clinical_record(stored_id, patient_id=ERIKA_UUID) is None
+    assert await db.get_clinical_record(stored_id, patient_id=PRIMARY_TEST_UUID) is None
 
 
 async def test_add_clinical_record_with_audit_reason(db: Database):
@@ -118,7 +118,7 @@ async def test_get_clinical_record_includes_audit_when_requested(db: Database):
     ctx = _StubCtx(db)
     rec = await db.insert_clinical_record(
         ClinicalRecord(
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             record_type="lab",
             param="CEA",
             value_num=3.5,
@@ -136,7 +136,7 @@ async def test_get_clinical_record_includes_notes_when_requested(db: Database):
     ctx = _StubCtx(db)
     rec = await db.insert_clinical_record(
         ClinicalRecord(
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             record_type="lab",
             param="CEA",
             value_num=3.5,
@@ -198,7 +198,7 @@ async def test_add_note_wraps_tags_as_json(db: Database):
     ctx = _StubCtx(db)
     rec = await db.insert_clinical_record(
         ClinicalRecord(
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             record_type="lab",
             param="CEA",
             value_num=3.5,
@@ -262,7 +262,7 @@ async def test_add_note_no_tags_stores_null(db: Database):
     ctx = _StubCtx(db)
     rec = await db.insert_clinical_record(
         ClinicalRecord(
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             record_type="lab",
             param="CEA",
             source="manual",
@@ -284,7 +284,7 @@ async def test_list_notes_filters_by_tags_any(db: Database):
     ctx = _StubCtx(db)
     rec = await db.insert_clinical_record(
         ClinicalRecord(
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             record_type="lab",
             param="CEA",
             source="manual",
@@ -309,7 +309,7 @@ async def test_list_notes_patient_scope_via_slug(db: Database):
     await _seed_two_patients(db)
     ctx = _StubCtx(db)
     jana_rec = await db.insert_clinical_record(
-        ClinicalRecord(patient_id=ERIKA_UUID, record_type="lab", source="manual")
+        ClinicalRecord(patient_id=PRIMARY_TEST_UUID, record_type="lab", source="manual")
     )
     bob_rec = await db.insert_clinical_record(
         ClinicalRecord(patient_id=SECOND_UUID, record_type="lab", source="manual")
@@ -335,10 +335,10 @@ async def test_list_notes_patient_scope_via_slug(db: Database):
 async def test_list_notes_by_specific_record_id(db: Database):
     ctx = _StubCtx(db)
     r1 = await db.insert_clinical_record(
-        ClinicalRecord(patient_id=ERIKA_UUID, record_type="lab", source="manual")
+        ClinicalRecord(patient_id=PRIMARY_TEST_UUID, record_type="lab", source="manual")
     )
     r2 = await db.insert_clinical_record(
-        ClinicalRecord(patient_id=ERIKA_UUID, record_type="lab", source="manual")
+        ClinicalRecord(patient_id=PRIMARY_TEST_UUID, record_type="lab", source="manual")
     )
     await cr_tools.add_clinical_record_note(
         ctx, record_id=r1.id, note_text="on r1", source="dashboard"

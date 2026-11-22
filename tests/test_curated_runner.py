@@ -502,7 +502,9 @@ def test_truncated_classification_is_per_document_not_a_run_abort():
 
     def flaky(contract, text):
         if "VYSLEDKY" in text:
-            raise llm.LocalLLMError("local LLM answer truncated: reasoning used the whole budget")
+            raise llm.LocalLLMAnswerError(
+                "local LLM answer truncated: reasoning used the whole budget"
+            )
         return fake_propose(contract, text)
 
     r = run_curated(d, d.root, RunOptions(now=NOW), extract_fn=fake_extract, propose_fn=flaky)
@@ -618,7 +620,7 @@ def test_technical_failure_again_counts_attempts():
     d.add("scan_7.pdf.md", d.folder[INBOX], _review_sidecar([TRUNC]))
 
     def failing(contract, text):
-        raise llm.LocalLLMError("local LLM answer truncated: reasoning used the whole budget")
+        raise llm.LocalLLMAnswerError("local LLM answer truncated: reasoning used the whole budget")
 
     o = RunOptions(now=NOW, run_id="test-run", dry_run=False)
     r = run_curated(d, d.root, o, extract_fn=fake_extract, propose_fn=failing)
@@ -753,6 +755,31 @@ def test_probe_ignores_items_awaiting_review():
     run(d, dry_run=False)  # files what it can, the rest waits for review
     p = probe(d, d.root, now=NOW)
     assert p.pending == {}
+
+
+def test_probe_lists_the_inbox_for_the_dashboard():
+    """#921 follow-up: every inbox document (not a sidecar, not a filed file)
+    with its review flag; an idle repeat reads no sidecars and lists nothing."""
+    from oncofiles.curated.runner import probe
+
+    d = _drive_with_inbox()
+    first = probe(d, d.root, now=NOW)
+    assert sorted(e.name for e in first.inbox) == [
+        "scan_001.pdf",
+        "scan_002.pdf",
+        "scan_003.pdf",
+        "scan_dup.pdf",
+    ]
+    assert not any(e.review for e in first.inbox)
+    e = next(e for e in first.inbox if e.name == "scan_001.pdf")
+    assert e.size == len(b"VYSLEDKY 05.08.2026") and e.mime and e.modified and e.id
+    assert probe(d, d.root, idle_signature=first.signature, now=NOW).inbox is None
+
+    run(d, dry_run=False)  # files what it can, the rest waits for review
+    after = probe(d, d.root, now=NOW)
+    assert after.pending == {}
+    assert after.inbox and all(e.review for e in after.inbox)
+    assert not any(e.name.endswith(".md") for e in after.inbox)  # sidecars are no rows
 
 
 def test_identical_uploads_in_one_run_file_once_and_quarantine_the_rest():

@@ -350,7 +350,7 @@ def test_754_institution_ocr_typo_snaps_when_readme_token_is_printed():
 @pytest.mark.parametrize(
     "token,known,same",
     [
-        ("Parsok", "Porsok", True),
+        ("Karnok", "Kornok", True),
         ("XyzAmbulancia", "AbcAmbulancia", False),
         ("KlinikaVnutornrhoLekarstva", "KlinikaVnutornehoLekarstva", True),
         ("NUO", "NOU", True),
@@ -400,7 +400,9 @@ def test_propose_retries_once_with_double_budget_when_truncated(monkeypatch):
     def fake_chat(system, user, **k):
         calls.append(k)
         if len(calls) == 1:
-            raise llm.LocalLLMError("local LLM answer truncated: reasoning used the whole budget")
+            raise llm.LocalLLMAnswerError(
+                "local LLM answer truncated: reasoning used the whole budget"
+            )
         return json.dumps(GOOD)
 
     monkeypatch.setattr(llm, "chat", fake_chat)
@@ -524,7 +526,7 @@ def test_propose_skips_the_retry_when_the_window_has_no_more_room(monkeypatch):
 
     def fake_chat(system, user, **k):
         calls.append(k)
-        raise llm.LocalLLMError("local LLM answer truncated: reasoning used the whole budget")
+        raise llm.LocalLLMAnswerError("local LLM answer truncated: reasoning used the whole budget")
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     monkeypatch.setattr(
@@ -548,7 +550,7 @@ def test_context_overflow_from_lm_studio_is_a_per_document_failure(local_llm):
     with pytest.raises(llm.LocalLLMError) as exc:
         llm.chat("s", "u", client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert "truncated" in str(exc.value)
-    assert not runner._llm_down(str(exc.value))  # review path, the run continues
+    assert not runner._llm_down(exc.value.failure)  # review path, the run continues
 
 
 def test_other_http_errors_still_mean_the_model_is_down(local_llm):
@@ -557,7 +559,7 @@ def test_other_http_errors_still_mean_the_model_is_down(local_llm):
 
     with pytest.raises(llm.LocalLLMError) as exc:
         llm.chat("s", "u", client=httpx.Client(transport=httpx.MockTransport(handler)))
-    assert runner._llm_down(str(exc.value))
+    assert runner._llm_down(exc.value.failure)
 
 
 def test_context_window_comes_from_config(monkeypatch):
@@ -570,7 +572,7 @@ def test_propose_does_not_retry_a_context_overflow(monkeypatch):
 
     def fake_chat(system, user, **k):
         calls.append(k)
-        raise llm.LocalLLMError("local LLM answer truncated: context overflow (HTTP 400)")
+        raise llm.LocalLLMAnswerError("local LLM answer truncated: context overflow (HTTP 400)")
 
     monkeypatch.setattr(llm, "chat", fake_chat)
     with pytest.raises(llm.LocalLLMError):

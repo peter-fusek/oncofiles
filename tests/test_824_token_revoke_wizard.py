@@ -26,7 +26,7 @@ from oncofiles.persistent_oauth import (
 )
 from oncofiles.tool_annotations import DESTRUCTIVE_TOOLS, READ_ONLY_TOOLS
 from oncofiles.tools import patient as patient_tools
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 SRC = Path(server.__file__).parent
 OTHER_UUID = "33333333-3333-4333-8333-333333333333"
@@ -39,7 +39,7 @@ def _ctx(db: Database) -> MagicMock:
     return ctx
 
 
-async def _slug(db: Database, pid: str = ERIKA_UUID) -> str:
+async def _slug(db: Database, pid: str = PRIMARY_TEST_UUID) -> str:
     return (await db.get_patient(pid)).slug
 
 
@@ -62,38 +62,38 @@ async def _token_rows(db: Database) -> list[dict]:
 
 async def test_revoke_patient_tokens_is_soft_and_scoped_to_one_patient(db: Database):
     other = await _other_patient(db)
-    mine_a = await db.create_patient_token(ERIKA_UUID, label="desktop")
-    mine_b = await db.create_patient_token(ERIKA_UUID, label="script")
+    mine_a = await db.create_patient_token(PRIMARY_TEST_UUID, label="desktop")
+    mine_b = await db.create_patient_token(PRIMARY_TEST_UUID, label="script")
     theirs = await db.create_patient_token(other, label="desktop")
 
-    assert await db.revoke_patient_tokens(patient_id=ERIKA_UUID) == 2
+    assert await db.revoke_patient_tokens(patient_id=PRIMARY_TEST_UUID) == 2
 
     rows = await _token_rows(db)
     assert len(rows) == 3  # nothing deleted
     assert {r["patient_id"]: r["is_active"] for r in rows if r["patient_id"] == other} == {other: 1}
-    assert all(r["is_active"] == 0 for r in rows if r["patient_id"] == ERIKA_UUID)
+    assert all(r["is_active"] == 0 for r in rows if r["patient_id"] == PRIMARY_TEST_UUID)
     assert await db.resolve_patient_from_token(mine_a) is None
     assert await db.resolve_patient_from_token(mine_b) is None
     assert await db.resolve_patient_from_token(theirs) == other
     # A second run finds nothing active.
-    assert await db.revoke_patient_tokens(patient_id=ERIKA_UUID) == 0
+    assert await db.revoke_patient_tokens(patient_id=PRIMARY_TEST_UUID) == 0
 
 
 async def test_revoke_patient_tokens_label_narrows(db: Database):
-    keep = await db.create_patient_token(ERIKA_UUID, label="desktop")
-    drop = await db.create_patient_token(ERIKA_UUID, label="script")
+    keep = await db.create_patient_token(PRIMARY_TEST_UUID, label="desktop")
+    drop = await db.create_patient_token(PRIMARY_TEST_UUID, label="script")
 
-    assert await db.revoke_patient_tokens(patient_id=ERIKA_UUID, label="script") == 1
-    assert await db.resolve_patient_from_token(keep) == ERIKA_UUID
+    assert await db.revoke_patient_tokens(patient_id=PRIMARY_TEST_UUID, label="script") == 1
+    assert await db.resolve_patient_from_token(keep) == PRIMARY_TEST_UUID
     assert await db.resolve_patient_from_token(drop) is None
-    assert await db.revoke_patient_tokens(patient_id=ERIKA_UUID, label="no-such-label") == 0
+    assert await db.revoke_patient_tokens(patient_id=PRIMARY_TEST_UUID, label="no-such-label") == 0
 
 
 async def test_token_helpers_require_keyword_patient_id(db: Database):
     with pytest.raises(TypeError):
-        await db.revoke_patient_tokens(ERIKA_UUID)  # type: ignore[misc]
+        await db.revoke_patient_tokens(PRIMARY_TEST_UUID)  # type: ignore[misc]
     with pytest.raises(TypeError):
-        await db.list_patient_tokens(ERIKA_UUID)  # type: ignore[misc]
+        await db.list_patient_tokens(PRIMARY_TEST_UUID)  # type: ignore[misc]
     with pytest.raises(ValueError):
         await db.revoke_patient_tokens(patient_id="")
     with pytest.raises(ValueError):
@@ -102,12 +102,12 @@ async def test_token_helpers_require_keyword_patient_id(db: Database):
 
 async def test_list_patient_tokens_has_no_secret(db: Database):
     other = await _other_patient(db)
-    token = await db.create_patient_token(ERIKA_UUID, label="desktop")
-    await db.create_patient_token(ERIKA_UUID, label="script")
+    token = await db.create_patient_token(PRIMARY_TEST_UUID, label="desktop")
+    await db.create_patient_token(PRIMARY_TEST_UUID, label="script")
     await db.create_patient_token(other, label="theirs")
-    await db.revoke_patient_tokens(patient_id=ERIKA_UUID, label="script")
+    await db.revoke_patient_tokens(patient_id=PRIMARY_TEST_UUID, label="script")
 
-    listed = await db.list_patient_tokens(patient_id=ERIKA_UUID)
+    listed = await db.list_patient_tokens(patient_id=PRIMARY_TEST_UUID)
     assert [(t["label"], t["is_active"]) for t in listed] == [("desktop", True), ("script", False)]
     assert all(set(t) == {"id", "label", "created_at", "is_active"} for t in listed)
     blob = json.dumps(listed)
@@ -115,17 +115,17 @@ async def test_list_patient_tokens_has_no_secret(db: Database):
     for row in await _token_rows(db):
         assert row["token_hash"] not in blob and row["token_hash"][:12] not in blob
     assert [t["label"] for t in await db.list_patient_tokens(patient_id=other)] == ["theirs"]
-    active = await db.list_patient_tokens(patient_id=ERIKA_UUID, active_only=True)
+    active = await db.list_patient_tokens(patient_id=PRIMARY_TEST_UUID, active_only=True)
     assert [t["label"] for t in active] == ["desktop"]
 
 
 async def test_revoked_token_no_longer_authenticates(db: Database):
-    token = await db.create_patient_token(ERIKA_UUID, label="desktop")
+    token = await db.create_patient_token(PRIMARY_TEST_UUID, label="desktop")
     provider = PersistentOAuthProvider(db=db)
     verified = await provider.verify_token(token)
-    assert verified is not None and verified.client_id == f"patient:{ERIKA_UUID}"
+    assert verified is not None and verified.client_id == f"patient:{PRIMARY_TEST_UUID}"
 
-    assert await db.revoke_patient_tokens(patient_id=ERIKA_UUID, label="desktop") == 1
+    assert await db.revoke_patient_tokens(patient_id=PRIMARY_TEST_UUID, label="desktop") == 1
     assert await provider.verify_token(token) is None
 
 
@@ -133,19 +133,19 @@ async def test_revoked_token_no_longer_authenticates(db: Database):
 
 
 async def test_token_tools_reject_non_admin(db: Database):
-    token = await db.create_patient_token(ERIKA_UUID, label="desktop")
+    token = await db.create_patient_token(PRIMARY_TEST_UUID, label="desktop")
     slug = await _slug(db)
     _verified_caller_is_admin.set(False)
 
     listed = json.loads(await patient_tools.list_patient_tokens(_ctx(db), slug))
     revoked = json.loads(await patient_tools.revoke_patient_tokens(_ctx(db), slug, dry_run=False))
     assert "admin scope" in listed["error"] and "admin scope" in revoked["error"]
-    assert await db.resolve_patient_from_token(token) == ERIKA_UUID
+    assert await db.resolve_patient_from_token(token) == PRIMARY_TEST_UUID
 
 
 @pytest.mark.usefixtures("admin_scope")
 async def test_token_tools_require_patient_slug(db: Database):
-    token = await db.create_patient_token(ERIKA_UUID, label="desktop")
+    token = await db.create_patient_token(PRIMARY_TEST_UUID, label="desktop")
     for slug in ("", "   ", None):
         listed = json.loads(await patient_tools.list_patient_tokens(_ctx(db), slug))
         revoked = json.loads(
@@ -153,7 +153,7 @@ async def test_token_tools_require_patient_slug(db: Database):
         )
         assert listed == {"error": "patient_slug is required"}
         assert revoked == {"error": "patient_slug is required"}
-    assert await db.resolve_patient_from_token(token) == ERIKA_UUID
+    assert await db.resolve_patient_from_token(token) == PRIMARY_TEST_UUID
     for fn in (patient_tools.list_patient_tokens, patient_tools.revoke_patient_tokens):
         param = inspect.signature(fn).parameters["patient_slug"]
         assert param.default is inspect.Parameter.empty  # required in the tool schema
@@ -161,7 +161,7 @@ async def test_token_tools_require_patient_slug(db: Database):
 
 @pytest.mark.usefixtures("admin_scope")
 async def test_list_patient_tokens_tool_output_has_no_secret(db: Database):
-    token = await db.create_patient_token(ERIKA_UUID, label="desktop")
+    token = await db.create_patient_token(PRIMARY_TEST_UUID, label="desktop")
     raw = await patient_tools.list_patient_tokens(_ctx(db), await _slug(db))
     out = json.loads(raw)
     assert out["total"] == 1 and out["active"] == 1
@@ -171,10 +171,10 @@ async def test_list_patient_tokens_tool_output_has_no_secret(db: Database):
 
 @pytest.mark.usefixtures("admin_scope")
 async def test_revoke_tool_dry_run_is_default_and_writes_nothing(db: Database):
-    token = await db.create_patient_token(ERIKA_UUID, label="desktop")
+    token = await db.create_patient_token(PRIMARY_TEST_UUID, label="desktop")
     out = json.loads(await patient_tools.revoke_patient_tokens(_ctx(db), await _slug(db)))
     assert out["dry_run"] is True and out["would_revoke"] == 1 and "revoked" not in out
-    assert await db.resolve_patient_from_token(token) == ERIKA_UUID
+    assert await db.resolve_patient_from_token(token) == PRIMARY_TEST_UUID
     async with db.db.execute(
         "SELECT COUNT(*) FROM activity_log WHERE tool_name = 'revoke_patient_tokens'"
     ) as cur:
@@ -184,8 +184,8 @@ async def test_revoke_tool_dry_run_is_default_and_writes_nothing(db: Database):
 @pytest.mark.usefixtures("admin_scope")
 async def test_revoke_tool_real_run_revokes_and_audits_once(db: Database):
     other = await _other_patient(db)
-    keep = await db.create_patient_token(ERIKA_UUID, label="desktop")
-    drop = await db.create_patient_token(ERIKA_UUID, label="script")
+    keep = await db.create_patient_token(PRIMARY_TEST_UUID, label="desktop")
+    drop = await db.create_patient_token(PRIMARY_TEST_UUID, label="script")
     theirs = await db.create_patient_token(other, label="script")
     slug = await _slug(db)
     email_tok = _verified_caller_email.set("admin.824@example.com")
@@ -198,7 +198,7 @@ async def test_revoke_tool_real_run_revokes_and_audits_once(db: Database):
     out = json.loads(raw)
     assert out["revoked"] == 1 and out["label"] == "script" and out["dry_run"] is False
     assert await db.resolve_patient_from_token(drop) is None
-    assert await db.resolve_patient_from_token(keep) == ERIKA_UUID
+    assert await db.resolve_patient_from_token(keep) == PRIMARY_TEST_UUID
     assert await db.resolve_patient_from_token(theirs) == other
 
     async with db.db.execute(
@@ -208,7 +208,7 @@ async def test_revoke_tool_real_run_revokes_and_audits_once(db: Database):
         rows = [dict(r) for r in await cur.fetchall()]
     assert len(rows) == 1
     row = rows[0]
-    assert row["patient_id"] == ERIKA_UUID
+    assert row["patient_id"] == PRIMARY_TEST_UUID
     inp, outp = json.loads(row["input_summary"]), json.loads(row["output_summary"])
     assert inp["label"] == "script" and inp["patient_slug"] == slug and inp["dry_run"] is False
     assert outp["revoked"] == 1 and len(outp["token_ids"]) == 1
@@ -294,7 +294,7 @@ async def test_create_patient_stores_type_and_birth_date_in_context(db: Database
     cached = patient_context.get_context(pid)
     assert cached["patient_type"] == "general" and cached["date_of_birth"] == FAKE_DOB
     # Another patient's context is untouched.
-    assert patient_context.get_context(ERIKA_UUID).get("date_of_birth", "") != FAKE_DOB
+    assert patient_context.get_context(PRIMARY_TEST_UUID).get("date_of_birth", "") != FAKE_DOB
 
 
 @pytest.mark.usefixtures("open_api")

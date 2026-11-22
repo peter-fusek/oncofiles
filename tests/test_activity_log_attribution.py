@@ -21,7 +21,7 @@ from oncofiles.database import Database
 from oncofiles.persistent_oauth import _verified_caller_is_admin
 from oncofiles.tools._helpers import _get_patient_id, _resolve_patient_id
 from oncofiles.tools.activity import _PRE_663_DEFAULT
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 BOB_UUID = "00000000-0000-4000-8000-0000000000b2"
 BOB_SLUG = "bob-test"
@@ -85,7 +85,7 @@ async def test_call_on_the_bound_patient_logs_it(two):
     async def body():
         return _get_patient_id()
 
-    assert (await _call(two, "t_bound", {}, body))["patient_id"] == ERIKA_UUID
+    assert (await _call(two, "t_bound", {}, body))["patient_id"] == PRIMARY_TEST_UUID
 
 
 async def test_call_without_a_patient_logs_none(two):
@@ -105,7 +105,7 @@ async def test_denied_call_is_not_attributed_to_anyone(two):
 
 def test_several_or_sentinel_patients_are_not_attributed():
     # #791: "no patient" is the explicit system marker, never '' (a legacy default)
-    assert attributed_patient({ERIKA_UUID, BOB_UUID}) == SYSTEM_NO_PATIENT
+    assert attributed_patient({PRIMARY_TEST_UUID, BOB_UUID}) == SYSTEM_NO_PATIENT
     assert attributed_patient({NO_PATIENT_ACCESS_SENTINEL}) == SYSTEM_NO_PATIENT
     assert attributed_patient(set()) == SYSTEM_NO_PATIENT
     assert attributed_patient({BOB_UUID, ""}) == BOB_UUID
@@ -129,7 +129,7 @@ async def _seed_prefix_rows(db):
         ("auto", "patient_slug=bob-test, limit=5", _PRE_663_DEFAULT, "[]"),  # pre-fix default
         ("auto", "limit=5", _PRE_663_DEFAULT, "[]"),
         ("auto", "patient_slug=nobody-here", _PRE_663_DEFAULT, "[]"),
-        ("auto", "patient_slug=bob-test", ERIKA_UUID, "[]"),  # forged-looking, real pid
+        ("auto", "patient_slug=bob-test", PRIMARY_TEST_UUID, "[]"),  # forged-looking, real pid
         ("oncoteam", "patient_slug=bob-test", _PRE_663_DEFAULT, "[]"),  # manual row: untouched
     ]
     for agent, summary, pid, tags in rows:
@@ -170,7 +170,7 @@ async def test_backfill_marks_only_pre_fix_rows_and_never_guesses(two):
     for g in got[:pre_fix]:  # a slug in the summary is never trusted
         assert g["patient_id"] == "__system_no_patient__"
         assert g["tags"] == '["attribution_unknown"]'
-    assert got[pre_fix]["patient_id"] == ERIKA_UUID  # not a pre-fix row
+    assert got[pre_fix]["patient_id"] == PRIMARY_TEST_UUID  # not a pre-fix row
     assert got[pre_fix + 1]["agent_id"] == "oncoteam" and got[pre_fix + 1]["tags"] == "[]"
 
 

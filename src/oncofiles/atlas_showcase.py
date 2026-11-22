@@ -285,8 +285,8 @@ _COPY: dict[str, dict] = {
         "how_h": "Ako si spraviť to isté",
         "how": (
             "<ol>"
-            "<li><b>Majte správy v Oncofiles.</b> Pripájanie vlastného Google Drive spúšťame "
-            'v novembri 2026, <a href="/#waitlist">pridajte sa na zoznam</a>.</li>'
+            "<li><b>Majte správy v Oncofiles.</b> Prihláste sa cez Google a vyberte priečinok "
+            'na Drive so správami (<a href="/#waitlist">ako začať</a>).</li>'
             '<li><b>Pripojte Oncofiles ku Claude</b> ako konektor (<a href="/#connect">'
             "postup</a>).</li>"
             "<li><b>Požiadajte vlastnými slovami:</b> „Prečítaj si moje ortopedické správy a "
@@ -405,8 +405,8 @@ _COPY: dict[str, dict] = {
         "how_h": "How to do the same",
         "how": (
             "<ol>"
-            "<li><b>Have your reports in Oncofiles.</b> Connecting your own Google Drive opens "
-            'in November 2026, <a href="/?lang=en#waitlist">join the list</a>.</li>'
+            "<li><b>Have your reports in Oncofiles.</b> Sign in with Google and pick the Drive "
+            'folder that holds them (<a href="/?lang=en#waitlist">how to start</a>).</li>'
             '<li><b>Connect Oncofiles to Claude</b> as a connector (<a href="/?lang=en#connect">'
             "steps</a>).</li>"
             "<li><b>Ask in your own words:</b> “Read my orthopaedic reports and build an "

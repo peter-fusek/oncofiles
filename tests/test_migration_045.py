@@ -3,7 +3,7 @@
 import json
 
 from oncofiles.database import Database
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 _MIGRATION_SQL = """
 UPDATE documents
@@ -43,7 +43,7 @@ async def _insert_raw(db: Database, file_id: str, document_date: str, metadata: 
             f"{file_id}.pdf",
             document_date,
             "other",
-            ERIKA_UUID,
+            PRIMARY_TEST_UUID,
             json.dumps(metadata),
         ),
     )

@@ -27,7 +27,7 @@ from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools import clinical_facts as cf
 from oncofiles.tools import curated as tool
 from oncofiles.tools import treatment as tt
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_clinical_extract import (  # noqa: F401  (fixtures)
     DAY,
     DOB,
@@ -63,7 +63,7 @@ async def file_db(tmp_path, monkeypatch):
     database = Database(path)
     await database.connect()
     await database.migrate()
-    token = _current_patient_id.set(ERIKA_UUID)
+    token = _current_patient_id.set(PRIMARY_TEST_UUID)
     yield database
     _current_patient_id.reset(token)
     await database.close()
@@ -75,7 +75,7 @@ def _real_model(monkeypatch):
     monkeypatch.setattr(config, "LLM_CLINICAL_EXTRACT_DISABLED", False)
     monkeypatch.setattr(llm, "chat", model_chat)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
-    monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: {DOB}})
+    monkeypatch.setattr(tool, "_readme_births", {PRIMARY_TEST_UUID: {DOB}})
 
 
 async def _activity(db) -> list[dict]:
@@ -89,7 +89,7 @@ async def _activity(db) -> list[dict]:
 async def test_a_real_write_makes_a_verified_copy_first_and_logs_it(file_db, monkeypatch):
     db = file_db
     _real_model(monkeypatch)
-    await _doc(db, DOC_A, ERIKA_UUID, PAGES_A)
+    await _doc(db, DOC_A, PRIMARY_TEST_UUID, PAGES_A)
     token = _verified_caller_email.set("caregiver@example.com")
     try:
         out = json.loads(await tool.curated_clinical_extract(_ctx(db), [DOC_A], dry_run=False))
@@ -97,8 +97,8 @@ async def test_a_real_write_makes_a_verified_copy_first_and_logs_it(file_db, mon
         _verified_caller_email.reset(token)
     assert out["pre_store"].endswith("-clinical.db") and out["actor"] == "mcp"
     expected_hash = caller_email_hash("caregiver@example.com")
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    job = tool._reocr_jobs[ERIKA_UUID]
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    job = tool._reocr_jobs[PRIMARY_TEST_UUID]
     assert job["state"] == "done" and job["report"]["pre_store"] == out["pre_store"]
     copy = pre_store.pre_store_dir() / out["pre_store"]
     assert pre_store.NAME_RE.fullmatch(copy.name) and copy.is_file()
@@ -114,7 +114,7 @@ async def test_a_real_write_makes_a_verified_copy_first_and_logs_it(file_db, mon
     assert len(await _active(db, "conditions")) == len(["primary", "metastasis"])
 
     (row,) = await _activity(db)
-    assert row["patient_id"] == ERIKA_UUID and row["agent_id"] == "mcp"
+    assert row["patient_id"] == PRIMARY_TEST_UUID and row["agent_id"] == "mcp"
     assert row["status"] == "ok"
     assert "caregiver@example.com" not in json.dumps(row)  # never the email itself (085)
     given = json.loads(row["input_summary"])
@@ -136,13 +136,13 @@ async def test_no_copy_no_write(seeded, monkeypatch):
     out = json.loads(await tool.curated_clinical_extract(_ctx(db), [DOC_A], dry_run=False))
     assert out["error"].startswith("refused: pre-store copy failed")
     assert "nothing was written" in out["error"]
-    assert ERIKA_UUID not in tool._reocr_jobs  # the reserved slot was released
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs  # the reserved slot was released
     assert await _snapshot(db) == before
     assert await _activity(db) == []
     # a dry run needs no copy
     started = json.loads(await tool.curated_clinical_extract(_ctx(db), [DOC_A]))
     assert started["kind"] == "clinical_preview" and "pre_store" not in started
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
 
 
 async def test_more_than_ten_explicit_ids_is_a_clear_error(seeded, local_model):
@@ -170,7 +170,7 @@ async def test_a_second_call_cannot_start_while_the_first_is_starting(
     assert second["error"].startswith("busy")
     gate.set()
     assert json.loads(await first)["kind"] == "clinical_extract"
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
 
 
 # ── 2. model-read rows are labelled everywhere ──────────────────────────
@@ -180,7 +180,7 @@ async def test_model_read_rows_say_so_and_rule_rows_keep_their_label(seeded):
     db = seeded
     await _store(db, DOC_A, PAGES_A)
     await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=DOC_B, extracted_by="rule:test",
+        patient_id=PRIMARY_TEST_UUID, document_id=DOC_B, extracted_by="rule:test",
         facts=[{"code": "CRP", "label": "CRP", "value_num": 9.5, "flag": "H",
                 "occurred_at": DAY, "verification": "machine"}],
     )  # fmt: skip
@@ -215,7 +215,7 @@ async def test_dashboard_feed_labels_model_read_rows(seeded):
     db = seeded
     await _store(db, DOC_A, PAGES_A)
     await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=DOC_B, extracted_by="rule:test",
+        patient_id=PRIMARY_TEST_UUID, document_id=DOC_B, extracted_by="rule:test",
         facts=[{"code": "CRP", "label": "CRP", "value_num": 9.5, "occurred_at": DAY,
                 "verification": "machine"}],
     )  # fmt: skip
@@ -237,7 +237,7 @@ async def test_dashboard_feed_labels_model_read_rows(seeded):
 
 async def test_identical_rows_from_two_documents_are_one_item(seeded):
     db = seeded
-    await _doc(db, DOC_C, ERIKA_UUID, PAGES_A)
+    await _doc(db, DOC_C, PRIMARY_TEST_UUID, PAGES_A)
     await _store(db, DOC_A, PAGES_A)
     await _store(db, DOC_C, PAGES_A)
     first = next(c for c in await _active(db, "conditions") if c["source_document_id"] == DOC_A)
@@ -309,7 +309,7 @@ async def _rows_of(db, view: str, where: str = "1=1") -> list[tuple]:
 async def _seed_pre_existing(db) -> None:
     org = await db.upsert_organization("TestNemocnica")
     enc = await db.upsert_encounter(
-        patient_id=ERIKA_UUID, natural_key=f"{DAY}|TestNemocnica|-|visit", start_at=DAY,
+        patient_id=PRIMARY_TEST_UUID, natural_key=f"{DAY}|TestNemocnica|-|visit", start_at=DAY,
         kind="visit", title="Návšteva", organization_id=org, department_id=None,
         practitioner_id=None,
     )  # fmt: skip
@@ -318,13 +318,13 @@ async def _seed_pre_existing(db) -> None:
     await db.db.execute(
         "INSERT INTO treatment_events (event_date, event_type, title, patient_id, "
         "source_document_id) VALUES (?, 'chemo', 'Legacy cycle', ?, ?)",
-        ("2027-05-03", ERIKA_UUID, DOC_A),
+        ("2027-05-03", PRIMARY_TEST_UUID, DOC_A),
     )
     await db.db.execute(  # soft-deleted (084): in neither view
         "INSERT INTO treatment_events (event_date, event_type, title, patient_id, "
         "source_document_id, deleted_at, deleted_by) VALUES (?, 'chemo', 'Trashed cycle', ?, ?, "
         "'2027-05-04', 'test')",
-        ("2027-05-04", ERIKA_UUID, DOC_A),
+        ("2027-05-04", PRIMARY_TEST_UUID, DOC_A),
     )
     facts = [
         {"category": "lab", "code": "CRP", "label": "CRP", "value_num": 9.5, "flag": "H"},
@@ -341,7 +341,7 @@ async def _seed_pre_existing(db) -> None:
     for f in facts:
         f.update(occurred_at=DAY, page_number=1, verification="machine")
     await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=DOC_B, facts=facts, extracted_by="rule:test"
+        patient_id=PRIMARY_TEST_UUID, document_id=DOC_B, facts=facts, extracted_by="rule:test"
     )
 
 

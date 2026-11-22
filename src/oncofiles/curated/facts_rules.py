@@ -219,17 +219,25 @@ def _plausible(fact: dict, code_row: dict | None) -> bool:
     return bool(fact["value_text"] and _QUALITATIVE.match(fact["value_text"].strip()))
 
 
-# Plausible canonical-unit ranges (#637 review): a value outside its range is
-# never stored under the code (wrong unit or a percentage read as a count).
-PLAUSIBLE = {
-    "NEUT": (0, 50), "LYMPH": (0, 20), "MONO": (0, 5), "EOS": (0, 5), "BASO": (0, 5),
-    "NEUT_PCT": (0, 100), "LYMPH_PCT": (0, 100), "MONO_PCT": (0, 100),
-    "EOS_PCT": (0, 100), "BASO_PCT": (0, 100),
-    "WBC": (0, 300), "RBC": (0, 10), "HGB": (20, 250), "HCT": (0, 1), "PLT": (0, 3000),
-    "MCV": (40, 150), "MCH": (10, 60), "MCHC": (200, 450),
-    "CREA": (5, 2000), "UREA": (0, 100), "GLU": (0, 60), "NA": (90, 200), "K": (1, 10),
-    "CRP": (0, 1000), "ALB": (5, 70), "TP": (20, 120), "P": (0, 10), "CA": (0, 6),
-}  # fmt: skip
+# Plausible canonical-unit ranges (#637 review) are vocabulary data since
+# #929: ``fact_codes.plausible_low`` / ``plausible_high`` (migration 094, in
+# ``unit_canonical``). A value outside its code's range is never stored under
+# the code (wrong unit or a percentage read as a count).
+
+
+def plausible_range(code_row: dict | None) -> tuple[float, float] | None:
+    """(low, high) plausibility bounds of a vocabulary row, or None when the
+    row has none. A missing side is open (``-inf`` / ``inf``)."""
+    if not code_row:
+        return None
+    lo, hi = code_row.get("plausible_low"), code_row.get("plausible_high")
+    if lo is None and hi is None:
+        return None
+    return (
+        float("-inf") if lo is None else float(lo),
+        float("inf") if hi is None else float(hi),
+    )
+
 
 # Generic reference ranges (canonical units) for values printed WITHOUT a range
 # (#635). Deliberately permissive (the widest common Slovak lab ranges), never
@@ -325,8 +333,8 @@ def _fact(  # noqa: PLR0913
             value_canonical = value
         elif uk in conv:
             value_canonical = round(value * float(conv[uk]), 6)
-    if code_row and numeric and code_row["code"] in PLAUSIBLE:
-        lo_p, hi_p = PLAUSIBLE[code_row["code"]]
+    if code_row and numeric and (bounds := plausible_range(code_row)) is not None:
+        lo_p, hi_p = bounds
         canon = value_canonical if value_canonical is not None else value
         if canon is None or not (lo_p <= canon <= hi_p):
             code_row, value_canonical, unit_canonical = None, None, None  # never under the code

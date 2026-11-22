@@ -10,7 +10,7 @@ import pytest
 
 from oncofiles import server
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID, TEST_PATIENT_UUID
+from tests.helpers import PRIMARY_TEST_UUID, TEST_PATIENT_UUID
 
 COWORK = {"unverified_reasons": ["cowork_ocr"]}
 VALUE = 6.12  # invented; must never appear in an API response
@@ -57,15 +57,15 @@ async def _seed(db):
         "INSERT OR IGNORE INTO patients (patient_id, slug, display_name) VALUES (?, ?, ?)",
         (TEST_PATIENT_UUID, "synth-other", "Synthetic Other"),
     )
-    await _doc(db, 501, ERIKA_UUID)
-    await _doc(db, 502, ERIKA_UUID, category="report")
-    await _doc(db, 503, ERIKA_UUID)  # only handwritten facts: not a candidate
+    await _doc(db, 501, PRIMARY_TEST_UUID)
+    await _doc(db, 502, PRIMARY_TEST_UUID, category="report")
+    await _doc(db, 503, PRIMARY_TEST_UUID)  # only handwritten facts: not a candidate
     await _doc(db, 601, TEST_PATIENT_UUID)  # another patient's document
-    await _fact(db, 501, ERIKA_UUID, "WBC")
-    await _fact(db, 501, ERIKA_UUID, "PLT")
-    await _fact(db, 501, ERIKA_UUID, "HGB", verification="machine", meta={})
-    await _fact(db, 502, ERIKA_UUID, "NA")
-    await _fact(db, 503, ERIKA_UUID, "K", meta={"unverified_reasons": ["handwritten"]})
+    await _fact(db, 501, PRIMARY_TEST_UUID, "WBC")
+    await _fact(db, 501, PRIMARY_TEST_UUID, "PLT")
+    await _fact(db, 501, PRIMARY_TEST_UUID, "HGB", verification="machine", meta={})
+    await _fact(db, 502, PRIMARY_TEST_UUID, "NA")
+    await _fact(db, 503, PRIMARY_TEST_UUID, "K", meta={"unverified_reasons": ["handwritten"]})
     await _fact(db, 601, TEST_PATIENT_UUID, "WBC")
     await db.db.commit()
 
@@ -91,10 +91,10 @@ async def _call(endpoint, req, *, admin: bool, email="someone@example.com"):
 
 
 ENDPOINTS = [
-    ("api_admin_reread", {"patient_slug": ERIKA_UUID, "document_ids": [501]}, None),
-    ("api_admin_reocr", {"patient_slug": ERIKA_UUID, "document_ids": [501]}, None),
-    ("api_admin_reocr_status", None, {"patient_slug": ERIKA_UUID}),
-    ("api_admin_reread_candidates", None, {"patient_slug": ERIKA_UUID}),
+    ("api_admin_reread", {"patient_slug": PRIMARY_TEST_UUID, "document_ids": [501]}, None),
+    ("api_admin_reocr", {"patient_slug": PRIMARY_TEST_UUID, "document_ids": [501]}, None),
+    ("api_admin_reocr_status", None, {"patient_slug": PRIMARY_TEST_UUID}),
+    ("api_admin_reread_candidates", None, {"patient_slug": PRIMARY_TEST_UUID}),
 ]
 
 
@@ -127,7 +127,7 @@ async def test_cross_origin_post_is_refused(db):
     await _seed(db)
     req = _request(
         db,
-        body={"patient_slug": ERIKA_UUID, "document_ids": [501]},
+        body={"patient_slug": PRIMARY_TEST_UUID, "document_ids": [501]},
         headers={"origin": "https://evil.example", "host": "oncofiles.test"},
     )
     with patch.object(tool, "_reread_job", AsyncMock()) as rr:
@@ -142,18 +142,18 @@ async def test_admin_dry_run_starts_a_reread_job(db):
     await _seed(db)
     req = _request(
         db,
-        body={"patient_slug": ERIKA_UUID, "document_ids": [501, 502]},
+        body={"patient_slug": PRIMARY_TEST_UUID, "document_ids": [501, 502]},
         headers={"origin": "https://oncofiles.test", "host": "oncofiles.test"},
     )
     with patch.object(tool, "_reread_job", AsyncMock()) as rr:
         resp, data = await _call(server.api_admin_reread, req, admin=True)
-        await tool._reocr_jobs[ERIKA_UUID]["task"]
+        await tool._reocr_jobs[PRIMARY_TEST_UUID]["task"]
     assert resp.status_code == 202
     assert data["state"] == "running" and data["kind"] == "reread" and data["dry_run"] is True
     assert sorted(d["document_id"] for d in data["documents"]) == [501, 502]
     args, kwargs = rr.call_args
     # the admin API never asks for the #712 fingerprint (MCP dry runs only)
-    assert args[1] == ERIKA_UUID and kwargs == {"dry_run": True, "fingerprint": False}
+    assert args[1] == PRIMARY_TEST_UUID and kwargs == {"dry_run": True, "fingerprint": False}
     assert sorted(d["id"] for d in args[2]) == [501, 502]
 
 
@@ -161,7 +161,7 @@ async def test_reread_dry_run_is_the_default_and_only_explicit_false_stores(db):
     await _seed(db)
     for raw, expected in ((None, True), ("false", True), (0, True), (False, False)):
         tool._reocr_jobs.clear()
-        body = {"patient_slug": ERIKA_UUID, "document_ids": [501]}
+        body = {"patient_slug": PRIMARY_TEST_UUID, "document_ids": [501]}
         if raw is not None:
             body["dry_run"] = raw
         with (
@@ -169,7 +169,7 @@ async def test_reread_dry_run_is_the_default_and_only_explicit_false_stores(db):
             patch("oncofiles.pre_store.make_copy", return_value="copy.db") as copy,
         ):
             resp, _ = await _call(server.api_admin_reread, _request(db, body=body), admin=True)
-            await tool._reocr_jobs[ERIKA_UUID]["task"]
+            await tool._reocr_jobs[PRIMARY_TEST_UUID]["task"]
         assert resp.status_code == 202
         assert rr.call_args.kwargs == {"dry_run": expected, "fingerprint": False}, raw
         assert copy.called is (not expected)  # only a real run makes the safety copy
@@ -190,7 +190,7 @@ async def test_reread_dry_run_is_the_default_and_only_explicit_false_stores(db):
 )
 async def test_reread_validation(db, ids, fragment):
     await _seed(db)
-    body = {"patient_slug": ERIKA_UUID}
+    body = {"patient_slug": PRIMARY_TEST_UUID}
     if ids is not None:
         body["document_ids"] = ids
     with patch.object(tool, "_reread_job", AsyncMock()) as rr:
@@ -207,8 +207,8 @@ async def test_unknown_patient_is_404(db):
 
 async def test_busy_patient_is_409(db):
     await _seed(db)
-    tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": "reocr"}
-    body = {"patient_slug": ERIKA_UUID, "document_ids": [501]}
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": "reocr"}
+    body = {"patient_slug": PRIMARY_TEST_UUID, "document_ids": [501]}
     with patch.object(tool, "_reread_job", AsyncMock()) as rr:
         resp, data = await _call(server.api_admin_reread, _request(db, body=body), admin=True)
     assert resp.status_code == 409 and "busy" in data["error"] and not rr.called
@@ -219,10 +219,10 @@ async def test_busy_patient_is_409(db):
 
 async def test_admin_reocr_dry_run_reuses_the_tool_core(db):
     await _seed(db)
-    body = {"patient_slug": ERIKA_UUID, "document_ids": [501]}
+    body = {"patient_slug": PRIMARY_TEST_UUID, "document_ids": [501]}
     with patch.object(tool, "_reocr_job", AsyncMock()) as ro:
         resp, data = await _call(server.api_admin_reocr, _request(db, body=body), admin=True)
-        await tool._reocr_jobs[ERIKA_UUID]["task"]
+        await tool._reocr_jobs[PRIMARY_TEST_UUID]["task"]
     assert resp.status_code == 202 and data["dry_run"] is True and data["kind"] == "reocr"
     assert [d["document_id"] for d in data["documents"]] == [501]
     assert ro.call_args.kwargs == {"dry_run": True, "passes": 2}
@@ -232,7 +232,7 @@ async def test_admin_reocr_dry_run_reuses_the_tool_core(db):
 @pytest.mark.parametrize("ids", [None, []])
 async def test_a_real_run_requires_an_explicit_selection(db, name, ids):
     await _seed(db)
-    body = {"patient_slug": ERIKA_UUID, "dry_run": False}
+    body = {"patient_slug": PRIMARY_TEST_UUID, "dry_run": False}
     if ids is not None:
         body["document_ids"] = ids
     with (
@@ -249,7 +249,9 @@ async def test_only_a_reocr_dry_run_may_auto_pick(db):
     started = {"state": "running", "kind": "reocr", "dry_run": True, "documents": []}
     with patch.object(tool, "start_reocr", AsyncMock(return_value=started)) as ro:
         resp, _ = await _call(
-            server.api_admin_reocr, _request(db, body={"patient_slug": ERIKA_UUID}), admin=True
+            server.api_admin_reocr,
+            _request(db, body={"patient_slug": PRIMARY_TEST_UUID}),
+            admin=True,
         )
     assert resp.status_code == 202
     assert ro.call_args.kwargs == {
@@ -259,7 +261,7 @@ async def test_only_a_reocr_dry_run_may_auto_pick(db):
 
 async def test_a_real_reocr_with_a_selection_starts(db):
     await _seed(db)
-    body = {"patient_slug": ERIKA_UUID, "document_ids": [501], "dry_run": False}
+    body = {"patient_slug": PRIMARY_TEST_UUID, "document_ids": [501], "dry_run": False}
     started = {"state": "running", "kind": "reocr", "dry_run": False, "documents": []}
     with patch.object(tool, "start_reocr", AsyncMock(return_value=started)) as ro:
         resp, _ = await _call(server.api_admin_reocr, _request(db, body=body), admin=True)
@@ -271,7 +273,7 @@ async def test_a_real_reocr_with_a_selection_starts(db):
 
 async def test_reocr_rejects_foreign_ids(db):
     await _seed(db)
-    body = {"patient_slug": ERIKA_UUID, "document_ids": [601]}
+    body = {"patient_slug": PRIMARY_TEST_UUID, "document_ids": [601]}
     with patch.object(tool, "_reocr_job", AsyncMock()) as ro:
         resp, _ = await _call(server.api_admin_reocr, _request(db, body=body), admin=True)
     assert resp.status_code == 400 and not ro.called
@@ -284,7 +286,7 @@ async def test_candidates_count_cowork_facts_only_for_that_patient(db):
     await _seed(db)
     resp, data = await _call(
         server.api_admin_reread_candidates,
-        _request(db, query={"patient_slug": ERIKA_UUID}),
+        _request(db, query={"patient_slug": PRIMARY_TEST_UUID}),
         admin=True,
     )
     assert resp.status_code == 200
@@ -300,7 +302,7 @@ async def test_candidates_count_cowork_facts_only_for_that_patient(db):
 
 async def test_status_never_contains_fact_values(db):
     await _seed(db)
-    tool._reocr_jobs[ERIKA_UUID] = {
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = {
         "state": "done", "kind": "reocr", "dry_run": False, "task": object(),
         "started_at": "2027-06-01T10:00:00+00:00",
         "documents": [{"document_id": 501, "filename": "20270511_Synth_501.pdf",
@@ -318,7 +320,7 @@ async def test_status_never_contains_fact_values(db):
     }  # fmt: skip
     resp, data = await _call(
         server.api_admin_reocr_status,
-        _request(db, query={"patient_slug": ERIKA_UUID}),
+        _request(db, query={"patient_slug": PRIMARY_TEST_UUID}),
         admin=True,
     )
     assert resp.status_code == 200
@@ -335,16 +337,16 @@ async def test_status_never_contains_fact_values(db):
 
 async def test_status_after_restart_reads_the_persisted_reread_job(db):
     await _seed(db)
-    row = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="reread")
+    row = await db.insert_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=True, trigger="reread")
     report = {"dry_run": True, "documents": [{
         "document_id": 501, "result": "previewed", "confirmed": 1, "date_unconfirmed": 1,
         "unconfirmed": 0, "candidates": 2, "seconds": 40.2, "engine": "qwen-local",
     }]}  # fmt: skip
-    await db.finish_curated_run(row, patient_id=ERIKA_UUID, status="ok", message="",
+    await db.finish_curated_run(row, patient_id=PRIMARY_TEST_UUID, status="ok", message="",
                                 report=report)  # fmt: skip
     resp, data = await _call(
         server.api_admin_reocr_status,
-        _request(db, query={"patient_slug": ERIKA_UUID}),
+        _request(db, query={"patient_slug": PRIMARY_TEST_UUID}),
         admin=True,
     )
     assert data["state"] == "ok" and data["kind"] == "reread" and data["dry_run"] is True
@@ -364,7 +366,7 @@ async def test_mcp_tools_still_answer_through_the_shared_core(db):
     ctx.request_context.lifespan_context = {"db": db}
     with patch.object(tool, "_reread_job", AsyncMock()):
         out = json.loads(await tool.curated_reread_verify(ctx, document_ids=[501, 601]))
-        await tool._reocr_jobs[ERIKA_UUID]["task"]
+        await tool._reocr_jobs[PRIMARY_TEST_UUID]["task"]
     # the MCP tool keeps its contract: foreign ids are ignored, not an error
     assert [d["document_id"] for d in out["documents"]] == [501]
     status = json.loads(await tool.curated_reocr_status(ctx))

@@ -20,7 +20,7 @@ Locked invariants:
 from __future__ import annotations
 
 from oncofiles.models import Patient, PromptCallType, PromptLogEntry
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
 CAROL_UUID = "00000000-0000-4000-8000-000000000003"
@@ -69,13 +69,13 @@ async def _log(db, *, patient_id: str, cost: float | None, call_type=PromptCallT
 async def test_leaderboard_sorts_by_cost_desc(db):
     """The whole point of the leaderboard: top spender first."""
     await _seed_three_patients(db)
-    await _log(db, patient_id=ERIKA_UUID, cost=0.50)
+    await _log(db, patient_id=PRIMARY_TEST_UUID, cost=0.50)
     await _log(db, patient_id=BOB_UUID, cost=2.10)
     await _log(db, patient_id=CAROL_UUID, cost=0.05)
 
     rows = await db.get_per_patient_cost_leaderboard(days=30)
     pids = [r["patient_id"] for r in rows]
-    assert pids == [BOB_UUID, ERIKA_UUID, CAROL_UUID]
+    assert pids == [BOB_UUID, PRIMARY_TEST_UUID, CAROL_UUID]
 
 
 async def test_leaderboard_excludes_patients_with_no_activity(db):
@@ -104,15 +104,15 @@ async def test_leaderboard_recomputes_cost_for_null_billed_rows(db):
     """
     await _seed_three_patients(db)
     # Jana: NULL cost on every row, but real tokens
-    await _log(db, patient_id=ERIKA_UUID, cost=None)
-    await _log(db, patient_id=ERIKA_UUID, cost=None)
+    await _log(db, patient_id=PRIMARY_TEST_UUID, cost=None)
+    await _log(db, patient_id=PRIMARY_TEST_UUID, cost=None)
     # Bob: explicit $0.40 (one row)
     await _log(db, patient_id=BOB_UUID, cost=0.40)
 
     rows = await db.get_per_patient_cost_leaderboard(days=30)
     by_pid = {r["patient_id"]: r for r in rows}
     # Jana: 200 input + 100 output tokens × Haiku pricing → tiny but > 0
-    assert by_pid[ERIKA_UUID]["total_cost_usd"] > 0
+    assert by_pid[PRIMARY_TEST_UUID]["total_cost_usd"] > 0
     assert by_pid[BOB_UUID]["total_cost_usd"] == 0.40
 
 
@@ -166,11 +166,11 @@ async def test_leaderboard_reports_top_call_type_per_patient(db):
 async def test_leaderboard_limit_caps_returned_rows(db):
     """The `limit` arg actually limits."""
     await _seed_three_patients(db)
-    await _log(db, patient_id=ERIKA_UUID, cost=0.50)
+    await _log(db, patient_id=PRIMARY_TEST_UUID, cost=0.50)
     await _log(db, patient_id=BOB_UUID, cost=2.10)
     await _log(db, patient_id=CAROL_UUID, cost=0.05)
 
     rows = await db.get_per_patient_cost_leaderboard(days=30, limit=2)
     assert len(rows) == 2
     # Top 2 by cost
-    assert {r["patient_id"] for r in rows} == {BOB_UUID, ERIKA_UUID}
+    assert {r["patient_id"] for r in rows} == {BOB_UUID, PRIMARY_TEST_UUID}

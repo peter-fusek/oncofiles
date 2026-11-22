@@ -20,9 +20,9 @@ import pytest
 from oncofiles.database import Database
 from oncofiles.persistent_oauth import _verified_caller_is_admin
 from oncofiles.tools.db_query import query_db
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
-ERIKA_SLUG = "jana-test"
+PRIMARY_SLUG = "jana-test"
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
 BOB_SLUG = "bob-test"
 
@@ -36,14 +36,14 @@ def _ctx(db: Database) -> MagicMock:
 @pytest.fixture
 async def two_patients(db: Database) -> Database:
     await db.db.execute(
-        "UPDATE patients SET slug = ? WHERE patient_id = ?", (ERIKA_SLUG, ERIKA_UUID)
+        "UPDATE patients SET slug = ? WHERE patient_id = ?", (PRIMARY_SLUG, PRIMARY_TEST_UUID)
     )
     await db.db.execute(
         "INSERT INTO patients (patient_id, slug, display_name) VALUES (?, ?, ?)",
         (BOB_UUID, BOB_SLUG, "Bob Test"),
     )
     await db.db.commit()
-    await db.insert_document(make_doc(file_id="jana-f1"), patient_id=ERIKA_UUID)
+    await db.insert_document(make_doc(file_id="jana-f1"), patient_id=PRIMARY_TEST_UUID)
     await db.insert_document(make_doc(file_id="bob-f1"), patient_id=BOB_UUID)
     await db.insert_document(make_doc(file_id="bob-f2"), patient_id=BOB_UUID)
     return db
@@ -80,7 +80,8 @@ async def test_admin_without_slug_unfiltered_count_rejected(two_patients, as_adm
 async def test_admin_without_slug_cannot_use_bound_patient_pid(two_patients, as_admin):
     """The middleware-bound patient (Jana) must not become an implicit scope."""
     result = await _run(
-        two_patients, f"SELECT COUNT(*) AS n FROM documents WHERE patient_id = '{ERIKA_UUID}'"
+        two_patients,
+        f"SELECT COUNT(*) AS n FROM documents WHERE patient_id = '{PRIMARY_TEST_UUID}'",
     )
     assert "error" in result, result
     assert "patient_slug" in result["error"]
@@ -123,7 +124,7 @@ async def test_admin_with_slug_reads_that_patient(two_patients, as_admin):
 async def test_admin_with_slug_cannot_filter_on_another_pid(two_patients, as_admin):
     result = await _run(
         two_patients,
-        f"SELECT COUNT(*) AS n FROM documents WHERE patient_id = '{ERIKA_UUID}'",
+        f"SELECT COUNT(*) AS n FROM documents WHERE patient_id = '{PRIMARY_TEST_UUID}'",
         patient_slug=BOB_SLUG,
     )
     assert "error" in result
@@ -139,7 +140,8 @@ async def test_admin_with_slug_unfiltered_still_rejected(two_patients, as_admin)
 
 async def test_caregiver_without_slug_uses_bound_patient(two_patients, as_caregiver):
     result = await _run(
-        two_patients, f"SELECT COUNT(*) AS n FROM documents WHERE patient_id = '{ERIKA_UUID}'"
+        two_patients,
+        f"SELECT COUNT(*) AS n FROM documents WHERE patient_id = '{PRIMARY_TEST_UUID}'",
     )
     assert "error" not in result, result
     assert result["rows"][0]["n"] == 1

@@ -18,6 +18,10 @@ Rules from the folder README that this module enforces:
   #900) keeps that sidecar's text as it is (no re-OCR, no sidecar rewrite) and
   ignores only the vision soft reasons (rotated region, unsure orientation,
   chart page); every hard check still runs on the kept text;
+* a FILED document whose sidecar says ``review_needed: true`` with no
+  recognised reason (#919 item 4) is re-checked on its kept text, a few per
+  run: all hard checks pass → the flag is cleared, else its reason codes are
+  written; front-matter keys only, never a move;
 * a per-run action budget; a run that stops and explains itself is a success.
 
 ``dry_run=True`` (the default) performs every read, extraction and
@@ -31,12 +35,14 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 
 from oncofiles.curated import classify as classify_mod
 from oncofiles.curated import extract as extract_mod
-from oncofiles.curated import llm, llm_input
+from oncofiles.curated import llm, llm_input, review_codes
+from oncofiles.curated import naming as naming_mod
+from oncofiles.curated import normalise as normalise_mod
 from oncofiles.curated import orientation as orientation_mod
 from oncofiles.curated import vocabulary as vocab_mod
 from oncofiles.curated.contract import (
@@ -48,8 +54,19 @@ from oncofiles.curated.contract import (
     nfc,
     parse_contract,
 )
-from oncofiles.curated.drive_ops import CANARY_NAME, Item, WriteVerificationError
-from oncofiles.curated.naming import build_filename, with_collision_suffix
+from oncofiles.curated.drive_ops import (
+    CANARY_NAME,
+    Item,
+    WriteVerificationError,
+    is_text_state_mime,
+)
+from oncofiles.curated.naming import (
+    NATIVE_EXT,
+    build_filename,
+    is_google_native,
+    is_standard,
+    with_collision_suffix,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +90,11 @@ ACTIONS_PER_DOCUMENT = 3  # sidecar + source move + sidecar move
 SOURCE_EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 YYYY_MM_RE = re.compile(r"^\d{4}-\d{2}( \(\d+\))?$")
 DUP_FOLDER_RE = re.compile(r"^(?P<base>.+?)(?: \(\d+\)| \d+)$")
+# #919 item 4: filed documents held in review without a recognised reason are
+# re-checked (one model classification of the kept sidecar text each, no OCR)
+# at most this many per run; the rest wait for a later run.
+STALE_REVIEW_MAX_PER_RUN = 5
+STALE_REVIEW_CLEARED_BY = "auto (#919)"
 
 
 @dataclass
@@ -94,6 +116,11 @@ class RunOptions:
     # Text sources have no sidecar, so a review decision leaves no mark on
     # Drive: (file id, modified) pairs already sent to review by earlier runs.
     reviewed_text: frozenset = frozenset()
+    # A filed document without a sidecar has nowhere on Drive to count failed
+    # attempts either: {file id: {"attempts": n, "code": reason}} of earlier
+    # real runs' backfill model answer failures (``backfill_attempts_from``).
+    # At MAX_TECHNICAL_ATTEMPTS the model is no longer asked; it goes to review.
+    backfill_attempts: dict = field(default_factory=dict)
     # #854: add printed new institutions / doctors to README §3 and file the
     # document (``CURATED_AUTO_VOCAB``, default on); False = #754 review.
     auto_vocab: bool = field(default_factory=vocab_mod.enabled)
@@ -107,6 +134,18 @@ class RunOptions:
     # Returns a reason ("daily_page_budget") when no more model OCR may start
     # now; None = go. Same effect as the cap: the file stays, listed in ``held``.
     ocr_gate: Callable[[], str | None] | None = None
+    # #919: filed documents whose name fails the standard are renamed in place
+    # (pair together, journaled) from their sidecar front matter.
+    # ``CURATED_NORMALISE_FILED`` (default false) gates real renames; a dry run
+    # always shows the plan. At most ``CURATED_NORMALISE_MAX`` renames per run.
+    normalise_filed: bool = field(default_factory=normalise_mod.enabled)
+    normalise_max: int = field(default_factory=normalise_mod.max_per_run)
+    # #919 item 4: Drive ids of FILED documents the read model shows held in
+    # review with no recognised reason (``db.curated_stale_review_ids``). The
+    # run re-reads each sidecar and re-checks at most ``stale_review_max`` of
+    # them (``_recheck_stale_reviews``); empty = the pass does nothing.
+    stale_review_ids: frozenset = frozenset()
+    stale_review_max: int = STALE_REVIEW_MAX_PER_RUN
 
 
 HOLD_DOCUMENT_CAP = "document_cap"
@@ -139,6 +178,9 @@ class RunReport:
     # #855: pages the local model OCR'd in this run (cache hits excluded); set
     # by the caller that counts them (tools/curated.py), 0 here.
     model_pages: int = 0
+    # filed documents this run left without a sidecar because of a bad model
+    # answer (truncated / not JSON); each is in ``documents`` with its code
+    backfill_skipped: int = 0
     # #855: nothing left that a later run could process (no budget leftovers,
     # nothing held except by the document cap). Marks a finished first import.
     inbox_drained: bool = False
@@ -150,12 +192,32 @@ class RunReport:
     # direction questions asked vs pages decided without the model (counts
     # only; a cached extraction asked nothing in this run).
     orientation: dict = field(default_factory=dict)
+    # #931: ingest OCR telemetry, counts only: pages asked once more with
+    # thinking off (#806 retry) and PDFs whose scanner OCR layer was ignored
+    # (not born-digital, vision-read instead). A cached extraction retried
+    # nothing in this run (``tools.curated.cached_extract`` clears it).
+    ocr: dict = field(default_factory=lambda: {"retried_pages": 0, "text_layer_ignored": 0})
+    # #919: filed documents whose name fails the standard (``_normalise_filed``).
+    # Names are fine here (the patient's own run report); server logs get
+    # counts and name shapes only.
+    normalise: dict = field(default_factory=lambda: _normalise_report())
+    # #919 item 4: filed documents whose stale review flag was re-checked
+    # (``_recheck_stale_reviews``). Names only in this report; codes, never
+    # reason sentences; server logs get counts only.
+    stale_review: dict = field(default_factory=lambda: _stale_review_report())
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     def count_orientation(self, extraction) -> None:
+        """Telemetry of one extraction: the #882 orientation tally and the #931
+        OCR counts."""
         orientation_mod.add_tally(self.orientation, getattr(extraction, "orientation", None))
+        retried = getattr(extraction, "retried_pages", None)
+        if isinstance(retried, list):
+            self.ocr["retried_pages"] += len(retried)
+        if getattr(extraction, "text_layer_ignored", False) is True:
+            self.ocr["text_layer_ignored"] += 1
 
 
 class RunAbortError(Exception):
@@ -211,11 +273,47 @@ def _walk_all(drive, folder_id: str, prefix: str = "") -> list[tuple[str, Item]]
     return out
 
 
-def _llm_down(error: str | None) -> bool:
+def _llm_down(failure: str | None) -> bool:
     """True when the local model is unavailable (abort the run); False for a
-    per-document problem such as an answer truncated by the reasoning budget."""
-    msg = error or ""
-    return "local LLM" in msg and "truncated" not in msg
+    per-document problem such as an answer truncated by the reasoning budget.
+
+    ``failure`` is ``llm.LocalLLMError.failure`` (or ``Extraction.llm_failure``;
+    None = the error did not come from the model). Decided by kind only: anything
+    but ``llm.ANSWER``, including a kind this code does not know, means down
+    (fail closed), so a dead LM Studio never costs one failure per document."""
+    return failure is not None and failure != llm.ANSWER
+
+
+def _model_failure_code(exc: llm.LocalLLMError) -> str:
+    """Reason code (never the message) for a per-document model answer failure."""
+    return "model_answer_truncated" if "truncated" in str(exc) else "model_answer_not_json"
+
+
+def _backfill_entry(label: str, file_id: str, code: str | None, attempts: int) -> dict:
+    """Report entry of a filed document whose sidecar backfill got a bad model
+    answer: ``skipped`` (retried next run) until ``MAX_TECHNICAL_ATTEMPTS``, then
+    ``review``. ``file_id`` is the key the caller counts attempts under."""
+    return {
+        "source": label,
+        "result": "review" if attempts >= MAX_TECHNICAL_ATTEMPTS else "skipped",
+        "reasons": [code or "model_answer_not_json"],
+        "attempts": attempts,
+        "stage": "backfill",
+        "file_id": file_id,
+    }
+
+
+def backfill_attempts_from(report: dict | None) -> dict[str, dict]:
+    """``{file_id: {"attempts", "code"}}`` of the backfill model failures in a
+    run report (the caller merges these across runs, keeping the highest)."""
+    out: dict[str, dict] = {}
+    for d in (report or {}).get("documents", []):
+        if d.get("stage") == "backfill" and d.get("file_id") and d.get("attempts"):
+            out[d["file_id"]] = {
+                "attempts": int(d["attempts"]),
+                "code": (d.get("reasons") or [None])[0],
+            }
+    return out
 
 
 def sidecar_sources(name: str) -> list[str]:
@@ -312,7 +410,8 @@ def render_sidecar(
 ) -> str:
     raw = cls.raw if cls else {}
     fields = cls.fields if cls else None
-    iso = f"{fields.date[:4]}-{fields.date[4:6]}-{fields.date[6:]}" if fields else None
+    # a day (2027-03-05) or, for a month-precision date (#919), 2027-03
+    iso = naming_mod.iso_of(fields.date) if fields else None
     # #926: classifier metadata only as far as it is printed in the text
     checked, unverified = classify_mod.verify_metadata(
         raw, extraction.text if extraction else "", iso
@@ -321,6 +420,12 @@ def render_sidecar(
         "source_file": source_name,
         "patient": contract.patient_display,
         "doc_date": iso,
+        # #919: only a month-precision date carries the key (day sidecars unchanged)
+        **(
+            {naming_mod.PRECISION_KEY: naming_mod.PRECISION_MONTH}
+            if fields and naming_mod.date_precision(fields.date) == naming_mod.PRECISION_MONTH
+            else {}
+        ),
         "date_evidence": checked["date_evidence"],
         "institution": fields.institution if fields else raw.get("institution"),
         "doc_type": cls.doc_type if cls else None,
@@ -373,6 +478,11 @@ def _review_reasons(sidecar_text: str) -> list[str]:
     except ValueError:
         return []
     return [str(r) for r in value] if isinstance(value, list) else []
+
+
+# #919: the built name failed the checker; the document waits for a person
+# instead of being filed under a name the dashboard would never call "named".
+NAME_NOT_STANDARD_NOTE = "name_not_standard: the built filename does not follow the README standard"
 
 
 def _is_technical(reason: str) -> bool:
@@ -488,6 +598,118 @@ def _override_extraction(sidecar_text: str) -> extract_mod.Extraction:
         int(pages) if pages and pages.isdigit() else 0,
         _front_value(front, "ocr_engine") or "-",
     )
+
+
+def _normalise_report() -> dict:
+    return {
+        "enabled": False,  # CURATED_NORMALISE_FILED for this run (real renames)
+        "max_per_run": 0,
+        # {folder, from, to, sidecar_from, sidecar_to, date_source, date_precision}:
+        # within this run's cap (a real run renames exactly these); a month-precision
+        # entry also has precision_keys: written | present | not_editable |
+        # front_matter_unreadable (a sidecar), or from_filename (an original
+        # without a sidecar: never written, its YYYYMM00 name is the precision)
+        "planned": [],
+        "renamed": [],  # real runs: the planned entries that were done
+        "deferred": [],  # over the cap / action budget: a later run does them
+        "review": [],  # {source, code: name_not_standard, why}: no rename possible
+        # {source, code}: no_sidecar | target_not_standard | extension_changed
+        # (the last two: planner guards, #946)
+        "skipped": [],
+        "counts": {},
+    }
+
+
+def _stale_review_report() -> dict:
+    return {
+        "max_per_run": 0,
+        # {source, sidecar, outcome: clear | reasons, codes, proposed_doc_type}:
+        # within this run's cap (a real run writes exactly these)
+        "planned": [],
+        "done": [],  # real runs: the planned entries that were written
+        "deferred": [],  # {source}: over the cap / action budget, a later run
+        # {source, code}: not_found | no_sidecar | text_source | no_front_matter
+        # | resolved | override | source_changed | model_answer_* | no_code
+        "skipped": [],
+        "counts": {},
+    }
+
+
+# ── #919 item 4: filed documents held in review without a reason ─────
+
+
+def _front_lines_without(front: str, key: str) -> tuple[list[str], int | None]:
+    """The front-matter lines without ``key`` (and its indented / list
+    continuation lines), and the index where ``key`` stood (None = absent)."""
+    lines = front.split("\n")
+    out: list[str] = []
+    at = None
+    skipping = False
+    for line in lines:
+        if skipping and line.startswith((" ", "\t", "-")):
+            continue
+        skipping = False
+        if re.match(rf"^{re.escape(key)}:", line):
+            at = len(out) if at is None else at
+            skipping = True
+            continue
+        out.append(line)
+    return out, at
+
+
+def _put_front(front: str, key: str, value) -> str:
+    """``key: <json value>`` in place of the key's line(s), or appended."""
+    lines, at = _front_lines_without(front, key)
+    new = f"{key}: {_y(value)}"
+    if at is None:
+        lines.append(new)
+    else:
+        lines.insert(at, new)
+    return "\n".join(lines)
+
+
+def stale_review_skip(sidecar_text: str) -> str | None:
+    """Why this filed sidecar is NOT a stale review to re-check, or None.
+
+    A stale review: ``review_needed: true`` with no recognised reason code
+    (``review_codes.codes_of`` gives nothing or only ``other``), the same rule
+    as the read model (``document_stage.stale_review``), decided again from the
+    sidecar itself because the index may lag the folder. A maintainer's
+    override (#900) — active, or parked by a person with
+    ``review_override_status`` — is never touched.
+    """
+    from oncofiles.curated.indexer import parse_sidecar  # indexer imports this module
+
+    if _split_sidecar(sidecar_text) is None:
+        return "no_front_matter"
+    front, _pages = parse_sidecar(sidecar_text)
+    if review_override(sidecar_text) is not None or front.get(OVERRIDE_STATUS_KEY):
+        return "override"
+    flag = front.get("review_needed")
+    if not (flag is True or (isinstance(flag, str) and flag.strip().lower() == "true")):
+        return "resolved"
+    codes = review_codes.codes_of(front.get("review_reasons"))
+    if any(code != review_codes.OTHER for code in codes):
+        return "resolved"
+    return None
+
+
+def stale_review_cleared(sidecar_text: str, today) -> str:
+    """The sidecar with only ``review_needed: false`` + who / when cleared it;
+    every other byte (the body above all) unchanged."""
+    front, rest = _split_sidecar(sidecar_text)
+    front = _put_front(front, "review_needed", False)
+    front = _put_front(front, "review_cleared_by", STALE_REVIEW_CLEARED_BY)
+    front = _put_front(front, "review_cleared_at", today.isoformat())
+    return f"---\n{front}\n---{rest}"
+
+
+def stale_review_with_codes(sidecar_text: str, codes: list[str]) -> str:
+    """The sidecar with only ``review_reasons`` set to recognised codes (the
+    flag stays true); every other byte unchanged."""
+    front, rest = _split_sidecar(sidecar_text)
+    front = _put_front(front, "review_reasons", list(codes))
+    return f"---\n{front}\n---{rest}"
 
 
 def _vocab_report() -> dict:
@@ -688,6 +910,11 @@ class Runner:
                     "root holds files outside the four state files: " + ", ".join(stray_root)
                 )
             self._process(tree, contract)
+            # #919: after the inbox, before the backfill (whose new sidecars do
+            # not exist yet in a dry run) and before the index that follows the run
+            self._normalise_filed(tree, self._contract)
+            # #919 item 4: stale review flags of filed documents (key-only edits)
+            self._recheck_stale_reviews(tree, self._contract)
             self._backfill_sidecars(tree, contract)
             if not self.opts.dry_run:
                 self._recheck(contract)
@@ -1058,7 +1285,7 @@ class Runner:
         note = ""
         if not ex.ok:
             note = f"extraction failed: {ex.error}"
-            if _llm_down(ex.error):
+            if _llm_down(getattr(ex, "llm_failure", None)):
                 raise RunAbortError(f"local model unavailable — {ex.error}")
         elif not ex.text.strip():
             note = "no text to classify"
@@ -1069,7 +1296,7 @@ class Runner:
             try:
                 raw = self.propose_fn(contract, ex.text)
             except llm.LocalLLMError as exc:
-                if _llm_down(str(exc)):
+                if _llm_down(exc.failure):
                     raise RunAbortError(f"local model unavailable — {exc}") from exc
                 note = f"classification failed: {exc}"  # this document stays for review
         if cls is None and raw is not None:
@@ -1095,6 +1322,16 @@ class Runner:
         if target_folder and target_folder not in tree.folders:
             note = f"target folder {target_folder!r} does not exist (never created)"
             target_folder = None
+        # Final name first, so the sidecar's source_file names the file it ends up
+        # next to — and a name the checker would reject is never filed (#919).
+        new_name = item.name
+        if target_folder is not None:
+            built = self._standard_name(tree, target_folder, item, cls, native)
+            if built is None:
+                note = NAME_NOT_STANDARD_NOTE
+                target_folder = None
+            else:
+                new_name = built
         review = target_folder is None
 
         inbox = contract.inbox
@@ -1112,18 +1349,6 @@ class Runner:
                 return
         stay_folder = folder if folder else inbox  # loose root files go to the inbox for review
         src_folder_id = self._folder_id(tree, folder)
-        # Final name first, so the sidecar's source_file names the file it ends up next to.
-        new_name = item.name
-        if not review:
-            taken = tree.names_in(target_folder)
-            if native:  # a Google Doc's title has no extension (the mount shows .gdoc)
-                taken = taken | {f"{n}.gdoc" for n in taken}
-                ext = "gdoc"
-            else:
-                ext = item.name.rsplit(".", 1)[-1] if "." in item.name else "bin"
-            new_name = with_collision_suffix(build_filename(cls.fields, ext), taken)
-            if native:
-                new_name = new_name.removesuffix(".gdoc")
         extra = None
         if note and _is_technical(note):
             extra = {"technical_attempts": self._technical_attempts.get(item.id, 0) + 1}
@@ -1205,6 +1430,25 @@ class Runner:
             }
         )
 
+    def _standard_name(self, tree, target_folder, item, cls, native) -> str | None:
+        """The filed name for ``item``, or None when the builder cannot produce one
+        that the checker (``naming.is_standard``) accepts (#919)."""
+        taken = tree.names_in(target_folder)
+        if native:  # a Google Doc's title has no extension (the mount shows .gdoc)
+            taken = taken | {f"{n}.{NATIVE_EXT}" for n in taken}
+            ext = NATIVE_EXT
+        else:
+            ext = item.name.rsplit(".", 1)[-1] if "." in item.name else "bin"
+        try:
+            name = with_collision_suffix(build_filename(cls.fields, ext), taken)
+        except ValueError:
+            return None
+        if native:
+            name = name.removesuffix(f".{NATIVE_EXT}")
+        if not is_standard(name, mime=item.mime):  # the same check as document_stage
+            return None
+        return name
+
     def _keep_override_sidecar(self, folder, side_name, sidecar, override, review, cls, note):
         """#900: journal the override; the sidecar text is never re-rendered.
 
@@ -1253,6 +1497,8 @@ class Runner:
                 }
             )
             return
+        # #919: a month-dated note keeps its text untouched (an original is never
+        # written); its YYYYMM00 name carries the precision for the index.
         self._move_single(tree, folder, target_folder, item, new_name)
         self.report.documents.append(
             {
@@ -1288,6 +1534,376 @@ class Runner:
             Item(id=item.id, name=new_name, mime=item.mime, parent=dst_id)
         )
 
+    # -- #919: filed names that fail the standard --
+
+    def _normalise_filed(self, tree: Tree, contract: Contract) -> None:
+        """Rename filed documents whose name fails ``naming.is_standard`` (#919).
+
+        The target name comes from ``normalise.plan_name`` (sidecar front matter,
+        the folder's DocumentType, a validated printed date; the same builder as
+        inbox filing). Same folder, extension kept, source + sidecar renamed as
+        one journaled pair, at most ``normalise_max`` renames per run. A dry run
+        plans and writes nothing; with ``normalise_filed`` off a real run does
+        nothing (the preview still shows the plan). No date printed in the text
+        → no rename, code ``name_not_standard``. A month-precision date (#919)
+        is filed as ``YYYYMM00`` and its front matter (sidecar, or the text note
+        itself) then gets ``doc_date`` + ``doc_date_precision: month``
+        (``_write_month_keys``).
+        """
+        from oncofiles.curated.indexer import parse_sidecar  # indexer imports this module
+
+        rep = self.report.normalise
+        real = not self.opts.dry_run
+        cap = max(0, int(self.opts.normalise_max))
+        rep["enabled"] = bool(self.opts.normalise_filed)
+        rep["max_per_run"] = cap
+        if real and not self.opts.normalise_filed:
+            return
+        for folder, doc_type in contract.folders.items():
+            if doc_type is None or folder not in tree.folders:
+                continue
+            items = list(tree.files.get(folder, []))
+            names = {nfc(i.name) for i in items}  # snapshot: sidecar detection
+            current = set(names)  # live: collisions after earlier renames
+            for item in items:
+                n = nfc(item.name)
+                if n.startswith(".") or _is_sidecar(n, names) or is_standard(n, mime=item.mime):
+                    continue
+                label = f"{folder}/{item.name}"
+                # a text note is its own text (no sidecar); a Google Doc never is
+                text_source = _is_text_source(item) and not is_google_native(item.mime)
+                sidecar = None if text_source else self._existing_sidecar(tree, folder, item)
+                if not text_source and sidecar is None:
+                    rep["skipped"].append({"source": label, "code": normalise_mod.CODE_NO_SIDECAR})
+                    continue
+                cost = 1 if sidecar is None else 2
+                over = (
+                    len(rep["planned"]) >= cap
+                    or self.actions_used + cost > self.opts.max_actions
+                    or bool(self.opts.should_stop and self.opts.should_stop())
+                )
+                if over and real:  # a real run stays short: read nothing more
+                    rep["deferred"].append({"source": label})
+                    continue
+                raw = self._sidecar_text(sidecar or item)
+                front, pages = parse_sidecar(raw)
+                own = {n} | ({nfc(sidecar.name)} if sidecar else set())
+                kw = {
+                    "name": n,
+                    "mime": item.mime,
+                    "doc_type": doc_type,
+                    "front": front,
+                    "contract": contract,
+                    "today": self.now.date(),
+                    "taken": current - own,
+                }
+                body = "\n".join(pages)
+                plan = normalise_mod.plan_name(text=body, **kw)
+                if plan.why == normalise_mod.WHY_NO_PRINTED_DATE and (
+                    item.mime in extract_mod.NATIVE_EXPORT
+                ):
+                    # a pre-runner Google Doc sidecar may hold no text: read the
+                    # document's own text export (a read, never a write)
+                    exported = self._content(item).decode("utf-8", errors="replace")
+                    plan = normalise_mod.plan_name(text=f"{body}\n{exported}", **kw)
+                if plan.code in normalise_mod.GUARD_CODES:  # #946: never planned
+                    rep["skipped"].append({"source": label, "code": plan.code})
+                    continue
+                if plan.target is None:
+                    rep["review"].append({"source": label, "code": plan.code, "why": plan.why})
+                    continue
+                entry = {
+                    "folder": folder,
+                    "from": item.name,
+                    "to": plan.target,
+                    "sidecar_from": sidecar.name if sidecar else None,
+                    "sidecar_to": f"{plan.target}.md" if sidecar else None,
+                    "date_source": plan.date_source,
+                    "date_precision": plan.precision,
+                }
+                # #919: the precision key goes into a SIDECAR only. An original
+                # (a text note that is its own text) is never written (maintainer
+                # rule 14.11.): its YYYYMM00 name alone means month precision.
+                month = plan.precision == naming_mod.PRECISION_MONTH and sidecar is not None
+                if month and self.actions_used + cost + 1 > self.opts.max_actions:
+                    over = True  # the front-matter edit is one more file action
+                if over and real:
+                    rep["deferred"].append({"source": label})
+                    continue
+                if over:  # dry run: show what a later run would do
+                    rep["deferred"].append(entry)
+                    continue
+                rep["planned"].append(entry)
+                logger.info(
+                    "curated %s: filed name %s -> %s%s",
+                    self.run_id,
+                    normalise_mod.name_shape(item.name),
+                    normalise_mod.name_shape(plan.target),
+                    " (pair)" if sidecar else "",
+                )
+                self._rename_in_place(tree, folder, item, sidecar, plan.target)
+                if month:
+                    entry["precision_keys"] = self._write_month_keys(
+                        f"{folder}/{entry['sidecar_to']}",
+                        sidecar,
+                        raw,
+                        naming_mod.iso_of(plan.target[:8]),
+                    )
+                elif plan.precision == naming_mod.PRECISION_MONTH:
+                    entry["precision_keys"] = "from_filename"  # an original: never written
+                current -= own
+                current |= {nfc(plan.target)} | ({nfc(entry["sidecar_to"])} if sidecar else set())
+                if real:
+                    rep["renamed"].append(entry)
+        rep["counts"] = {
+            "planned": len(rep["planned"]),
+            "renamed": len(rep["renamed"]),
+            "deferred": len(rep["deferred"]),
+            "review": len(rep["review"]),
+            "month_precision": sum(
+                1 for p in rep["planned"] if p.get("date_precision") == naming_mod.PRECISION_MONTH
+            ),
+            "no_sidecar": sum(
+                1 for s in rep["skipped"] if s["code"] == normalise_mod.CODE_NO_SIDECAR
+            ),
+            **{
+                code: sum(1 for s in rep["skipped"] if s["code"] == code)
+                for code in normalise_mod.GUARD_CODES
+            },
+        }
+        if any(rep["counts"].values()):
+            logger.info(
+                "curated %s: filed-name normalisation %s",
+                self.run_id,
+                " ".join(f"{k}={v}" for k, v in rep["counts"].items()),
+            )
+
+    def _write_month_keys(self, path: str, sidecar: Item, text: str, year_month: str) -> str:
+        """#919: ``doc_date: "YYYY-MM"`` + ``doc_date_precision: month`` in the
+        front matter of the SIDECAR ``target`` (never an original: maintainer
+        rule 14.11., locked by tests/test_919_month_precision.py), journaled
+        first; only those keys change, the body stays byte for byte
+        (``normalise.with_month_keys``), ``drive_ops`` reads it back.
+
+        Returns ``written``, ``present`` (nothing to change), ``not_editable``
+        (not a markdown sidecar with a text mime) or
+        ``front_matter_unreadable`` (an unclosed block: never guessed, the
+        ``YYYYMM00`` name alone carries the precision for the index).
+        """
+        name = path.rsplit("/", 1)[-1].lower()
+        if not name.endswith(".md") or not is_text_state_mime(sidecar.mime):
+            return "not_editable"  # not a markdown sidecar: never edited
+        new = normalise_mod.with_month_keys(text, year_month)
+        if new is None:
+            m = re.match(r"\A---\n(.*?)\n---(?=\n|\Z)", text, re.S)
+            return "present" if m or not text.startswith("---") else "front_matter_unreadable"
+        self._act(
+            {
+                "action": "set_date_precision",
+                "path": path,
+                "keys": ["doc_date", naming_mod.PRECISION_KEY],
+                "precision": naming_mod.PRECISION_MONTH,
+                # undo: restore the previous front matter (keys only; body untouched)
+                "undo": {
+                    "op": "front_matter_keys",
+                    "path": path,
+                    "added_block": not text.startswith("---"),
+                },
+            },
+            lambda: self.drive.update_text(sidecar.id, new),
+        )
+        return "written"
+
+    def _rename_in_place(self, tree, folder, item, sidecar, new_name) -> None:
+        """Rename source (+ sidecar) inside ``folder``: journaled first, confirmed
+        only after both renames are verified (``drive_ops`` reads back, no retry)."""
+        fid = tree.folders[folder].id
+        allowed = tree.folder_ids()
+        old = [f"{folder}/{item.name}"]
+        new = [f"{folder}/{new_name}"]
+        new_side = f"{new_name}.md"
+        ids = [item.id]
+        if sidecar is not None:
+            old.append(f"{folder}/{sidecar.name}")
+            new.append(f"{folder}/{new_side}")
+            ids.append(sidecar.id)
+        seq = self._act(
+            {
+                "action": "normalise_rename",
+                "from": old,
+                "to": new,
+                # Infra review of #946: the journal line (which never carries
+                # ``undo``) is enough to undo on its own: file ids in the same
+                # order as from/to, and the one parent both stay in.
+                "ids": ids,
+                "parent": fid,
+                "sha256": item.sha256,
+                "undo": {
+                    "op": "rename_pair" if sidecar else "rename",
+                    "from": new,
+                    "to": old,
+                    "ids": ids,
+                    "parent": fid,
+                },
+            },
+            lambda: self.drive.move_rename(item.id, new_name, fid, fid, allowed_parents=allowed),
+            pair_half=sidecar is not None,
+            confirm=sidecar is None,
+        )
+        if sidecar is not None:
+            self.actions_used += 1  # the sidecar rename is a second file action
+            if not self.opts.dry_run:
+                try:
+                    self.drive.move_rename(sidecar.id, new_side, fid, fid, allowed_parents=allowed)
+                except WriteVerificationError as exc:
+                    msg = f"sidecar rename not verified — pair split, undo logged: {exc}"
+                    raise RunAbortError(msg) from exc
+                except Exception as exc:
+                    msg = f"sidecar rename failed ({type(exc).__name__}) — pair split"
+                    raise RunAbortError(msg) from exc
+                self._confirm(seq)
+        renamed = {item.id: new_name, **({sidecar.id: new_side} if sidecar else {})}
+        tree.files[folder] = [
+            replace(i, name=renamed[i.id]) if i.id in renamed else i for i in tree.files[folder]
+        ]
+
+    # -- #919 item 4: stale review flags of filed documents --
+
+    def _recheck_stale_reviews(self, tree: Tree, contract: Contract) -> None:
+        """Re-check filed documents held in review with no recognised reason.
+
+        Candidates are ``opts.stale_review_ids`` (from the read model); each
+        sidecar is read again and must still be a stale review
+        (``stale_review_skip``). The kept sidecar text is classified by the
+        model and checked by ``classify.validate`` (no OCR, no file read except
+        a Google Doc's text export when its sidecar holds no text; no age rule,
+        as for the backfill: a filed document is no new scan). Every hard check
+        passes → ``review_needed: false`` + ``review_cleared_by`` /
+        ``review_cleared_at``; a check fails → its codes go into
+        ``review_reasons``. Only those front-matter keys change, the body stays
+        byte for byte, through ``drive.update_text`` (read back, no retry),
+        journaled first as ``update_sidecar_review_keys``. Never a move, a
+        rename, a README write or a write to the source. At most
+        ``stale_review_max`` documents per run; a dry run plans the same.
+        """
+        rep = self.report.stale_review
+        cap = max(0, int(self.opts.stale_review_max))
+        rep["max_per_run"] = cap
+        wanted = set(self.opts.stale_review_ids or ())
+        if not wanted:
+            return
+        found: set[str] = set()
+        for folder, doc_type in contract.folders.items():
+            if doc_type is None or folder not in tree.folders:
+                continue
+            items = sorted(tree.files.get(folder, []), key=lambda i: nfc(i.name))
+            names = {nfc(i.name) for i in items}
+            for item in items:
+                if item.id not in wanted or _is_sidecar(nfc(item.name), names):
+                    continue
+                found.add(item.id)
+                label = f"{folder}/{item.name}"
+                if _is_text_source(item) and not is_google_native(item.mime):
+                    # a text note is its own text: its front matter is the
+                    # original document, never edited by this pass
+                    rep["skipped"].append({"source": label, "code": "text_source"})
+                    continue
+                sidecar = self._existing_sidecar(tree, folder, item)
+                if sidecar is None:
+                    rep["skipped"].append({"source": label, "code": "no_sidecar"})
+                    continue
+                if (
+                    len(rep["planned"]) >= cap
+                    or self.actions_used + 1 > self.opts.max_actions
+                    or bool(self.opts.should_stop and self.opts.should_stop())
+                ):
+                    rep["deferred"].append({"source": label})
+                    continue
+                self._recheck_one(contract, folder, doc_type, item, sidecar, label)
+        # moved out of the filed folders or gone since the index: nothing to do
+        rep["skipped"].extend({"file_id": i, "code": "not_found"} for i in sorted(wanted - found))
+        rep["counts"] = {
+            "planned": len(rep["planned"]),
+            "done": len(rep["done"]),
+            "cleared": sum(1 for x in rep["planned"] if x["outcome"] == "clear"),
+            "reasons": sum(1 for x in rep["planned"] if x["outcome"] == "reasons"),
+            "deferred": len(rep["deferred"]),
+            "skipped": len(rep["skipped"]),
+        }
+        logger.info(
+            "curated %s: stale review re-check %s",
+            self.run_id,
+            " ".join(f"{k}={v}" for k, v in rep["counts"].items()),
+        )
+
+    def _recheck_one(self, contract, folder, doc_type, item, sidecar, label) -> None:
+        rep = self.report.stale_review
+        raw_text = self._sidecar_text(sidecar)
+        if skip := stale_review_skip(raw_text):
+            rep["skipped"].append({"source": label, "code": skip})
+            return
+        sha = re.search(r'^sha256:\s*"?([0-9a-f]{64})', raw_text[:4000], re.M)
+        if sha and item.sha256 and sha.group(1) != item.sha256:
+            # the source changed since its sidecar was written: the kept text
+            # is no reading of it any more (a re-OCR decides, not this pass)
+            rep["skipped"].append({"source": label, "code": "source_changed"})
+            return
+        text = _override_extraction(raw_text).text
+        if not text.strip() and item.mime in extract_mod.NATIVE_EXPORT:
+            # a pre-runner Google Doc sidecar may hold no text: read the
+            # document's own text export (a read, never a write; no OCR)
+            text = self._content(item).decode("utf-8", errors="replace").strip()
+        note = ""
+        cls = None
+        if not text.strip():
+            note = "no text to classify"
+        elif reason := llm_input.inbox_exclusion(item.name, item.mime, text):
+            note = f"{reason}: not sent to the model"  # raw genotype data (#815)
+        else:
+            try:
+                raw = self.propose_fn(contract, text)
+            except llm.LocalLLMError as exc:
+                if _llm_down(exc.failure):
+                    raise RunAbortError(f"local model unavailable — {exc}") from exc
+                # a bad answer is no property of the document: nothing is
+                # written, a later run asks again
+                rep["skipped"].append({"source": label, "code": _model_failure_code(exc)})
+                return
+            cls = classify_mod.validate(
+                contract, raw, text, today=self.now.date(), auto_vocab=self._auto_vocab
+            )
+        reasons = (cls.reasons if cls else []) + ([note] if note else [])
+        entry = {"source": label, "sidecar": f"{folder}/{sidecar.name}"}
+        if cls is not None and cls.doc_type != doc_type:
+            entry["proposed_doc_type"] = cls.doc_type  # report only: never a move
+        if not reasons:
+            entry.update(outcome="clear", codes=[])
+            new_text = stale_review_cleared(raw_text, self.now.date())
+            undo = {"op": "front_keys", "path": entry["sidecar"], "review_needed": True}
+        else:
+            codes = [c for c in review_codes.codes_of(reasons) if c != review_codes.OTHER]
+            if not codes:  # every reason unrecognised: writing would change nothing
+                rep["skipped"].append({"source": label, "code": "no_code"})
+                return
+            entry.update(outcome="reasons", codes=codes)
+            new_text = stale_review_with_codes(raw_text, codes)
+            previous = _front_value(_split_sidecar(raw_text)[0], "review_reasons")
+            undo = {"op": "front_keys", "path": entry["sidecar"], "review_reasons": previous}
+        rep["planned"].append(entry)
+        self._act(
+            {
+                "action": "update_sidecar_review_keys",
+                "path": entry["sidecar"],
+                "kind": "stale_review",  # #919 item 4
+                "outcome": entry["outcome"],
+                "codes": entry["codes"],
+                "undo": undo,
+            },
+            lambda: self.drive.update_text(sidecar.id, new_text),
+        )
+        if not self.opts.dry_run:
+            rep["done"].append(entry)
+
     def _backfill_sidecars(self, tree: Tree, contract: Contract) -> None:
         """Already-filed documents are read-only; only a missing sidecar may be added.
 
@@ -1301,10 +1917,21 @@ class Runner:
             items = list(tree.files.get(folder, []))
             names = {nfc(i.name) for i in items}
             for item in items:
+                current = self._contract  # README §3 may have grown in this run (#854)
                 n = nfc(item.name)
                 if _is_sidecar(n, names) or n + ".md" in names or n + ".gdoc.md" in names:
                     continue
                 if n.rsplit(".", 1)[-1].lower() in extract_mod.TEXT_EXTS:
+                    continue
+                label = f"{folder}/{item.name}"
+                prior = self.opts.backfill_attempts.get(item.id) or {}
+                attempts = int(prior.get("attempts") or 0)
+                if attempts >= MAX_TECHNICAL_ATTEMPTS:
+                    # gave up after repeated bad answers: no model call, a person looks
+                    self.report.awaiting_review.append(label)
+                    self.report.documents.append(
+                        _backfill_entry(label, item.id, prior.get("code"), attempts)
+                    )
                     continue
                 if (
                     added >= self.opts.max_missing_sidecars
@@ -1321,7 +1948,7 @@ class Runner:
                     item.name, content, item.mime, min_text_chars=self.opts.min_text_chars
                 )
                 self.report.count_orientation(ex)
-                if not ex.ok and _llm_down(ex.error):
+                if not ex.ok and _llm_down(getattr(ex, "llm_failure", None)):
                     raise RunAbortError(f"local model unavailable — {ex.error}")
                 cls = None
                 if (
@@ -1331,16 +1958,37 @@ class Runner:
                     and not llm_input.inbox_exclusion(item.name, item.mime, ex.text)
                 ):
                     try:
-                        raw = self.propose_fn(contract, ex.text)
+                        raw = self.propose_fn(current, ex.text)
                     except llm.LocalLLMError as exc:
-                        raise RunAbortError(f"local model unavailable — {exc}") from exc
-                    cls = classify_mod.validate(contract, raw, ex.text, today=self.now.date())
+                        if _llm_down(exc.failure):
+                            raise RunAbortError(f"local model unavailable — {exc}") from exc
+                        # One bad answer (truncated, not JSON) is this document's
+                        # problem: no sidecar is written, the file stays as it is
+                        # and a later run tries it again (MAX_TECHNICAL_ATTEMPTS in
+                        # all, counted across real runs by the caller through
+                        # ``backfill_attempts``); the backfill goes on.
+                        code = _model_failure_code(exc)
+                        attempts += 1
+                        self.report.backfill_skipped += 1
+                        logger.info(
+                            "curated %s: backfill skipped a document (%s, attempt %d)",
+                            self.run_id,
+                            code,
+                            attempts,
+                        )
+                        if attempts >= MAX_TECHNICAL_ATTEMPTS:
+                            self.report.awaiting_review.append(label)
+                        self.report.documents.append(
+                            _backfill_entry(label, item.id, code, attempts)
+                        )
+                        continue
+                    cls = classify_mod.validate(current, raw, ex.text, today=self.now.date())
                 extra = {}
                 if cls and cls.doc_type != doc_type:
                     extra["proposed_reclassification"] = cls.doc_type
                 text = render_sidecar(
                     source_name=item.name,
-                    contract=contract,
+                    contract=current,
                     item=item,
                     extraction=ex,
                     cls=cls,
@@ -1559,6 +2207,27 @@ class Runner:
                     f"- `{d['source']}` — **review_needed** ({'; '.join(d.get('reasons', []))}), "
                     f"stays in `{d.get('stays_in', '?')}`"
                 )
+        for x in r.normalise["renamed"]:
+            lines.append(
+                f"- filed name normalised (#919): `{x['folder']}/{x['from']}` → `{x['to']}`"
+                + (" (with its sidecar)" if x.get("sidecar_to") else "")
+            )
+        if r.normalise["review"]:  # a count: the same documents recur every run
+            lines.append(
+                f"- filed names not standard, no rename possible: {len(r.normalise['review'])}"
+            )
+        if r.normalise["deferred"]:
+            n = len(r.normalise["deferred"])
+            lines.append(f"- filed names left for a later run (cap): {n}")
+        for x in r.stale_review["done"]:
+            if x["outcome"] == "clear":
+                lines.append(f"- stale review flag cleared, checks passed (#919): `{x['source']}`")
+            else:
+                codes = ", ".join(x["codes"])
+                lines.append(f"- review reason written (#919): `{x['source']}` ({codes})")
+        if r.stale_review["deferred"]:
+            n = len(r.stale_review["deferred"])
+            lines.append(f"- stale review flags left for a later run (cap): {n}")
         for v in r.vocabulary["added"]:
             lines.append(
                 f"- README vocabulary added: {v['label']} `{v['token']}` (for `{v['document']}`)"
@@ -1589,6 +2258,19 @@ class Runner:
 # ── probe (continuous mode) ──────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class InboxEntry:
+    """One document waiting in the inbox (or loose in the root), for the
+    dashboard's in-memory inbox rows (#921 follow-up). Never logged."""
+
+    id: str  # Drive file id
+    name: str
+    size: int
+    mime: str
+    modified: str  # Drive modifiedTime (RFC 3339)
+    review: bool  # its sidecar holds it for a human (``_awaiting_review``)
+
+
 @dataclass
 class Probe:
     """What a run would find to do right now — read-only, no model calls."""
@@ -1597,6 +2279,9 @@ class Probe:
     pending: dict[str, str] = field(default_factory=dict)  # file id -> label
     newest_age_s: float | None = None  # youngest file in the inbox / root
     canary: bool = False  # a leftover canary: a run must recover or report it
+    # Every inbox/root document with its review flag; None when this probe read
+    # no sidecars (an idle repeat of an unchanged tree, or no README).
+    inbox: list[InboxEntry] | None = None
 
 
 def _is_text_source(item: Item) -> bool:
@@ -1617,6 +2302,7 @@ def probe(
     idle_signature: str | None = None,
     now=None,
     reviewed_text: frozenset = frozenset(),
+    backfill_given_up: frozenset = frozenset(),
 ) -> Probe:
     """Cheap check for new work: one tree listing; sidecars are read only when
     the tree changed since the last probe that found nothing (``idle_signature``).
@@ -1645,12 +2331,19 @@ def probe(
         return result
     r = Runner(drive, root_id, RunOptions(dry_run=True, now=now))
     r._set_auto_vocab(readme_text, contract)
+    inbox: list[InboxEntry] = []
     for folder, item in r._candidates(tree, contract):
         if _is_text_source(item) and (item.id, item.modified) in reviewed_text:
-            continue
-        side = r._existing_sidecar(tree, folder, item)
-        if side is None or not r._awaiting_review(side, item):
-            result.pending[item.id] = f"{folder or '(root)'}/{item.name}"
+            review = True
+        else:
+            side = r._existing_sidecar(tree, folder, item)
+            review = side is not None and r._awaiting_review(side, item)
+            if not review:
+                result.pending[item.id] = f"{folder or '(root)'}/{item.name}"
+        inbox.append(
+            InboxEntry(item.id, item.name, int(item.size or 0), item.mime, item.modified, review)
+        )
+    result.inbox = inbox
     for folder, doc_type in contract.folders.items():
         if doc_type is None or folder not in tree.folders:
             continue
@@ -1661,6 +2354,8 @@ def probe(
             if _is_sidecar(n, names) or n + ".md" in names or n + ".gdoc.md" in names:
                 continue
             if n.rsplit(".", 1)[-1].lower() in extract_mod.TEXT_EXTS:
+                continue
+            if item.id in backfill_given_up:  # bad model answers 3x: waits for a person
                 continue
             result.pending[item.id] = f"{folder}/{item.name} (missing sidecar)"
     return result

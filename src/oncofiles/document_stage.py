@@ -30,6 +30,7 @@ never a filename or a document value.
 from __future__ import annotations
 
 import json
+import re
 
 # Steps a person can follow, in the order they happen.
 STEPS = ("extracted", "named", "filed")
@@ -42,7 +43,10 @@ WAITING_STAGE = {
     "named": "waiting_name",
     "filed": "waiting_filing",
 }
-STAGES = (STAGE_READY, STAGE_ATTENTION, *WAITING_STAGE.values())
+# A file still waiting in a curated inbox: no ``documents`` row yet, shown from
+# the probe's in-memory snapshot (``dashboard_inbox``, #921 follow-up).
+STAGE_IN_INBOX = "in_inbox"
+STAGES = (STAGE_READY, STAGE_ATTENTION, STAGE_IN_INBOX, *WAITING_STAGE.values())
 
 # ``attention_reason`` codes, in the order they are checked (first match wins).
 REASON_REVIEW_NEEDED = "review_needed"
@@ -96,10 +100,13 @@ def is_named(
     file_id: str | None,
     structured_metadata=None,
     patient_id: str,
+    mime_type: str | None = None,
 ) -> bool:
     """Does the filename follow the standard that applies to this row?
 
-    Curated row: the README contract (``curated.naming.is_standard``).
+    Curated row: the README contract (``curated.naming.is_standard``); the
+    row's ``mime_type`` lets a Google-native file (a Google Doc has no
+    extension through the Drive API) count as named (#919).
     Any other row: the legacy underscore standard for this patient.
     """
     if not filename:
@@ -107,10 +114,39 @@ def is_named(
     if is_curated_row(file_id, structured_metadata):
         from oncofiles.curated.naming import is_standard
 
-        return is_standard(filename)
+        return is_standard(filename, mime=mime_type)
     from oncofiles.filename_parser import is_standard_format
 
     return is_standard_format(filename, patient_id=patient_id)
+
+
+_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+def document_month(
+    file_id: str | None, structured_metadata=None, filename: str | None = None
+) -> str | None:
+    """``YYYY-MM`` of a curated row dated by month only (#919), else None.
+
+    The curated indexer stores such a document with ``document_date`` NULL
+    (never a day printed nowhere) and ``doc_date_precision: "month"`` plus
+    ``doc_month`` in its metadata (from the sidecar key, else the filename).
+    Without that metadata a standard name with a ``YYYYMM00`` date token
+    still MEANS month precision (an original is never written, so its name
+    is the record). A row that has this month HAS a date: it is never
+    ``missing_date``, and the dashboard shows ``03/2027``.
+    """
+    if not is_curated_row(file_id, structured_metadata):
+        return None
+    meta = _metadata(structured_metadata)
+    month = meta.get("doc_month")
+    if meta.get("doc_date_precision") == "month" and isinstance(month, str):
+        return month if _MONTH_RE.match(month) else None
+    if filename:
+        from oncofiles.curated.naming import month_of_standard_name
+
+        return month_of_standard_name(filename)
+    return None
 
 
 def is_extracted(*, has_text: bool, extractable: bool) -> bool:
@@ -123,19 +159,63 @@ def is_extracted(*, has_text: bool, extractable: bool) -> bool:
     return bool(has_text) or not extractable
 
 
+def _curated(meta: dict) -> dict:
+    curated = meta.get("curated")
+    return curated if isinstance(curated, dict) else {}
+
+
 def _review_needed(meta: dict) -> bool:
     """The sidecar front-matter key ``review_needed`` as the indexer stores it.
 
     ``tools.curated.index_patient`` spreads the kept front-matter keys into
     the top level of ``structured_metadata``; the ``curated`` object is read
     too, in case a later index version moves them there.
+
+    An active #900 maintainer override (``curated.review_override`` is true:
+    a non-empty ``review_override`` without ``review_override_status:
+    hard_checks_failed``, decided by ``curated.runner.review_override``) means
+    no review (#919): the runner files such a document only after every hard
+    check passed, and it leaves ``review_needed: true`` in the sidecar on
+    purpose (the sidecar moves byte for byte). Only indexed (= filed) rows
+    reach this function; the inbox is never indexed.
     """
-    curated = meta.get("curated")
-    for holder in (meta, curated if isinstance(curated, dict) else {}):
+    curated = _curated(meta)
+    if curated.get("review_override") is True:
+        return False
+    for holder in (meta, curated):
         value = holder.get("review_needed")
         if value is True or (isinstance(value, str) and value.strip().lower() == "true"):
             return True
     return False
+
+
+def review_reason_codes(structured_metadata) -> list[str]:
+    """The review reason codes the curated indexer kept (#919); [] when none.
+
+    Codes only (``curated.review_codes``), re-validated on read, so a stored
+    value can never carry text to the dashboard.
+    """
+    from oncofiles.curated.review_codes import safe_codes
+
+    return safe_codes(_curated(_metadata(structured_metadata)).get("review_reasons"))
+
+
+def stale_review(file_id: str | None, structured_metadata) -> bool:
+    """A curated row held in review with no recognised reason (#919 item 4).
+
+    True when the row would show ``review_needed`` (the same check as
+    ``attention_reason``, so an active #900 override is never stale) and its
+    kept codes are empty or only ``other``: the dashboard can name no action.
+    The curated runner re-checks such documents (``runner._recheck_stale_reviews``).
+    """
+    if not is_curated_row(file_id, structured_metadata):
+        return False
+    meta = _metadata(structured_metadata)
+    if not _review_needed(meta):
+        return False
+    from oncofiles.curated.review_codes import OTHER
+
+    return all(code == OTHER for code in review_reason_codes(meta))
 
 
 def attention_reason(
@@ -196,16 +276,20 @@ def describe(
     sync_state: str | None = None,
     outside_folder: bool = False,
     has_date: bool = True,
+    mime_type: str | None = None,
 ) -> dict:
     """Everything a status row needs for one document, from its raw columns.
 
-    ``{"curated", "steps", "ready", "stage", "attention_reason"}``.
+    ``{"curated", "steps", "ready", "stage", "attention_reason", "review_reasons"}``;
+    ``review_reasons`` (codes) is filled only when the reason is ``review_needed``.
     """
     from oncofiles.curated.indexer import is_curated_file_id
 
     # Parse the metadata once, and only for a row that can be curated at all
     # (a legacy row's AI metadata is large and never read here).
     structured_metadata = _metadata(structured_metadata) if is_curated_file_id(file_id) else None
+    # #919: a month-precision curated document is dated (document_date NULL by design)
+    has_date = has_date or document_month(file_id, structured_metadata, filename) is not None
     reason = attention_reason(
         file_id=file_id,
         structured_metadata=structured_metadata,
@@ -221,6 +305,7 @@ def describe(
             file_id=file_id,
             structured_metadata=structured_metadata,
             patient_id=patient_id,
+            mime_type=mime_type,
         ),
         filed=gdrive_id is not None,
         attention=reason,
@@ -229,4 +314,7 @@ def describe(
         "curated": is_curated_row(file_id, structured_metadata),
         **stage,
         "attention_reason": reason,
+        "review_reasons": (
+            review_reason_codes(structured_metadata) if reason == REASON_REVIEW_NEEDED else []
+        ),
     }

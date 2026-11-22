@@ -161,6 +161,17 @@ def test_example_bundle_goes_to_review():
     assert cls.review_needed and any("several documents" in r for r in cls.reasons)
 
 
+def test_example_month_precision_is_filed_as_month(tmp_path):
+    """#919 + #926: a printed month and year without a day → YYYYMM00, the
+    sidecar says doc_date_precision: month and keeps the verified evidence."""
+    cls = _validate(4, auto_vocab=True)
+    assert not cls.review_needed, cls.reasons
+    assert cls.fields.date == "20270400"
+    text, answer, _ = classify.EXAMPLES[4]
+    fields, codes = classify.verify_metadata(answer, text, "2027-04")
+    assert codes == [] and fields["date_evidence"] == "Obdobie: 04/2027"
+
+
 @pytest.mark.parametrize("n", range(len(classify.EXAMPLES)))
 def test_every_example_answer_verifies_its_metadata(n):
     text, answer, _ = classify.EXAMPLES[n]

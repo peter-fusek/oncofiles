@@ -18,9 +18,9 @@ from oncofiles.database import Database
 from oncofiles.models import AgentState
 from oncofiles.persistent_oauth import _verified_caller_is_admin
 from oncofiles.tools.gdrive import export_manifest
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
-ERIKA_SLUG = "jana-test"
+PRIMARY_SLUG = "jana-test"
 BOB_UUID = "00000000-0000-4000-8000-000000000002"
 BOB_SLUG = "bob-test"
 
@@ -34,7 +34,7 @@ def _ctx(db: Database) -> MagicMock:
 @pytest.fixture
 async def two_patients(db: Database) -> Database:
     await db.db.execute(
-        "UPDATE patients SET slug = ? WHERE patient_id = ?", (ERIKA_SLUG, ERIKA_UUID)
+        "UPDATE patients SET slug = ? WHERE patient_id = ?", (PRIMARY_SLUG, PRIMARY_TEST_UUID)
     )
     await db.db.execute(
         "INSERT INTO patients (patient_id, slug, display_name) VALUES (?, ?, ?)",
@@ -47,7 +47,7 @@ async def two_patients(db: Database) -> Database:
             filename="20270311_A_SynthClinic_Labs_PatientAOnly.pdf",
             document_date=date(2027, 3, 11),
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     for i in (1, 2):
         await db.insert_document(
@@ -58,7 +58,9 @@ async def two_patients(db: Database) -> Database:
             ),
             patient_id=BOB_UUID,
         )
-    await db.set_agent_state(AgentState(key="a_key", value='{"who": "A"}', patient_id=ERIKA_UUID))
+    await db.set_agent_state(
+        AgentState(key="a_key", value='{"who": "A"}', patient_id=PRIMARY_TEST_UUID)
+    )
     await db.set_agent_state(AgentState(key="b_key", value='{"who": "B"}', patient_id=BOB_UUID))
     return db
 
@@ -115,7 +117,7 @@ async def test_admin_without_slug_is_refused(two_patients, as_admin):
 
 
 async def test_admin_never_gets_whole_db(two_patients, as_admin):
-    for slug in (ERIKA_SLUG, BOB_SLUG):
+    for slug in (PRIMARY_SLUG, BOB_SLUG):
         out = json.loads(await export_manifest(_ctx(two_patients), patient_slug=slug))
         ids = _file_ids(out)
         assert not ({"a-only-1"} <= ids and {"b-only-1"} <= ids), slug

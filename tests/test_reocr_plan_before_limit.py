@@ -20,7 +20,7 @@ import pytest
 from oncofiles.curated import reocr
 from oncofiles.curated.reocr import ReocrReport
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_curated_runner import LOGS, FakeDrive
 
 PROCESSABLE = [9301, 9302, 9303]
@@ -51,14 +51,14 @@ async def _insert(db, doc_id: int, facts: int) -> None:
         "INSERT INTO documents (id, file_id, filename, original_filename, category, "
         "mime_type, size_bytes, patient_id, gdrive_id, structured_metadata) "
         "VALUES (?, ?, ?, ?, 'labs', ?, 1, ?, ?, ?)",
-        (doc_id, f"gdrive:g{doc_id}", _name(doc_id), _name(doc_id), mime, ERIKA_UUID,
+        (doc_id, f"gdrive:g{doc_id}", _name(doc_id), _name(doc_id), mime, PRIMARY_TEST_UUID,
          f"g{doc_id}", json.dumps(meta)),
     )  # fmt: skip
     for _ in range(facts):
         await db.db.execute(
             "INSERT INTO clinical_records (patient_id, record_type, source_document_id, "
             "param, verification, source) VALUES (?, 'lab', ?, 'X', 'unverified', 't')",
-            (ERIKA_UUID, doc_id),
+            (PRIMARY_TEST_UUID, doc_id),
         )
 
 
@@ -117,9 +117,9 @@ async def _start(db, drive: CountingDrive | None, sent: list, **kw) -> dict:
         patch("oncofiles.curated.drive_ops.DriveOps", lambda _own: drive),
         patch("oncofiles.curated.reocr.run_reocr", fake_run),
     ):
-        out = await tool.start_reocr(db, ERIKA_UUID, dry_run=True, **kw)
-        if ERIKA_UUID in tool._reocr_jobs:
-            await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+        out = await tool.start_reocr(db, PRIMARY_TEST_UUID, dry_run=True, **kw)
+        if PRIMARY_TEST_UUID in tool._reocr_jobs:
+            await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     return out
 
 
@@ -158,7 +158,7 @@ async def test_explicit_ids_keep_reporting_skips(seeded, jobs):
     assert sorted(d["document_id"] for d in plan["documents"]) == [PROCESSABLE[0], HANDLED[0]]
     assert plan["excluded_before_limit"] == {"raw_genotype_excluded": 1}
     assert "logs_listing" not in plan
-    report = tool._reocr_jobs[ERIKA_UUID]["report"]["documents"]
+    report = tool._reocr_jobs[PRIMARY_TEST_UUID]["report"]["documents"]
     assert [(d["document_id"], d["reason"]) for d in report] == [
         (GENOTYPE, "raw_genotype_excluded")
     ]
@@ -193,7 +193,7 @@ async def test_nothing_left_reports_the_counts(seeded, jobs):
     plan = await _start(seeded, CountingDrive(_drive()), [], limit=10)
     assert plan["status"] == "nothing to do"
     assert plan["excluded_before_limit"] == {"handled_before": 8, "raw_genotype_excluded": 1}
-    assert ERIKA_UUID not in tool._reocr_jobs
+    assert PRIMARY_TEST_UUID not in tool._reocr_jobs
 
 
 def test_one_predicate_for_plan_and_runner():

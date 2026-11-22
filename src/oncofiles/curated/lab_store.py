@@ -24,7 +24,13 @@ Rules (infra conditions on #714):
   Days are compared as spans (#726, #826): a value under a printed range
   stands for every day of its window, on EITHER side, so a rule range blocks
   an LLM day or range that overlaps it and an LLM range is blocked by a rule
-  day or range inside it; only disjoint spans are two results. An undated
+  day or range inside it; only disjoint spans are two results. An OPEN
+  range (``date_range_open``, #933) is a range whose start is unknown: the
+  rule parser dates it at the printed end (``occurred_at``) and could not
+  read, or could not trust, the start (``facts_rules._date_at_range_end``).
+  Its window is therefore every day up to and including that end (and every
+  day when no end is known either), so it blocks an LLM day or range that
+  reaches into it, the same overlap rule as a closed range. An undated
   LLM fact is blocked by any fact of its code in the document.
   Uncoded facts (label not in ``fact_codes``) are not stored
   (``skipped_uncoded``): there is no code to dedupe or chart them by; nor are
@@ -104,11 +110,25 @@ def _meta(value) -> dict:
     return out if isinstance(out, dict) else {}
 
 
+# Bounds of an open range window (ISO days compare as strings).
+_NO_START = "0000-01-01"
+_NO_END = "9999-12-31"
+
+
 def _span(occurred_at, meta: dict) -> tuple[str, str] | None:
     """(first, last) day a fact stands for: the printed range when it was
-    dated under one (#726), else its own day; None when undated."""
+    dated under one (#726), else its own day; None when undated.
+
+    An open range (``date_range_open``, #933: start unknown, ``occurred_at`` =
+    the printed end) stands for every day up to that end; with no end either,
+    for every day."""
     day = (occurred_at or "")[:10]
-    return range_window(meta) or ((day, day) if day else None)
+    if window := range_window(meta):
+        return window
+    if meta.get("date_range_open"):
+        end = str(meta.get("date_range_end") or day or "")[:10]
+        return (_NO_START, end or _NO_END)
+    return (day, day) if day else None
 
 
 def _blocked(fact: dict, others: list[dict]) -> bool:

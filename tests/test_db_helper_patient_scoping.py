@@ -26,7 +26,7 @@ from oncofiles.models import (
     DocumentCategory,
     TreatmentEvent,
 )
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 SECOND_UUID = "00000000-0000-4000-8000-000000000002"
 SECOND_SLUG = "bob-test"
@@ -50,7 +50,7 @@ async def _seed_two_patients(db: Database) -> dict:
             size_bytes=1024,
             category=DocumentCategory.LABS,
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     bob_doc = await db.insert_document(
         Document(
@@ -66,7 +66,7 @@ async def _seed_two_patients(db: Database) -> dict:
 
     jana_event = await db.insert_treatment_event(
         TreatmentEvent(event_date=date(2031, 6, 14), event_type="chemo", title="Jana C1"),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     bob_event = await db.insert_treatment_event(
         TreatmentEvent(event_date=date(2031, 6, 15), event_type="chemo", title="Bob C1"),
@@ -81,7 +81,7 @@ async def _seed_two_patients(db: Database) -> dict:
             content="Jana private content",
             participant="claude.ai",
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     bob_conv = await db.insert_conversation_entry(
         ConversationEntry(
@@ -96,7 +96,7 @@ async def _seed_two_patients(db: Database) -> dict:
 
     jana_rec = await db.insert_clinical_record(
         ClinicalRecord(
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             record_type="lab",
             occurred_at="2031-06-17T08:30:00Z",
             param="CEA",
@@ -133,11 +133,11 @@ async def _seed_two_patients(db: Database) -> dict:
 async def test_get_document_blocks_foreign_patient(db: Database):
     ids = await _seed_two_patients(db)
     # Jana scope sees Jana's doc.
-    assert (await db.get_document(ids["jana_doc"], patient_id=ERIKA_UUID)) is not None
+    assert (await db.get_document(ids["jana_doc"], patient_id=PRIMARY_TEST_UUID)) is not None
     # Same id, foreign scope: SQL filter drops the row.
     assert (await db.get_document(ids["jana_doc"], patient_id=SECOND_UUID)) is None
     # Bob's id under Jana's scope is also dropped.
-    assert (await db.get_document(ids["bob_doc"], patient_id=ERIKA_UUID)) is None
+    assert (await db.get_document(ids["bob_doc"], patient_id=PRIMARY_TEST_UUID)) is None
 
 
 # ── #516: get_documents_by_ids ────────────────────────────────────────────
@@ -147,7 +147,7 @@ async def test_get_documents_by_ids_filters_to_owner(db: Database):
     ids = await _seed_two_patients(db)
     mixed = {ids["jana_doc"], ids["bob_doc"]}
 
-    jana_view = await db.get_documents_by_ids(mixed, patient_id=ERIKA_UUID)
+    jana_view = await db.get_documents_by_ids(mixed, patient_id=PRIMARY_TEST_UUID)
     assert set(jana_view.keys()) == {ids["jana_doc"]}
 
     bob_view = await db.get_documents_by_ids(mixed, patient_id=SECOND_UUID)
@@ -176,13 +176,13 @@ async def test_get_cross_references_filters_both_ends(db: Database):
             size_bytes=512,
             category=DocumentCategory.IMAGING,
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     await db.insert_cross_reference(
         ids["jana_doc"], jana_doc2.id, relationship="same_visit", confidence=0.8
     )
 
-    jana_refs = await db.get_cross_references(ids["jana_doc"], patient_id=ERIKA_UUID)
+    jana_refs = await db.get_cross_references(ids["jana_doc"], patient_id=PRIMARY_TEST_UUID)
     # Only the Jana→Jana edge survives the join filter.
     assert len(jana_refs) == 1
     assert jana_refs[0]["target_document_id"] == jana_doc2.id
@@ -198,7 +198,7 @@ async def test_get_cross_references_filters_both_ends(db: Database):
 
 async def test_get_treatment_event_blocks_foreign_patient(db: Database):
     ids = await _seed_two_patients(db)
-    assert (await db.get_treatment_event(ids["bob_event"], patient_id=ERIKA_UUID)) is None
+    assert (await db.get_treatment_event(ids["bob_event"], patient_id=PRIMARY_TEST_UUID)) is None
     assert (await db.get_treatment_event(ids["bob_event"], patient_id=SECOND_UUID)) is not None
 
 
@@ -206,7 +206,7 @@ async def test_delete_treatment_event_blocks_foreign_patient(db: Database):
     ids = await _seed_two_patients(db)
     # Jana scope cannot delete Bob's row — DELETE WHERE id=? AND patient_id=?
     # matches zero rows → returns False.
-    deleted = await db.delete_treatment_event(ids["bob_event"], patient_id=ERIKA_UUID)
+    deleted = await db.delete_treatment_event(ids["bob_event"], patient_id=PRIMARY_TEST_UUID)
     assert deleted is False
     # Bob's row is still there.
     assert (await db.get_treatment_event(ids["bob_event"], patient_id=SECOND_UUID)) is not None
@@ -219,7 +219,7 @@ async def test_update_treatment_event_blocks_foreign_patient(db: Database):
     ids = await _seed_two_patients(db)
     # Jana scope cannot mutate Bob's row.
     updated = await db.update_treatment_event(
-        ids["bob_event"], patient_id=ERIKA_UUID, title="HACKED"
+        ids["bob_event"], patient_id=PRIMARY_TEST_UUID, title="HACKED"
     )
     assert updated is None
     # Bob's title is unchanged.
@@ -232,13 +232,13 @@ async def test_update_treatment_event_blocks_foreign_patient(db: Database):
 
 async def test_get_conversation_entry_blocks_foreign_patient(db: Database):
     ids = await _seed_two_patients(db)
-    assert (await db.get_conversation_entry(ids["bob_conv"], patient_id=ERIKA_UUID)) is None
+    assert (await db.get_conversation_entry(ids["bob_conv"], patient_id=PRIMARY_TEST_UUID)) is None
     assert (await db.get_conversation_entry(ids["bob_conv"], patient_id=SECOND_UUID)) is not None
 
 
 async def test_delete_conversation_entry_blocks_foreign_patient(db: Database):
     ids = await _seed_two_patients(db)
-    deleted = await db.delete_conversation_entry(ids["bob_conv"], patient_id=ERIKA_UUID)
+    deleted = await db.delete_conversation_entry(ids["bob_conv"], patient_id=PRIMARY_TEST_UUID)
     assert deleted is False
     assert (await db.get_conversation_entry(ids["bob_conv"], patient_id=SECOND_UUID)) is not None
     deleted = await db.delete_conversation_entry(ids["bob_conv"], patient_id=SECOND_UUID)
@@ -250,7 +250,7 @@ async def test_delete_conversation_entry_blocks_foreign_patient(db: Database):
 
 async def test_get_clinical_record_blocks_foreign_patient(db: Database):
     ids = await _seed_two_patients(db)
-    assert (await db.get_clinical_record(ids["bob_rec"], patient_id=ERIKA_UUID)) is None
+    assert (await db.get_clinical_record(ids["bob_rec"], patient_id=PRIMARY_TEST_UUID)) is None
     assert (await db.get_clinical_record(ids["bob_rec"], patient_id=SECOND_UUID)) is not None
 
 
@@ -259,7 +259,7 @@ async def test_update_clinical_record_blocks_foreign_patient(db: Database):
     after = await db.update_clinical_record(
         ids["bob_rec"],
         {"value_num": 99.9},
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
         source="test-foreign",
         changed_by="jana",
     )
@@ -274,7 +274,7 @@ async def test_delete_and_restore_clinical_record_block_foreign_patient(
     ids = await _seed_two_patients(db)
 
     did = await db.delete_clinical_record(
-        ids["bob_rec"], patient_id=ERIKA_UUID, source="test-foreign"
+        ids["bob_rec"], patient_id=PRIMARY_TEST_UUID, source="test-foreign"
     )
     assert did is False
     bob = await db.get_clinical_record(ids["bob_rec"], patient_id=SECOND_UUID)
@@ -287,7 +287,7 @@ async def test_delete_and_restore_clinical_record_block_foreign_patient(
     )
     # Foreign restore is also denied.
     restored = await db.restore_clinical_record(
-        ids["bob_rec"], patient_id=ERIKA_UUID, source="test-foreign"
+        ids["bob_rec"], patient_id=PRIMARY_TEST_UUID, source="test-foreign"
     )
     assert restored is None
     # Bob restores his own.
@@ -335,7 +335,7 @@ async def _seed_mail_and_calendar(db: Database) -> dict:
 
     await _seed_two_patients(db)
     ids: dict = {}
-    for who, pid, day in (("jana", ERIKA_UUID, 5), ("bob", SECOND_UUID, 6)):
+    for who, pid, day in (("jana", PRIMARY_TEST_UUID, 5), ("bob", SECOND_UUID, 6)):
         email = await db.upsert_email_entry(
             EmailEntry(
                 patient_id=pid,
@@ -366,7 +366,7 @@ async def test_get_email_entry_filters_by_patient_id(db: Database):
 
     own = await db.get_email_entry(ids["bob_email"], patient_id=SECOND_UUID)
     assert own is not None and own.patient_id == SECOND_UUID
-    assert await db.get_email_entry(ids["bob_email"], patient_id=ERIKA_UUID) is None
+    assert await db.get_email_entry(ids["bob_email"], patient_id=PRIMARY_TEST_UUID) is None
     assert await db.get_email_entry(ids["jana_email"], patient_id=SECOND_UUID) is None
 
 
@@ -375,7 +375,7 @@ async def test_get_calendar_entry_filters_by_patient_id(db: Database):
 
     own = await db.get_calendar_entry(ids["bob_event"], patient_id=SECOND_UUID)
     assert own is not None and own.patient_id == SECOND_UUID
-    assert await db.get_calendar_entry(ids["bob_event"], patient_id=ERIKA_UUID) is None
+    assert await db.get_calendar_entry(ids["bob_event"], patient_id=PRIMARY_TEST_UUID) is None
     assert await db.get_calendar_entry(ids["jana_event"], patient_id=SECOND_UUID) is None
 
 
@@ -388,7 +388,7 @@ async def test_upsert_returns_the_row_of_its_own_patient(db: Database):
 
     await _seed_two_patients(db)
     saved = {}
-    for pid in (ERIKA_UUID, SECOND_UUID):
+    for pid in (PRIMARY_TEST_UUID, SECOND_UUID):
         email = await db.upsert_email_entry(
             EmailEntry(
                 patient_id=pid,
@@ -409,8 +409,8 @@ async def test_upsert_returns_the_row_of_its_own_patient(db: Database):
         )
         assert email.patient_id == pid and event.patient_id == pid
         saved[pid] = (email.id, event.id)
-    assert saved[ERIKA_UUID][0] != saved[SECOND_UUID][0]
-    assert saved[ERIKA_UUID][1] != saved[SECOND_UUID][1]
+    assert saved[PRIMARY_TEST_UUID][0] != saved[SECOND_UUID][0]
+    assert saved[PRIMARY_TEST_UUID][1] != saved[SECOND_UUID][1]
 
 
 async def test_mail_and_calendar_helpers_require_patient_id_keyword(db: Database):
@@ -420,11 +420,11 @@ async def test_mail_and_calendar_helpers_require_patient_id_keyword(db: Database
     with pytest.raises(TypeError):
         await db.get_email_entry(ids["jana_email"])  # type: ignore[call-arg]
     with pytest.raises(TypeError):
-        await db.get_email_entry(ids["jana_email"], ERIKA_UUID)  # type: ignore[misc]
+        await db.get_email_entry(ids["jana_email"], PRIMARY_TEST_UUID)  # type: ignore[misc]
     with pytest.raises(TypeError):
         await db.get_calendar_entry(ids["jana_event"])  # type: ignore[call-arg]
     with pytest.raises(TypeError):
-        await db.get_calendar_entry(ids["jana_event"], ERIKA_UUID)  # type: ignore[misc]
+        await db.get_calendar_entry(ids["jana_event"], PRIMARY_TEST_UUID)  # type: ignore[misc]
 
 
 def test_no_unscoped_id_statement_on_mail_or_calendar_tables():

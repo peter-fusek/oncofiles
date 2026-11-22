@@ -105,7 +105,7 @@ async def _consent_rows(db: Database) -> list[dict]:
 
 
 def test_consent_version_is_the_approved_one():
-    assert CONSENT_VERSION == "2026-11-17"
+    assert CONSENT_VERSION == "2026-11-21b"
 
 
 @pytest.mark.usefixtures("api")
@@ -290,7 +290,7 @@ async def test_privacy_matches_the_pipeline():
     assert "whole Google" in html and "only the folder you choose" in html
     assert "hasn't verified this app" in html and "at most 100" in html
     # consent record, access log, rights
-    assert "Consent version 2026-11-17" in html
+    assert "Consent version 2026-11-21b" in html
     assert "keyed hash of your\ne-mail address" in html or "keyed hash of your e-mail" in html
     assert "GDPR Art. 9(2)(a)" in html
     assert "within 30 days" in html
@@ -320,9 +320,43 @@ async def test_privacy_numbers_match_the_code():
 
 async def test_terms_record_consent_and_manual_rights():
     html = await _text(server.terms_of_service)
-    assert "Consent version 2026-11-17" in html
+    assert "Consent version 2026-11-21b" in html
     assert "legal guardian" in html
     assert "within 30 days" in html
     assert "cannot connect their own Google Drive yet" in html  # ONBOARDING_MODE=closed
     assert "by invitation first" in html
     assert "500 documents per patient" in html
+
+
+async def test_terms_and_privacy_state_consent_by_sending():
+    """#950 (maintainer decision 2026-11-21): sending documents to a patient
+    document address means agreeing to the terms; SK and EN, version bumped."""
+    terms = await _text(server.terms_of_service)
+    privacy = await _text(server.privacy_policy)
+    assert 'id="by-email"' in terms and 'id="by-email"' in privacy
+    assert (
+        "Whoever sends documents to a patient's document e-mail address agrees to these terms"
+        in (terms.replace("\n", " "))
+    )
+    assert "Kto pošle dokumenty na e-mailovú adresu pacienta pre dokumenty, súhlasí s týmito" in (
+        terms.replace("\n", " ")
+    )
+    flat = privacy.replace("\n", " ")
+    assert "Whoever sends documents to that address agrees to the" in flat
+    assert "Kto pošle dokumenty na túto adresu, súhlasí s" in flat
+    assert "The text of the e-mail is not stored and is not read by any AI model" in flat
+    assert "Text e-mailu sa neukladá a nečíta ho žiadny AI model" in flat
+    assert "Consent version 2026-11-21b" in terms and "Consent version 2026-11-21b" in privacy
+
+
+async def test_privacy_states_backup_restore_after_an_unclaimed_trial():
+    """#950 phase 2 (maintainer decision): one sentence, SK and EN, version bumped."""
+    flat = (await _text(server.privacy_policy)).replace("\n", " ")
+    assert (
+        "Documents removed after an unclaimed trial can still be restored from encrypted "
+        "backups for up to 6 months." in flat
+    )
+    assert (
+        "Dokumenty odstránené po nevyužitej skúšobnej dobe sa ešte najviac 6 mesiacov dajú "
+        "obnoviť zo šifrovaných záloh." in flat
+    )

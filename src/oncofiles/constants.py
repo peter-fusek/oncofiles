@@ -18,7 +18,7 @@ it without the server → persistent_oauth → server circular.
 
 History:
   - #476 (2026-04-23): dashboard caller path (`_get_dashboard_patient_id`).
-  - Michal Gašparík report (2026-04-24): MCP OAuth caller path
+  - External user report (2026-04-24): MCP OAuth caller path
     (`_resolve_oauth_patient`) — same leak class, same fix.
 """
 

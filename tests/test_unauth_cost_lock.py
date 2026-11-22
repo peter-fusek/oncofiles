@@ -58,7 +58,6 @@ FORBIDDEN_MODULES = {
     "oncofiles.split",
     "oncofiles.consolidate",
     "oncofiles.curated_folder",  # Drive listing
-    "oncofiles.backfill_ocr",
     "oncofiles.backfill_splits",
     "oncofiles.curated.llm",  # local LLM
     "oncofiles.curated.llm_extract",
@@ -157,6 +156,7 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("/demo", "demo_dashboard"): "static HTML",
     ("/demo/assistant", "demo_assistant"): "static HTML",
     ("/api/demo-data", "api_demo_data"): "constant JSON, no DB",
+    ("/api/public-config", "api_public_config"): "landing flags from the runtime env, no DB",
     ("/dashboard/config", "dashboard_config"): "returns the public OAuth client id",
     ("/dashboard/verify", "dashboard_verify"): "auth flow: Google tokeninfo, rate limited",
     ("/api/logout", "api_logout"): "auth flow: revokes only a token that verifies (#591)",
@@ -171,6 +171,18 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
         "oauth_callback",
     ): "auth flow: v2 state (10 min, single use) bound to principal + patient + service; "
     "overwrite guard and audit row (tests/test_oauth_link_guard.py)",
+    (
+        "/inbound/brevo",
+        "inbound_brevo_webhook",
+    ): "Brevo inbound webhook (#950): 404 while INBOUND_BREVO_TOKEN is unset; body capped "
+    "before reading; the custom X-Inbound-Token header compared in constant time before the "
+    "JSON is parsed (Brevo does not sign; tests/test_950_inbound_address.py)",
+    (
+        "/inbound/email",
+        "inbound_email_webhook",
+    ): "inbound mail webhook (#950): 404 while INBOUND_MIME_HMAC_SECRET is unset; body capped "
+    "before reading; HMAC-SHA256 signature checked in constant time before any parsing "
+    "(tests/test_950_inbound_address.py)",
 }
 
 # MCP OAuth (FastMCP / mcp SDK) routes: open by the OAuth / DCR specs.
@@ -192,6 +204,151 @@ REACHABLE_ALLOWLIST: dict[tuple[str, str], str] = {
         "/api/newsletter/subscribe",
         "to_thread",
     ): "mailer.send_mail runs the blocking SMTP exchange in a worker (#834), same two mails",
+    (
+        "/inbound/email",
+        "_create_patient_clients",
+    ): "#950, only after the signature and sender checks: "
+    "the patient's Drive client, only for a known active token and a caregiver From "
+    "with a passing auth verdict",
+    (
+        "/inbound/email",
+        "GDriveClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients for that one patient (see above)",
+    (
+        "/inbound/email",
+        "GmailClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients alongside the Drive client, unused here",
+    (
+        "/inbound/email",
+        "CalendarClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients alongside the Drive client, unused here",
+    (
+        "/inbound/email",
+        "dedicated_copy",
+    ): "#950, only after the signature and sender checks: "
+    "curated.inbox_upload.upload_to_inbox, the #935 inbox write",
+    (
+        "/inbound/email",
+        "module:oncofiles.curated.drive_ops",
+    ): "#950, only after the signature and sender checks: "
+    "the #935 create-only, read-back inbox upload",
+    (
+        "/inbound/email",
+        "module:oncofiles.curated_folder",
+    ): "#950, only after the signature and sender checks: "
+    "the #935 curated-root check before the first file",
+    (
+        "/inbound/email",
+        "module:oncofiles.files_api",
+    ): "#950, only after the signature and sender checks: "
+    "sanitize_filename / name_len and the #777 Drive-only store",
+    (
+        "/inbound/email",
+        "module:oncofiles.gdrive_folders",
+    ): "#950, only after the signature and sender checks: "
+    "the #777 Drive-only upload of a non-curated patient",
+    (
+        "/inbound/email",
+        "module:oncofiles.sync",
+    ): "#950, only after the signature and sender checks: "
+    "reached through the #777 Drive-only upload helpers",
+    (
+        "/inbound/email",
+        "to_thread",
+    ): "#950, only after the signature and sender checks: "
+    "Drive calls of the #935 upload and the SMTP receipt run in workers",
+    (
+        "/inbound/brevo",
+        "create_task",
+    ): "#950 infra review: after the token check, capped read and strict JSON parse the "
+    "route writes the mail to the durable queue (#952, inbound_queue.enqueue) before its 202 "
+    "and kicks ONE queue drain task (inbound_queue.kick), serialized under PROCESS_LOCK, "
+    "never raising, logging counts only",
+    (
+        "/inbound/brevo",
+        "_create_patient_clients",
+    ): "#950, only after the signature and sender checks: "
+    "the patient's Drive client, only for a known active token and a caregiver From "
+    "with a passing auth verdict",
+    (
+        "/inbound/brevo",
+        "GDriveClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients for that one patient (see above)",
+    (
+        "/inbound/brevo",
+        "GmailClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients alongside the Drive client, unused here",
+    (
+        "/inbound/brevo",
+        "CalendarClient",
+    ): "#950, only after the signature and sender checks: "
+    "built by _create_patient_clients alongside the Drive client, unused here",
+    (
+        "/inbound/brevo",
+        "dedicated_copy",
+    ): "#950, only after the signature and sender checks: "
+    "curated.inbox_upload.upload_to_inbox, the #935 inbox write",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.curated.drive_ops",
+    ): "#950, only after the signature and sender checks: "
+    "the #935 create-only, read-back inbox upload",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.curated_folder",
+    ): "#950, only after the signature and sender checks: "
+    "the #935 curated-root check before the first file",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.files_api",
+    ): "#950, only after the signature and sender checks: "
+    "sanitize_filename / name_len and the #777 Drive-only store",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.gdrive_folders",
+    ): "#950, only after the signature and sender checks: "
+    "the #777 Drive-only upload of a non-curated patient",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.sync",
+    ): "#950, only after the signature and sender checks: "
+    "reached through the #777 Drive-only upload helpers",
+    (
+        "/inbound/brevo",
+        "to_thread",
+    ): "#950, only after the signature and sender checks: "
+    "Drive calls of the #935 upload and the SMTP receipt run in workers",
+    # #950 phase 2 (welcome@ trial, holding store): the immediate local reading.
+    (
+        "/inbound/brevo",
+        "module:oncofiles.curated.extract",
+    ): "#950 phase 2, only in the queue worker after the token, auth, Gmail, caps, gate "
+    "and sender checks: holding_extract reads a held document with the LOCAL model, one "
+    "document at a time, inside local_only(), under the #855 daily page budget",
+    (
+        "/inbound/brevo",
+        "module:oncofiles.curated.llm",
+    ): "#950 phase 2: llm.configured() and the local model behind curated.extract (above)",
+    (
+        "/inbound/email",
+        "module:oncofiles.curated.extract",
+    ): "#950 phase 2, only after the signature and the welcome@ admission checks: the same "
+    "local reading of a held document (raw-MIME route, disabled in production)",
+    (
+        "/inbound/email",
+        "module:oncofiles.curated.llm",
+    ): "#950 phase 2: llm.configured() and the local model behind curated.extract (above)",
+    (
+        "/inbound/email",
+        "create_task",
+    ): "#950 phase 2, only after the signature and the welcome@ admission checks: ONE "
+    "holding-extraction drain task (holding_extract.kick) or one waitlist reply "
+    "(at most one per sender per 24 h), never raising, logging counts only",
 }
 
 # Public handlers that touch the DB: (path, handler) -> what they do.
@@ -199,7 +356,8 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
     (
         "/readiness",
         "readiness",
-    ): "db.ping(2 s); 24 h prompt_log SUM for the operator only",
+    ): "db.ping(2 s); 24 h prompt_log SUM and the #952 inbound_jobs backlog COUNT "
+    "(open/failed rows via the state index) for the operator only",
     ("/api/stats", "api_stats"): "1 + N(patients) COUNTs, at most once per 5 min (cache)",
     ("/api/logout", "api_logout"): "one revocation row, only for a token that verifies",
     (
@@ -208,6 +366,18 @@ DB_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "one dashboard_access_log sign_in row (#868), only after Google verified the token",
     ("/api/newsletter/subscribe", "api_newsletter_subscribe"): "INSERT OR IGNORE one row",
     ("/oauth/authorize/{service}", "oauth_authorize"): "slug + patient lookup after the session",
+    (
+        "/inbound/brevo",
+        "inbound_brevo_webhook",
+    ): "#950 after a valid token: token-hash lookup, the #952 queue caps (a dedupe-key "
+    "lookup per mail and indexed open-job COUNTs) and one inbound_jobs INSERT "
+    "(ON CONFLICT DO NOTHING) per routable mail (#952, one transaction); the queue "
+    "worker then does the /inbound/email work",
+    (
+        "/inbound/email",
+        "inbound_email_webhook",
+    ): "#950 after a valid signature: token-hash lookup, patient, md5 duplicate check, "
+    "first address row; the #935 upload's document count and Drive-only row",
     (
         "/oauth/callback",
         "oauth_callback",
@@ -680,13 +850,13 @@ async def test_oauth_authorize_rejects_anonymous_caller(http_mode, db):
 
 
 async def test_oauth_authorize_rejects_other_caregiver(http_mode, db):
-    from tests.helpers import ERIKA_UUID
+    from tests.helpers import PRIMARY_TEST_UUID
 
     server = http_mode
     token = server._make_session_token("stranger@example.test")
     req = _FakeRequest(
         cookies={"oncofiles_session": token},
-        query={"patient_id": ERIKA_UUID},
+        query={"patient_id": PRIMARY_TEST_UUID},
         path={"service": "drive"},
         db=db,
     )
@@ -695,7 +865,7 @@ async def test_oauth_authorize_rejects_other_caregiver(http_mode, db):
 
 
 async def test_oauth_authorize_allows_caregiver_cookie(http_mode, db, monkeypatch):
-    from tests.helpers import ERIKA_UUID
+    from tests.helpers import PRIMARY_TEST_UUID
 
     # A first Google link is an onboarding action (#852); this test is about
     # the caregiver ACL, so the gate is open here.
@@ -704,13 +874,13 @@ async def test_oauth_authorize_allows_caregiver_cookie(http_mode, db, monkeypatc
     server = http_mode
     await db.db.execute(
         "UPDATE patients SET caregiver_email = ? WHERE patient_id = ?",
-        ("carer@example.test", ERIKA_UUID),
+        ("carer@example.test", PRIMARY_TEST_UUID),
     )
     await db.db.commit()
     token = server._make_session_token("carer@example.test")
     req = _FakeRequest(
         cookies={"oncofiles_session": token},
-        query={"patient_id": ERIKA_UUID},
+        query={"patient_id": PRIMARY_TEST_UUID},
         path={"service": "drive"},
         db=db,
     )

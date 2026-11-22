@@ -57,7 +57,8 @@ DEFAULTS = {  # patient_type -> (max_docs, min_text_chars, max_doc_age_days)
     # Oncology (the first patient's Cowork clean-up job): a date more than two
     # years old on a new scan is suspect.
     "oncology": (20, 100, 730),
-    # General (peter-daily-cleanup): historical records back to birth are normal.
+    # General (the second patient's Cowork clean-up job): historical records
+    # back to birth are normal.
     "general": (8, 200, None),
 }
 PREVIEW_MAX_AGE = timedelta(hours=24)
@@ -87,6 +88,8 @@ def cached_extract(name, content, mime_type="", *, min_text_chars=100, on_model_
         hit = _extract_cache[key]
         if getattr(hit, "orientation", None):  # #882: a cache hit asked the model nothing
             hit = dataclasses.replace(hit, orientation={**hit.orientation, "model_calls": 0})
+        if getattr(hit, "retried_pages", None):  # #931: nor did it retry a page
+            hit = dataclasses.replace(hit, retried_pages=[])
         return hit
     ex = extract_mod.extract(name, content, mime_type, min_text_chars=min_text_chars)
     if on_model_pages is not None and ex.method == "vision" and ex.pages:
@@ -96,12 +99,24 @@ def cached_extract(name, content, mime_type="", *, min_text_chars=100, on_model_
     return ex
 
 
+def propose_cache_key(contract, text) -> str:
+    """The proposal depends on the whole README the model reads (vocabulary, folder
+    table, rules), not only on its version: a README edit or a vocabulary block the
+    run itself added (#854, the runner then classifies with the re-parsed contract)
+    must miss, and so must a change of the classify prompt."""
+    from oncofiles.curated import classify
+
+    readme_sha = hashlib.sha256(contract.readme_text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        f"{classify.PROMPT_VERSION}\n{contract.version}\n{contract.patient_token}\n"
+        f"{readme_sha}\n{text}".encode()
+    ).hexdigest()
+
+
 def cached_propose(contract, text):
     from oncofiles.curated import classify
 
-    key = hashlib.sha256(
-        f"{contract.version}\n{contract.patient_token}\n{text}".encode()
-    ).hexdigest()
+    key = propose_cache_key(contract, text)
     if key in _propose_cache:
         return dict(_propose_cache[key])
     raw = classify.propose(contract, text)
@@ -195,6 +210,42 @@ async def reviewed_text_sources(db, pid: str) -> frozenset:
     return frozenset(_text_reviews[pid])
 
 
+# ── filed documents whose sidecar backfill got bad model answers ──────
+
+# patient_id -> {drive file id: {"attempts": n, "code": reason}}. A filed
+# document without a sidecar has no place on Drive for a counter, so the run
+# reports carry it (``RunReport.documents``, stage backfill) and this map is
+# their merge, seeded from the DB once per process like ``_text_reviews``.
+_backfill_failures: dict[str, dict[str, dict]] = {}
+
+
+def _remember_backfill_failures(pid: str, report: dict | None) -> None:
+    from oncofiles.curated.runner import backfill_attempts_from
+
+    seen = _backfill_failures.setdefault(pid, {})
+    for file_id, entry in backfill_attempts_from(report).items():
+        if entry["attempts"] >= seen.get(file_id, {}).get("attempts", 0):
+            seen[file_id] = entry
+
+
+async def backfill_failures(db, pid: str) -> dict[str, dict]:
+    """Backfill model answer failures of earlier real runs (attempt counters)."""
+    if pid not in _backfill_failures:
+        _backfill_failures[pid] = {}
+        for row in await db.list_curated_runs(patient_id=pid, limit=TEXT_REVIEW_SEED_RUNS):
+            if row.get("dry_run"):
+                continue
+            full = await db.get_curated_run(row["id"], patient_id=pid)
+            _remember_backfill_failures(pid, (full or {}).get("report"))
+    return {k: dict(v) for k, v in _backfill_failures[pid].items()}
+
+
+def _backfill_given_up(failures: dict[str, dict]) -> frozenset:
+    from oncofiles.curated.runner import MAX_TECHNICAL_ATTEMPTS
+
+    return frozenset(k for k, v in failures.items() if v["attempts"] >= MAX_TECHNICAL_ATTEMPTS)
+
+
 # ── gates ─────────────────────────────────────────────────────────────
 
 
@@ -282,6 +333,8 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
 
     if not llm.configured():
         return {"error": "local LLM not configured (LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL)"}, None
+    if host_refused := llm.base_url_refusal():  # #925: say so before a run row exists
+        return {"error": f"local LLM refused: {host_refused}"}, None
     if not dry_run and (reason := await preview_gate(db, pid)):
         return {"error": f"real run refused: {reason}"}, None
     clients = await _create_patient_clients(db, pid)
@@ -311,9 +364,12 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
         max_doc_age_days=max_age,
         should_stop=_stopping.is_set,
         reviewed_text=await reviewed_text_sources(db, pid),
+        backfill_attempts=await backfill_failures(db, pid),
         doc_cap=max(0, config.MAX_DOCUMENTS_PER_PATIENT),
         docs_existing=await db.count_documents(patient_id=pid),
         ocr_gate=_budget_gate(pid, pages_base),
+        # #919 item 4: filed documents held in review with no recognised reason
+        stale_review_ids=await db.curated_stale_review_ids(patient_id=pid),
     )
     return None, (gdrive, folder_id, opts)
 
@@ -340,7 +396,21 @@ async def _execute(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) 
 
 
 async def _execute_locked(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) -> dict:
-    """Run to completion and persist. Never raises; returns the report dict."""
+    """Run to completion and persist. Never raises; returns the report dict.
+
+    The whole run is a local-only zone (#925): OCR and classification use the
+    local model, and any cloud path inside (``enhance._get_client``, the Files
+    API) raises ``CloudForbiddenError`` — also in the ``asyncio.to_thread``
+    worker, which inherits the ContextVar. Covers every trigger: the MCP and
+    dashboard runs, continuous mode and the nightly sweep."""
+    from oncofiles.cloud_guard import local_only
+
+    with local_only("curated run"):
+        return await _execute_locked_zone(db, pid, gdrive, folder_id, opts, trigger=trigger)
+
+
+async def _execute_locked_zone(db, pid: str, gdrive, folder_id: str, opts, *, trigger: str) -> dict:
+    """Body of ``_execute_locked``; always called inside ``local_only``."""
     from oncofiles.curated.drive_ops import DriveOps
     from oncofiles.curated.runner import run_curated
 
@@ -376,6 +446,7 @@ async def _execute_locked(db, pid: str, gdrive, folder_id: str, opts, *, trigger
         report["model_pages"] = _inflight_pages.get(pid, 0)
     if not opts.dry_run:
         _remember_text_reviews(pid, report)
+        _remember_backfill_failures(pid, report)
         _note_run_outcome(pid, report)
     status, message = report.get("status", "aborted"), report.get("message", "")
     await db.finish_curated_run(
@@ -735,6 +806,83 @@ def probe_stats() -> dict:
     return {pid: asdict(st) for pid, st in _probe_stats.items()}
 
 
+# ── inbox snapshot for the dashboard (#921 follow-up) ────────────────
+#
+# The curated read model indexes filed folders only, so a file a caregiver
+# just put into the inbox would appear in the dashboard table only once it is
+# filed. The probe already lists the inbox every poll; it keeps here, per
+# patient and in memory only, what it saw: Drive id, name, size, mime,
+# modifiedTime and whether a sidecar holds the file for review. The dashboard
+# route reads it (no Drive call, no DB write); the upload route adds its file
+# right away. Never on /health, never logged (names are patient data), gone
+# on restart. A snapshot no probe confirmed for INBOX_SNAPSHOT_MAX_AGE_S
+# (continuous mode off, Drive unreachable for long) is treated as unknown.
+
+INBOX_SNAPSHOT_MAX_AGE_S = 30 * 60
+
+
+@dataclass
+class _InboxSnapshot:
+    signature: str | None  # tree fingerprint of the probe that built it
+    taken_at: float  # time.monotonic() of the last probe that confirmed it
+    entries: dict[str, dict] = field(default_factory=dict)  # drive id -> entry
+
+
+_inbox_snapshots: dict[str, _InboxSnapshot] = {}
+
+
+def _inbox_entry(e) -> dict:
+    return {
+        "id": e.id,
+        "name": e.name,
+        "size": e.size,
+        "mime": e.mime,
+        "modified": e.modified,
+        "review": bool(e.review),
+    }
+
+
+def record_inbox_snapshot(pid: str, pr) -> None:
+    """Keep what a probe saw of the inbox. An idle repeat (``pr.inbox is None``)
+    of the same tree only confirms the snapshot it already has."""
+    inbox = getattr(pr, "inbox", None)
+    now = time.monotonic()
+    if inbox is None:
+        snap = _inbox_snapshots.get(pid)
+        if snap is not None and snap.signature == getattr(pr, "signature", None):
+            snap.taken_at = now
+        return
+    _inbox_snapshots[pid] = _InboxSnapshot(
+        pr.signature, now, {e.id: _inbox_entry(e) for e in inbox}
+    )
+
+
+def note_inbox_upload(pid: str, *, drive_id: str, name: str, size: int, mime: str) -> None:
+    """The dashboard upload put a file into this patient's inbox: show it now,
+    before the next probe (which replaces the whole snapshot anyway)."""
+    if not pid or not drive_id:
+        return
+    snap = _inbox_snapshots.get(pid)
+    if snap is None or time.monotonic() - snap.taken_at > INBOX_SNAPSHOT_MAX_AGE_S:
+        snap = _inbox_snapshots[pid] = _InboxSnapshot(None, time.monotonic())
+    snap.entries[drive_id] = {
+        "id": drive_id,
+        "name": name,
+        "size": int(size or 0),
+        "mime": mime,
+        "modified": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "review": False,
+    }
+
+
+def inbox_snapshot(pid: str | None) -> list[dict]:
+    """Copies of this patient's inbox entries, [] when unknown or stale."""
+    snap = _inbox_snapshots.get(pid) if pid else None
+    if snap is None or time.monotonic() - snap.taken_at > INBOX_SNAPSHOT_MAX_AGE_S:
+        return []
+    return [dict(e) for e in snap.entries.values()]
+
+
 async def probe_patient(db, pid: str, idle_signature: str | None):
     """Read-only probe of the patient's curated folder, or None if unreachable."""
     from oncofiles.curated.drive_ops import DriveOps
@@ -746,12 +894,17 @@ async def probe_patient(db, pid: str, idle_signature: str | None):
         return None
     gdrive, folder_id = clients[0], clients[3]
     reviewed = await reviewed_text_sources(db, pid)
+    given_up = _backfill_given_up(await backfill_failures(db, pid))
 
     def _blocking():
         own = gdrive.dedicated_copy()
         try:
             return probe(
-                DriveOps(own), folder_id, idle_signature=idle_signature, reviewed_text=reviewed
+                DriveOps(own),
+                folder_id,
+                idle_signature=idle_signature,
+                reviewed_text=reviewed,
+                backfill_given_up=given_up,
             )
         finally:
             own.close()
@@ -759,6 +912,7 @@ async def probe_patient(db, pid: str, idle_signature: str | None):
     result = await asyncio.to_thread(_blocking)
     global _last_probe_at
     _last_probe_at = time.monotonic()
+    record_inbox_snapshot(pid, result)
     return result
 
 
@@ -1345,6 +1499,9 @@ async def _index_patient(db, pid: str, *, force_ids: set[int] | None = None) -> 
                         "index_version": indexer.INDEX_VERSION,
                         "sidecar_sha": rec.sidecar_sha,
                         "source_md5": rec.source_md5,
+                        # #919: codes and a boolean only (document_stage reads them)
+                        "review_reasons": rec.review_reasons,
+                        "review_override": rec.review_override,
                     },
                     **rec.metadata,
                 },
@@ -2818,6 +2975,7 @@ async def _lab_shadow_work(
                 return llm_extract.extract_document(
                     pages, vocab=vocab, report_date=day, birth_dates=births,
                     source_reason=_source_reason(meta), stop=_stopping.is_set, cfg=cfg,
+                    document_category=d.get("category"),
                 )  # fmt: skip
 
         return _blocking
@@ -3769,6 +3927,8 @@ _LAB_GATE_KEYS = ("agree", "value_mismatch", "date_mismatch", "rule_only", "llm_
 _LAB_SUM_KEYS = (
     "rule_facts", "llm_facts", "llm_machine", "llm_unverified", "agree_machine",
     "pages_used", "pages_truncated", "dates_unchecked_no_dob", *_LAB_GATE_KEYS,
+    # the LLM-only buckets: not comparable, but every bucket is summed (#933)
+    "llm_no_value", "llm_uncoded",
 )  # fmt: skip
 
 

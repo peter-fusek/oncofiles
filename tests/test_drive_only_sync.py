@@ -24,7 +24,7 @@ from oncofiles.files_api import (
     files_api_refusal_reason,
 )
 from oncofiles.sync import sync, sync_from_gdrive
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 SYNTH_NAME = "20270301_Testpatient_NOU_Labs_SyntheticPanel.pdf"
 
@@ -131,7 +131,7 @@ async def test_import_cloud_off_is_drive_only_and_ok(db: Database, cloud_off):
     files = _real_files_client()
     gdrive = _gdrive([_gfile()])
 
-    stats = await sync_from_gdrive(db, files, gdrive, "folder_synth", patient_id=ERIKA_UUID)
+    stats = await sync_from_gdrive(db, files, gdrive, "folder_synth", patient_id=PRIMARY_TEST_UUID)
 
     assert stats["new"] == 1
     assert stats["errors"] == 0
@@ -140,7 +140,7 @@ async def test_import_cloud_off_is_drive_only_and_ok(db: Database, cloud_off):
     gdrive.download.assert_not_called()  # the bytes are not even read at import
     gdrive.export_google_doc.assert_not_called()
 
-    [doc] = await db.list_documents(patient_id=ERIKA_UUID)
+    [doc] = await db.list_documents(patient_id=PRIMARY_TEST_UUID)
     assert doc.file_id == "gdrive:gd_synth_1"
     assert doc.gdrive_id == "gd_synth_1"
     assert doc.size_bytes == 2048
@@ -157,16 +157,16 @@ async def test_content_change_cloud_off_converts_to_drive_only(db: Database, clo
         gdrive_modified_time=datetime(2027, 2, 1, tzinfo=UTC),
         gdrive_md5="md5-synthetic-old",
     )
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
     files = _real_files_client()
     gdrive = _gdrive([_gfile(md5Checksum="md5-synthetic-new")])
 
-    stats = await sync_from_gdrive(db, files, gdrive, "folder_synth", patient_id=ERIKA_UUID)
+    stats = await sync_from_gdrive(db, files, gdrive, "folder_synth", patient_id=PRIMARY_TEST_UUID)
 
     assert stats["updated"] == 1
     assert stats["errors"] == 0
     _assert_no_files_api(files)
-    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+    updated = await db.get_document(doc.id, patient_id=PRIMARY_TEST_UUID)
     assert updated.file_id == "gdrive:gd_synth_1"
     assert updated.gdrive_md5 == "md5-synthetic-new"
 
@@ -181,17 +181,17 @@ async def test_content_change_cloud_off_keeps_page_text_and_marks_stale(db: Data
             gdrive_modified_time=datetime(2027, 2, 1, tzinfo=UTC),
             gdrive_md5="md5-synthetic-old",
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     await db.save_ocr_page(doc.id, 1, "Invented page text 2027", "pymupdf-native")
     await db.update_structured_metadata(doc.id, json.dumps({"findings": ["invented"]}))
     gdrive = _gdrive([_gfile(md5Checksum="md5-synthetic-new")])
 
-    await sync_from_gdrive(db, _real_files_client(), gdrive, "f", patient_id=ERIKA_UUID)
+    await sync_from_gdrive(db, _real_files_client(), gdrive, "f", patient_id=PRIMARY_TEST_UUID)
 
     pages = await db.get_ocr_pages(doc.id)
     assert [p["extracted_text"] for p in pages] == ["Invented page text 2027"]
-    updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+    updated = await db.get_document(doc.id, patient_id=PRIMARY_TEST_UUID)
     assert json.loads(updated.structured_metadata) == {
         "findings": ["invented"],
         "text_stale": True,
@@ -207,14 +207,14 @@ async def test_content_change_cloud_on_still_replaces_text(db: Database):
             gdrive_modified_time=datetime(2027, 2, 1, tzinfo=UTC),
             gdrive_md5="md5-synthetic-old",
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     await db.save_ocr_page(doc.id, 1, "Invented page text 2027", "pymupdf-native")
     files = MagicMock()
     files.upload.return_value = MagicMock(id="file_synth_new")
     gdrive = _gdrive([_gfile(md5Checksum="md5-synthetic-new")])
 
-    await sync_from_gdrive(db, files, gdrive, "f", enhance=False, patient_id=ERIKA_UUID)
+    await sync_from_gdrive(db, files, gdrive, "f", enhance=False, patient_id=PRIMARY_TEST_UUID)
 
     assert not await db.has_ocr_text(doc.id)
 
@@ -246,11 +246,11 @@ async def test_logs_never_contain_the_filename(db: Database, cloud_off, caplog):
             gdrive_modified_time=datetime(2027, 2, 1, tzinfo=UTC),
             gdrive_md5="md5-synthetic-old",
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     await db.insert_document(
         make_doc(file_id="file_synth_legacy", filename=SYNTH_NAME, gdrive_id=None),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     gdrive = _gdrive(
         [
@@ -259,7 +259,7 @@ async def test_logs_never_contain_the_filename(db: Database, cloud_off, caplog):
             _gfile("gd_synth_3", name=SYNTH_NAME.replace(".pdf", ".exe")),
         ]
     )
-    await sync(db, _real_files_client(), gdrive, "f", trigger="test", patient_id=ERIKA_UUID)
+    await sync(db, _real_files_client(), gdrive, "f", trigger="test", patient_id=PRIMARY_TEST_UUID)
     # gmail attachment refused
     await _process_attachment(
         db,
@@ -268,7 +268,7 @@ async def test_logs_never_contain_the_filename(db: Database, cloud_off, caplog):
         "msg_synth",
         {"filename": SYNTH_NAME, "mime_type": "application/pdf", "attachment_id": "att_1"},
         MagicMock(),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     # Drive-only upload failure
     failing = _gdrive([])
@@ -298,7 +298,7 @@ async def test_full_sync_cloud_off_makes_no_cloud_call(db: Database, cloud_off):
     # A legacy Files API row without a Drive copy: export would need the Files API.
     await db.insert_document(
         make_doc(file_id="file_synth_legacy", filename="20270105_Legacy.pdf", gdrive_id=None),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
     files = _real_files_client()
     gdrive = _gdrive([_gfile()])
@@ -312,7 +312,13 @@ async def test_full_sync_cloud_off_makes_no_cloud_call(db: Database, cloud_off):
         patch("oncofiles.doc_analysis.analyze_consolidation") as consolidate_ai,
     ):
         stats = await sync(
-            db, files, gdrive, "folder_synth", enhance=True, trigger="test", patient_id=ERIKA_UUID
+            db,
+            files,
+            gdrive,
+            "folder_synth",
+            enhance=True,
+            trigger="test",
+            patient_id=PRIMARY_TEST_UUID,
         )
 
     _assert_no_files_api(files)
@@ -331,7 +337,7 @@ async def test_full_sync_cloud_off_makes_no_cloud_call(db: Database, cloud_off):
         "SELECT status, from_gdrive_errors, to_gdrive_errors FROM sync_history "
         "WHERE patient_id = ? "
         "ORDER BY id DESC LIMIT 1",
-        (ERIKA_UUID,),
+        (PRIMARY_TEST_UUID,),
     ) as cur:
         row = dict(await cur.fetchone())
     assert row == {"status": "completed", "from_gdrive_errors": 0, "to_gdrive_errors": 0}
@@ -346,14 +352,14 @@ async def test_import_cloud_on_uploads_to_files_api_as_before(db: Database):
     gdrive = _gdrive([_gfile()])
 
     stats = await sync_from_gdrive(
-        db, files, gdrive, "folder_synth", enhance=False, patient_id=ERIKA_UUID
+        db, files, gdrive, "folder_synth", enhance=False, patient_id=PRIMARY_TEST_UUID
     )
 
     assert stats["new"] == 1
     assert "drive_only" not in stats
     files.upload.assert_called_once()
     gdrive.download.assert_called_once_with("gd_synth_1")
-    [doc] = await db.list_documents(patient_id=ERIKA_UUID)
+    [doc] = await db.list_documents(patient_id=PRIMARY_TEST_UUID)
     assert doc.file_id == "file_synth_new"
     assert doc.size_bytes == len(SYNTH_PDF)
     assert not indexer.is_curated_id(doc.id)
@@ -398,7 +404,7 @@ async def test_enhance_reads_drive_only_doc_without_files_api(db: Database):
     from oncofiles.sync import _enhance_document
 
     doc = await db.insert_document(
-        make_doc(file_id="gdrive:gd_synth_1", gdrive_id="gd_synth_1"), patient_id=ERIKA_UUID
+        make_doc(file_id="gdrive:gd_synth_1", gdrive_id="gd_synth_1"), patient_id=PRIMARY_TEST_UUID
     )
     files = MagicMock()
     gdrive = _gdrive([])
@@ -406,7 +412,7 @@ async def test_enhance_reads_drive_only_doc_without_files_api(db: Database):
         patch("oncofiles.server._extract_pdf_text", return_value=None),
         patch("fitz.open", side_effect=RuntimeError("synthetic: no OCR here")),
     ):
-        await _enhance_document(db, doc, files, gdrive, patient_id=ERIKA_UUID)
+        await _enhance_document(db, doc, files, gdrive, patient_id=PRIMARY_TEST_UUID)
 
     files.download.assert_not_called()
     gdrive.download.assert_called_once_with("gd_synth_1")
@@ -417,13 +423,14 @@ async def test_enhance_reads_drive_only_doc_without_files_api(db: Database):
 
 async def test_curated_index_state_marks_sync_rows_foreign(db: Database, cloud_off):
     gdrive = _gdrive([_gfile()])
-    await sync_from_gdrive(db, _real_files_client(), gdrive, "f", patient_id=ERIKA_UUID)
+    await sync_from_gdrive(db, _real_files_client(), gdrive, "f", patient_id=PRIMARY_TEST_UUID)
     # an interrupted curated insert: gdrive: prefix, no metadata yet
     await db.insert_document(
-        make_doc(file_id="gdrive:gd_curated_1", gdrive_id="gd_curated_1"), patient_id=ERIKA_UUID
+        make_doc(file_id="gdrive:gd_curated_1", gdrive_id="gd_curated_1"),
+        patient_id=PRIMARY_TEST_UUID,
     )
 
-    state = await db.curated_index_state(patient_id=ERIKA_UUID)
+    state = await db.curated_index_state(patient_id=PRIMARY_TEST_UUID)
 
     assert state["gd_synth_1"]["foreign"] is True
     assert state["gd_curated_1"]["foreign"] is False
@@ -453,7 +460,7 @@ async def test_upload_document_cloud_off_stores_drive_only(db: Database, cloud_o
             await upload_document(_ctx(db, files), content=content, filename=SYNTH_NAME)
         )
 
-    clients.assert_awaited_once_with(db, ERIKA_UUID)  # the resolved patient's own Drive
+    clients.assert_awaited_once_with(db, PRIMARY_TEST_UUID)  # the resolved patient's own Drive
     assert result["storage"] == "drive_only"
     assert result["file_id"] == "gdrive:gd_uploaded"
     _assert_no_files_api(files)
@@ -461,7 +468,7 @@ async def test_upload_document_cloud_off_stores_drive_only(db: Database, cloud_o
     gdrive.set_app_properties.assert_called_once_with(
         "gd_uploaded", {"oncofiles_id": str(result["id"])}
     )
-    doc = await db.get_document(result["id"], patient_id=ERIKA_UUID)
+    doc = await db.get_document(result["id"], patient_id=PRIMARY_TEST_UUID)
     assert doc.file_id == "gdrive:gd_uploaded"
     assert doc.gdrive_id == "gd_uploaded"
     assert doc.size_bytes == len(SYNTH_PDF)
@@ -474,7 +481,7 @@ async def test_upload_document_cloud_off_drive_failure_stores_nothing(db: Databa
 
     gdrive = _gdrive([])
     gdrive.upload.side_effect = DriveWriteBlockedError("synthetic: curated folder")
-    before = await db.count_documents(patient_id=ERIKA_UUID)
+    before = await db.count_documents(patient_id=PRIMARY_TEST_UUID)
     content = base64.b64encode(SYNTH_PDF).decode()
     with patch(
         "oncofiles.server._create_patient_clients",
@@ -487,7 +494,7 @@ async def test_upload_document_cloud_off_drive_failure_stores_nothing(db: Databa
         )
 
     assert "nothing was stored" in result["error"]
-    assert await db.count_documents(patient_id=ERIKA_UUID) == before
+    assert await db.count_documents(patient_id=PRIMARY_TEST_UUID) == before
 
 
 # ── Gmail attachments with cloud AI off ──────────────────────────────────────
@@ -505,7 +512,7 @@ async def test_gmail_attachment_cloud_off_not_uploaded(db: Database, cloud_off):
         "msg_synth",
         {"filename": SYNTH_NAME, "mime_type": "application/pdf", "attachment_id": "att_1"},
         MagicMock(),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     assert doc is None

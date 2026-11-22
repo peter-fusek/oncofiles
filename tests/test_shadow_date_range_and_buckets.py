@@ -59,8 +59,20 @@ def cand(date, **kw):
     return {**base, **kw}
 
 
+def tied(date, page=PAGE, **kw):
+    """``cand(date)`` with a ``date_evidence`` (#933): the first page line that
+    holds the date. These tests are about reading the date itself, so the
+    model is taken to quote the right line whenever the page has one."""
+    for line in page.splitlines():
+        c = cand(date, date_evidence=line, **kw)
+        why = verifier.verify(c, page_text=page, vocab=VOCAB)["metadata"]
+        if "date_evidence_mismatch" not in why.get("unverified_reasons", []):
+            return c
+    return cand(date, **kw)
+
+
 def check(date, page=PAGE, **kw):
-    return verifier.verify(cand(date), page_text=page, vocab=VOCAB, **kw)
+    return verifier.verify(tied(date, page), page_text=page, vocab=VOCAB, **kw)
 
 
 def reasons(date, page=PAGE, **kw):
@@ -233,7 +245,7 @@ def test_date_shape_masks_every_digit_and_letter():
 
 def _answer(dates):
     def chat(*_a, **_k):
-        return json.dumps({"facts": [cand(d) | {"page_number": None} for d in dates]})
+        return json.dumps({"facts": [tied(d) | {"page_number": None} for d in dates]})
 
     return chat
 

@@ -18,9 +18,12 @@ logger = logging.getLogger(__name__)
 ENHANCE_MODEL = "claude-haiku-4-5-20251001"
 
 # Provider name fragments → institution code (case-insensitive matching)
+# Keywords are institution names or addresses only, never a person's name
+# (#930): a doctor works at several places and moves, and a surname matches
+# unrelated people, so a name would attribute a document to the wrong clinic.
 PROVIDER_TO_INSTITUTION: list[tuple[list[str], str]] = [
-    (["nou", "narodny onkologicky", "klenova", "porsok", "pazderova"], "NOU"),
-    (["bory", "rychly", "rychlý", "stefanik", "štefánik", "nemocnica bory"], "BoryNemocnica"),
+    (["nou", "narodny onkologicky", "klenova"], "NOU"),
+    (["bory", "nemocnica bory"], "BoryNemocnica"),
     (["ousa", "onkologicky ustav"], "OUSA"),
     (["unb", "univerzitna nemocnica"], "UNB"),
     (["medirex"], "Medirex"),
@@ -46,7 +49,7 @@ PROVIDER_TO_INSTITUTION: list[tuple[list[str], str]] = [
     (["pro sanus", "prosanus"], "ProSanus"),
     (["unz mesta", "uzemna poliklinika"], "UNZBratislava"),
     (["aseseta"], "Aseseta"),
-    # v5.3.2 — backfill gaps from q1b + e5g audit
+    # v5.3.2 — backfill gaps from a two-patient audit
     (["mediros"], "Mediros"),
     (["europacolon"], "Europacolon"),
 ]
@@ -87,6 +90,20 @@ _PATIENT_CONTEXT_INSTITUTION_FALLBACK_CATEGORIES = {
 }
 
 
+def _institution_fallback_excluded(document_id: int, file_id: str | None) -> bool:
+    """True when a primary-clinic fallback must never touch this row (#930).
+
+    Curated mirror rows and #777 Drive-only rows (``gdrive:`` file id) take
+    their institution from the README contract / the printed text only; a
+    clinic guessed from patient_context would overwrite a deliberate
+    ``Unknown``/NULL. The curated registry is checked too, so a curated row
+    is excluded even if its file id ever changes shape.
+    """
+    from oncofiles.curated.indexer import is_curated_file_id, is_curated_id
+
+    return is_curated_file_id(file_id) or is_curated_id(document_id)
+
+
 async def backfill_institution_from_patient_context(
     db_conn, *, patient_id: str, dry_run: bool = False
 ) -> dict:
@@ -114,6 +131,7 @@ async def backfill_institution_from_patient_context(
         "updated": 0,
         "skipped_unsafe_category": 0,
         "skipped_no_context_institution": 0,
+        "skipped_curated": 0,
         "dry_run": dry_run,
     }
 
@@ -137,7 +155,7 @@ async def backfill_institution_from_patient_context(
         return stats
 
     async with db_conn.execute(
-        "SELECT id, category, filename FROM documents "
+        "SELECT id, category, file_id FROM documents "
         "WHERE deleted_at IS NULL AND (institution IS NULL OR institution = '') "
         "AND patient_id = ?",
         (patient_id,),
@@ -146,6 +164,9 @@ async def backfill_institution_from_patient_context(
 
     for row in rows:
         stats["checked"] += 1
+        if _institution_fallback_excluded(row["id"], row["file_id"]):
+            stats["skipped_curated"] += 1
+            continue
         cat = (row["category"] or "").lower()
         if cat not in _PATIENT_CONTEXT_INSTITUTION_FALLBACK_CATEGORIES:
             stats["skipped_unsafe_category"] += 1
@@ -235,9 +256,15 @@ async def backfill_missing_institutions(db) -> dict:
     """
     import json as _json
 
-    stats = {"checked": 0, "updated": 0, "updated_from_patient_context": 0, "still_missing": 0}
+    stats = {
+        "checked": 0,
+        "updated": 0,
+        "updated_from_patient_context": 0,
+        "still_missing": 0,
+        "skipped_curated": 0,
+    }
     async with db.execute(
-        "SELECT id, patient_id, category, structured_metadata FROM documents "
+        "SELECT id, patient_id, category, file_id, structured_metadata FROM documents "
         "WHERE deleted_at IS NULL AND (institution IS NULL OR institution = '') "
         "AND structured_metadata IS NOT NULL"
     ) as cursor:
@@ -257,7 +284,11 @@ async def backfill_missing_institutions(db) -> dict:
             # for the allowlisted categories only (#404 Option B).
             cat = (row["category"] or "").lower()
             pid = row["patient_id"]
+            # Never for a curated or Drive-only row (#930).
             if cat in _PRIMARY_CLINIC_FALLBACK_CATEGORIES and pid:
+                if _institution_fallback_excluded(row["id"], row["file_id"]):
+                    stats["skipped_curated"] += 1
+                    continue
                 inst = _primary_institution_for_patient(pid)
                 from_fallback = bool(inst)
         if inst:
@@ -925,7 +956,7 @@ FILENAME_DESC_SYSTEM_PROMPT = (
     "generate a short CamelCase English description suitable for a filename.\n\n"
     "Rules:\n"
     "- No spaces, no special characters (only letters and digits)\n"
-    "- CamelCase format (e.g., BloodResultsBeforeCycle2DrPorsok)\n"
+    "- CamelCase format (e.g., BloodResultsBeforeCycle2DrKornok)\n"
     "- Include key content: document type, procedure/test. "
     "ALWAYS append DrLastName if any doctor/physician is identified\n"
     "- Maximum 60 characters\n"
@@ -1012,7 +1043,7 @@ CLASSIFY_SYSTEM_PROMPT = (
     "  Examples of mapping to known codes:\n"
     "    'Národný onkologický ústav' / 'NÁRODNÝ ONKOLOGICKÝ ÚSTAV' / "
     "'Klinika klinickej onkológie, Klenová 1' → NOU\n"
-    "    'Nemocnica Bory' / 'BoryNemocnica' / 'Nemocnica Rychlý' → BoryNemocnica\n"
+    "    'Nemocnica Bory' / 'BoryNemocnica' → BoryNemocnica\n"
     "    'SYNLAB Slovakia s.r.o.' → Synlab\n"
     "    'MEDIREX' / 'Medirex servis' → Medirex\n"
     "    'Poliklinika Kramáre' → Kramarska\n"

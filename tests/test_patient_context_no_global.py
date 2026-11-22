@@ -26,11 +26,11 @@ import pytest
 from oncofiles import patient_context
 from oncofiles.database import Database
 from oncofiles.patient_middleware import _current_patient_id
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "oncofiles"
 
-PID_A = ERIKA_UUID  # the request patient bound by the `db` fixture
+PID_A = PRIMARY_TEST_UUID  # the request patient bound by the `db` fixture
 PID_B = "00000000-0000-4000-8000-0000000007b2"
 SLUG_B = "testa-zorvan"
 NAME_A = "Testa Quilla"
@@ -304,18 +304,6 @@ async def test_gmail_attachment_is_parsed_and_stored_for_its_patient(db: Databas
     assert doc.institution == "NOU"  # parsed with B's name, not the request patient A's
     assert await db.count_documents(patient_id=PID_B) == 1
     assert await db.count_documents(patient_id=PID_A) == 0
-
-
-# ── import_local CLI ────────────────────────────────────────────────────────
-
-
-async def test_import_local_requires_patient(tmp_path):
-    from oncofiles.import_local import import_documents
-
-    with pytest.raises(TypeError):
-        await import_documents(tmp_path, dry_run=True)  # type: ignore[call-arg]
-    with pytest.raises(ValueError):
-        await import_documents(tmp_path, dry_run=True, patient_id="")
 
 
 # ── Source sweep ────────────────────────────────────────────────────────────

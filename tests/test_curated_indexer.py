@@ -9,7 +9,7 @@ import pytest
 from oncofiles.curated import indexer
 from oncofiles.models import DocumentCategory, SearchQuery
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_curated_runner import DUPS, INBOX, LABS, REPORT, FakeDrive
 
 SIDECAR = """---
@@ -120,19 +120,19 @@ def env():
 
 async def test_index_creates_searchable_rows_never_sent_to_cloud(db, env):
     d, src = env
-    stats = await tool.index_patient(db, ERIKA_UUID)
+    stats = await tool.index_patient(db, PRIMARY_TEST_UUID)
     assert stats["created"] == 2 and stats["errors"] == 0
-    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=PRIMARY_TEST_UUID)
     assert doc.file_id == f"gdrive:{src}" and doc.category == DocumentCategory.LABS
     assert doc.ai_summary.startswith("Krvny obraz")
     # found by page text, not only by name/summary
-    hits = await db.search_documents(SearchQuery(text="Leukocyty"), patient_id=ERIKA_UUID)
+    hits = await db.search_documents(SearchQuery(text="Leukocyty"), patient_id=PRIMARY_TEST_UUID)
     assert [h.id for h in hits] == [doc.id]
-    pages = await db.get_ocr_pages(doc.id, patient_id=ERIKA_UUID)
+    pages = await db.get_ocr_pages(doc.id, patient_id=PRIMARY_TEST_UUID)
     assert [p["model"] for p in pages] == [indexer.INDEX_ENGINE] * 2
     # cloud enrichment never selects it, and refuses it if asked directly
-    assert await db.get_documents_without_ai(patient_id=ERIKA_UUID) == []
-    assert await db.get_documents_without_metadata(patient_id=ERIKA_UUID) == []
+    assert await db.get_documents_without_ai(patient_id=PRIMARY_TEST_UUID) == []
+    assert await db.get_documents_without_metadata(patient_id=PRIMARY_TEST_UUID) == []
     assert indexer.is_curated_id(doc.id)
     with pytest.raises(indexer.CuratedCloudError):
         indexer.refuse_cloud(doc.id, "test")
@@ -140,30 +140,30 @@ async def test_index_creates_searchable_rows_never_sent_to_cloud(db, env):
 
 async def test_index_is_incremental_and_follows_renames_and_removals(db, env):
     d, src = env
-    await tool.index_patient(db, ERIKA_UUID)
-    again = await tool.index_patient(db, ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    again = await tool.index_patient(db, PRIMARY_TEST_UUID)
     assert again["unchanged"] == 2 and again["created"] == 0
     # a rename/move inside the filed folders updates the same row
     d.items[src]["name"] = "20260805-JanaNovakova-NOU-Labs-Novak-Renamed.pdf"
     d.items[d.find(d.folder[LABS], FILED + ".md")]["name"] = (
         "20260805-JanaNovakova-NOU-Labs-Novak-Renamed.pdf.md"
     )
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=PRIMARY_TEST_UUID)
     assert doc.filename.endswith("Renamed.pdf") and doc.deleted_at is None
     # moved to the duplicates folder → soft-deleted, never hard-deleted
     d.items[src]["parent"] = d.folder[DUPS]
-    removed = await tool.index_patient(db, ERIKA_UUID)
+    removed = await tool.index_patient(db, PRIMARY_TEST_UUID)
     assert removed["removed"] == 1
-    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=PRIMARY_TEST_UUID)
     assert doc is not None and doc.deleted_at is not None
 
 
 async def test_enhance_refuses_a_curated_document_before_any_client(db, env):
     from oncofiles import enhance
 
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(env[1], patient_id=ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(env[1], patient_id=PRIMARY_TEST_UUID)
     with (
         patch.object(enhance, "_get_client", side_effect=AssertionError("cloud called")),
         pytest.raises(indexer.CuratedCloudError),
@@ -174,8 +174,8 @@ async def test_enhance_refuses_a_curated_document_before_any_client(db, env):
 async def test_download_never_tries_the_files_api_for_curated_rows(db, env):
     from oncofiles.tools._helpers import _try_download
 
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(env[1], patient_id=ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(env[1], patient_id=PRIMARY_TEST_UUID)
     files = MagicMock()
     gdrive = MagicMock()
     import pymupdf
@@ -217,8 +217,8 @@ def test_vision_ocr_refuses_a_curated_document():
 async def test_curated_row_without_pages_never_falls_back_to_cloud_ocr(db, env):
     from oncofiles.tools._helpers import _ensure_ocr_text
 
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(env[1], patient_id=ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(env[1], patient_id=PRIMARY_TEST_UUID)
     await db.delete_ocr_pages(doc.id)
     with patch("oncofiles.ocr.extract_text_from_image", side_effect=AssertionError("cloud")):
         assert await _ensure_ocr_text(db, doc, [MagicMock()], None) == []
@@ -236,23 +236,23 @@ async def test_an_interrupted_document_is_redone_whole_on_the_next_index(db, env
         await real_save(doc_id, n, text, model)
 
     with patch.object(db, "save_ocr_page", dies_on_second_page):
-        first = await tool.index_patient(db, ERIKA_UUID)
+        first = await tool.index_patient(db, PRIMARY_TEST_UUID)
     assert first["errors"] == 1
-    again = await tool.index_patient(db, ERIKA_UUID)  # no marker → redone, not "unchanged"
-    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
-    pages = await db.get_ocr_pages(doc.id, patient_id=ERIKA_UUID)
+    again = await tool.index_patient(db, PRIMARY_TEST_UUID)  # no marker → redone, not "unchanged"
+    doc = await db.get_document_by_gdrive_id(src, patient_id=PRIMARY_TEST_UUID)
+    pages = await db.get_ocr_pages(doc.id, patient_id=PRIMARY_TEST_UUID)
     assert len(pages) == 2 and again["errors"] == 0
-    rows = await db.list_documents(patient_id=ERIKA_UUID)
+    rows = await db.list_documents(patient_id=PRIMARY_TEST_UUID)
     assert sum(1 for r in rows if r.gdrive_id == src) == 1  # never duplicated
 
 
 async def test_forced_documents_are_reparsed_without_a_sidecar_change(db, env):
     d, src = env
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
-    forced = await tool.index_patient(db, ERIKA_UUID, force_ids={doc.id})
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=PRIMARY_TEST_UUID)
+    forced = await tool.index_patient(db, PRIMARY_TEST_UUID, force_ids={doc.id})
     assert forced["updated"] == 1 and forced["unchanged"] == 1
-    foreign = await tool.index_patient(db, ERIKA_UUID, force_ids={987654})
+    foreign = await tool.index_patient(db, PRIMARY_TEST_UUID, force_ids={987654})
     assert foreign["updated"] == 0 and foreign["unchanged"] == 2
 
 
@@ -262,8 +262,8 @@ async def test_index_records_the_sidecar_hash_and_source_md5(db, env):
     import json as _json
 
     d, src = env
-    await tool.index_patient(db, ERIKA_UUID)
-    doc = await db.get_document_by_gdrive_id(src, patient_id=ERIKA_UUID)
+    await tool.index_patient(db, PRIMARY_TEST_UUID)
+    doc = await db.get_document_by_gdrive_id(src, patient_id=PRIMARY_TEST_UUID)
     async with db.db.execute(
         "SELECT structured_metadata FROM documents WHERE id = ?", (doc.id,)
     ) as cur:

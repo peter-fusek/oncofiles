@@ -18,10 +18,12 @@ that might one day honour the soft switch.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
 import re
 import time
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -88,8 +90,113 @@ def clamp_budget(max_tokens: int, prompt_tokens: int) -> int:
     return max(0, min(max_tokens, window - prompt_tokens - CONTEXT_MARGIN))
 
 
+# What kind of failure a ``LocalLLMError`` is, for callers that must tell a
+# down model (stop) from one bad answer (this document only). Decided where
+# the error is raised, never by reading its message.
+TRANSPORT = "transport"  # unreachable, timeout, reset, non-200, no usable payload
+ANSWER = "answer"  # the model answered: truncated, not JSON, wrong shape
+UNKNOWN = "unknown"  # a plain LocalLLMError: callers treat it as transport
+
+
 class LocalLLMError(RuntimeError):
-    """The local model is unreachable, misconfigured, or answered nonsense."""
+    """The local model is unreachable, misconfigured, or answered nonsense.
+
+    ``failure`` is ``TRANSPORT``, ``ANSWER`` or ``UNKNOWN``; raise one of the
+    two subclasses so callers do not have to fail closed."""
+
+    failure: str = UNKNOWN
+
+
+class LocalLLMTransportError(LocalLLMError):
+    """No usable answer came back: the model or the server is down or erroring."""
+
+    failure = TRANSPORT
+
+
+class LocalLLMAnswerError(LocalLLMError):
+    """The model answered, but not usably for this request (a per-document problem)."""
+
+    failure = ANSWER
+
+
+class LocalLLMHostRefusedError(LocalLLMError):
+    """LOCAL_LLM_BASE_URL points at a host that is not private (#925); nothing was sent."""
+
+
+# #925: document text and page images go to LOCAL_LLM_BASE_URL, so it must be
+# this server or its private network, never a hosted API. Names that resolve
+# only on a private network (or nowhere: RFC 2606/6761 test names) pass; any
+# other host needs an explicit LOCAL_LLM_ALLOWED_HOSTS entry.
+PRIVATE_HOST_NAMES = frozenset({"localhost", "host.lima.internal", "host.docker.internal"})
+PRIVATE_HOST_SUFFIXES = (
+    ".local",
+    ".internal",
+    ".lan",
+    ".home.arpa",
+    ".localhost",
+    ".test",
+    ".invalid",
+)
+_PRIVATE_NETWORKS = tuple(
+    ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
+)
+_refusals_logged: set[str] = set()
+
+
+def _allowed_hosts() -> set[str]:
+    raw = config.LOCAL_LLM_ALLOWED_HOSTS or ""
+    return {h.strip().lower().rstrip(".") for h in raw.split(",") if h.strip()}
+
+
+def base_url_refusal(base_url: str | None = None) -> str | None:
+    """Why ``LOCAL_LLM_BASE_URL`` may not be used, or None when its host is private.
+
+    Allowed: loopback, RFC 1918 / ULA addresses, ``host.lima.internal``,
+    ``host.docker.internal``, ``localhost``, a name under ``.local``,
+    ``.internal``, ``.lan``, ``.home.arpa``, ``.localhost``, ``.test`` or
+    ``.invalid``, and any host listed in ``LOCAL_LLM_ALLOWED_HOSTS``. The
+    reason names the host only (never the path, query or credentials).
+    """
+    url = config.LOCAL_LLM_BASE_URL if base_url is None else base_url
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return "LOCAL_LLM_BASE_URL is not a valid URL"
+    if parts.scheme not in ("http", "https"):
+        return "LOCAL_LLM_BASE_URL must be an http(s) URL"
+    if not host:
+        return "LOCAL_LLM_BASE_URL has no host"
+    if host in _allowed_hosts() or host in PRIVATE_HOST_NAMES:
+        return None
+    if any(host.endswith(sfx) for sfx in PRIVATE_HOST_SUFFIXES):
+        return None
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if ip.is_loopback or any(ip in net for net in _PRIVATE_NETWORKS):
+            return None
+    shown = host[:64]
+    return (
+        f"LOCAL_LLM_BASE_URL host {shown!r} is not loopback, private or allowlisted; "
+        "document content may only go to a model on this server or its private "
+        "network (set LOCAL_LLM_ALLOWED_HOSTS to allow a host)"
+    )
+
+
+def require_private_base_url() -> None:
+    """Raise ``LocalLLMHostRefusedError`` (logged once per process and host) unless private."""
+    reason = base_url_refusal()
+    if reason is None:
+        return
+    if reason not in _refusals_logged:
+        _refusals_logged.add(reason)
+        logger.error("local LLM refused (#925): %s", reason)
+    raise LocalLLMHostRefusedError(reason)
 
 
 def configured() -> bool:
@@ -192,13 +299,14 @@ def chat(
     Only the extractor call path passes it, explicitly per call (never global
     state); every other caller follows the env. Off = byte-identical request."""
     if not configured():
-        raise LocalLLMError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
+        raise LocalLLMTransportError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
+    require_private_base_url()  # #925: before anything is built or sent
     est = estimate_prompt_tokens(system, user_content)
     max_tokens = clamp_budget(max_tokens, est)
     if max_tokens < MIN_ANSWER_TOKENS:
         # A per-document problem (worded "truncated" so the run is not aborted
         # as "model down"): the document goes to review, it never loops.
-        raise LocalLLMError(
+        raise LocalLLMAnswerError(
             f"local LLM answer truncated: prompt ~{est} tokens leaves no room "
             f"in the {config.LOCAL_LLM_CONTEXT_WINDOW}-token context"
         )
@@ -242,21 +350,21 @@ def chat(
             **per_call,
         )
     except httpx.HTTPError as exc:
-        raise LocalLLMError(f"local LLM unreachable: {type(exc).__name__}") from exc
+        raise LocalLLMTransportError(f"local LLM unreachable: {type(exc).__name__}") from exc
     finally:
         if own:
             http.close()
     if resp.status_code == 400 and _is_overflow(resp):
         # Our estimate was low: same per-document path as a truncation
         # (review after limited retries), never a run abort.
-        raise LocalLLMError("local LLM answer truncated: context overflow (HTTP 400)")
+        raise LocalLLMAnswerError("local LLM answer truncated: context overflow (HTTP 400)")
     if resp.status_code != 200:
-        raise LocalLLMError(f"local LLM HTTP {resp.status_code}")
+        raise LocalLLMTransportError(f"local LLM HTTP {resp.status_code}")
     try:
         choice = resp.json()["choices"][0]
         content = choice["message"].get("content")
     except (KeyError, IndexError, ValueError, TypeError, AttributeError) as exc:
-        raise LocalLLMError("local LLM returned an unexpected payload") from exc
+        raise LocalLLMTransportError("local LLM returned an unexpected payload") from exc
     if info is not None:
         # Diagnostics for the caller only (in memory, never logged or stored).
         # LM Studio may leave ``content`` empty and put the text in
@@ -277,13 +385,19 @@ def chat(
         info.update(usage)  # counts only
     if not (content or "").strip() and choice.get("finish_reason") == "length":
         # The whole budget went to reasoning (2026-11-07: 1199/1200 tokens).
-        raise LocalLLMError(
+        raise LocalLLMAnswerError(
             f"local LLM answer truncated: reasoning used the whole budget ({max_tokens} tokens)"
         )
     return strip_think(content if isinstance(content, str) else json.dumps(content))
 
 
 def _is_overflow(resp) -> bool:
+    """A JSON error from the model server saying the prompt does not fit. An HTML
+    or other non-JSON body (a proxy error page) is never one: that is transport."""
+    try:
+        resp.json()
+    except ValueError:
+        return False
     text = (resp.text or "").lower()
     return any(k in text for k in ("context", "n_ctx", "too many tokens", "maximum length"))
 
@@ -335,7 +449,7 @@ def parse_json_object(text: str) -> dict:
     try:
         obj = json.loads(candidate)
     except ValueError as exc:
-        raise LocalLLMError("local LLM answer is not valid JSON") from exc
+        raise LocalLLMAnswerError("local LLM answer is not valid JSON") from exc
     if not isinstance(obj, dict):
-        raise LocalLLMError("local LLM answer is not a JSON object")
+        raise LocalLLMAnswerError("local LLM answer is not a JSON object")
     return obj

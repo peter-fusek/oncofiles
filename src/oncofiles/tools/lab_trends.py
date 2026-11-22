@@ -7,6 +7,7 @@ import json
 from fastmcp import Context
 
 from oncofiles.curated.facts_rules import BIOMARKER_CATEGORIES
+from oncofiles.fact_labels import flag_source
 from oncofiles.models import LabTrendQuery, LabValue
 from oncofiles.tools._helpers import (
     _clamp_limit,
@@ -324,6 +325,7 @@ async def _fact_lab_trends(
             "parameter": parameter if parameter else r["code"],
             **facts.point(r),
             "flag": r["flag"],
+            "flag_source": flag_source(r["flag"], r.get("metadata_json")),  # #929
             "document_id": r["source_document_id"],
             "gdrive_url": urls.get(r["source_document_id"]),
             "verification": r["verification"],
@@ -933,6 +935,7 @@ async def _fact_time_series(
             "date": (r["effective_at"] or "")[:10],
             **facts.point(r),
             "flag": r["flag"],
+            "flag_source": flag_source(r["flag"], r.get("metadata_json")),  # #929
             "document_id": r["source_document_id"],
             "at": r["effective_at"],
             "verification": r["verification"],
@@ -1234,17 +1237,21 @@ async def get_lab_summary(ctx: Context, patient_slug: str | None = None) -> str:
 
 
 async def get_preventive_care_status(ctx: Context, patient_slug: str | None = None) -> str:
-    """Get EU preventive care screening compliance for a general health patient.
+    """Preventive-care records of a general health patient next to EU guideline intervals.
 
-    Evaluates which screenings (colonoscopy, dental, ophthalmology, PSA, etc.)
-    are up-to-date, due soon, overdue, or never done — based on patient age,
-    sex, and treatment_events history.
+    Per screening or vaccination that applies to the patient's age and sex
+    (colonoscopy, dental, ophthalmology, PSA, …): the evidence found in the
+    records (procedures read from documents, preventive / dental / vaccination
+    documents, manual treatment events), each with its document id, page,
+    date and verification, and the newest date. The guideline interval
+    (source named per item) is a general reference, not a fact about this
+    patient and not a recommendation; ``status`` only says where the newest
+    evidence sits relative to it (within_interval, due_soon, past_interval,
+    no_evidence = nothing in the records). Evidence that matches no item is
+    listed under ``unmatched_evidence``. Read-only.
 
     Only available for patients with patient_type="general" in their context.
     Requires date_of_birth and sex in patient context.
-
-    Returns a compliance report with actionable screening status for each
-    applicable protocol.
 
     Args:
         patient_slug: Optional — explicit patient slug (#429).

@@ -60,7 +60,7 @@ ERROR_KINDS = ("http_status", "json_decode", "schema_shape", "empty", "timeout",
                "other")  # fmt: skip
 
 
-class AnswerError(llm.LocalLLMError):
+class AnswerError(llm.LocalLLMAnswerError):
     """The model answered, but not with a usable facts JSON."""
 
     def __init__(self, kind: str, message: str) -> None:
@@ -345,7 +345,7 @@ def call_and_parse(
         if shape is not None:
             res.answer = shape(raw or "", field_used)
         if res.finish_reason == "length":
-            raise llm.LocalLLMError("local LLM answer truncated: finish_reason=length")
+            raise llm.LocalLLMAnswerError("local LLM answer truncated: finish_reason=length")
         if field_used == "reasoning_content":
             parsed = parse_reasoning(raw)
             res.answer_source = "reasoning"

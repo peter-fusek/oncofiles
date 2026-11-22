@@ -121,13 +121,15 @@ _FRONT = re.compile(r"^---\n(.*?)\n---\n?", re.S)
 # Generic loss guard (#660 follow-up): thresholds of the review decision
 REVIEW_MISSING_NUMBERS = 2  # more than this many lost numbers → review
 REVIEW_MISSING_DATES = 0  # more than this many lost dates → review
-NEAR_EMPTY_CHARS = 50  # a page with fewer stripped characters is near-empty
+# a page with fewer stripped characters is near-empty (one value with ingest, #931)
+NEAR_EMPTY_CHARS = extract_mod.NEAR_EMPTY_CHARS
 NEAR_EMPTY_CHARS_RATIO = 0.8  # near-empty page + body below this share of the old → review
 # #806 (thresholds may only become stricter)
 TEXT_SHRUNK_RATIO = 0.6  # new body below this share of the old body → review (text_shrunk)
 MIN_WORD_OVERLAP = 0.40  # share of old distinct words found in the new text below this → review
 WORD_MIN_LEN = 3  # words for the overlap: lower-case, letters only, diacritics kept, ≥ this
-RETRY_REASONING_RATIO = 0.8  # near-empty pass with reasoning/completion above this → 1 retry
+# near-empty pass with reasoning/completion above this → 1 retry (shared with ingest, #931)
+RETRY_REASONING_RATIO = extract_mod.RETRY_REASONING_RATIO
 # #883: the two halves of pass 2 share this share of the page height, so a line
 # cut at one half's edge is whole in the other (A4 at 220 dpi: ~200 px, 6+ lines)
 TILE_OVERLAP = 0.08
@@ -211,22 +213,10 @@ def _page_count(content: bytes, ext: str) -> int:
         return doc.page_count if ext == "pdf" else 1
 
 
-def born_digital(page, *, image_cover: float = 0.8) -> bool:
-    """Is this PDF page's text its own (born-digital), not OCR laid over a scan?
-    False when any text is invisible (render mode 3 or opacity 0, how OCR layers are added)
-    or a raster image covers most of the page."""
-    try:
-        if any(span.get("type") == 3 or span.get("opacity", 1) == 0
-               for span in page.get_texttrace()):  # fmt: skip
-            return False
-        area = abs(page.rect.width * page.rect.height) or 1.0
-        for info in page.get_image_info():
-            x0, y0, x1, y1 = info.get("bbox") or (0, 0, 0, 0)
-            if abs((x1 - x0) * (y1 - y0)) / area >= image_cover:
-                return False
-    except Exception:  # unreadable structure: do not trust the layer
-        return False
-    return True
+# #931: the born-digital rule and the #806 retry live in ``extract`` so ingest
+# and re-OCR share one implementation; these names stay for existing callers.
+born_digital = extract_mod.born_digital
+needs_retry = extract_mod.needs_retry
 
 
 def second_pass_tiles() -> int:
@@ -344,17 +334,6 @@ def is_blank(ink: float | None, text_layer: bool | None) -> bool:
     """A likely blank back side: measured ink below ``BLANK_INK_MAX`` and no
     text layer. Unknown ink (not measured) is never blank."""
     return isinstance(ink, int | float) and ink < BLANK_INK_MAX and not text_layer
-
-
-def needs_retry(text: str | None, reasoning_tokens, completion_tokens) -> bool:
-    """A near-empty answer from a pass that spent nearly all its tokens on
-    reasoning (#806). Unknown counts never trigger a retry."""
-    if len((text or "").strip()) >= NEAR_EMPTY_CHARS:
-        return False
-    if not all(isinstance(v, int) and not isinstance(v, bool)
-               for v in (reasoning_tokens, completion_tokens)):  # fmt: skip
-        return False
-    return completion_tokens > 0 and reasoning_tokens / completion_tokens > RETRY_REASONING_RATIO
 
 
 def is_truncated(rec: dict) -> bool:
@@ -505,7 +484,7 @@ def _vision_passes(
         t0 = time.monotonic()
         error = None
         if retry:  # #806: thinking off through the per-call marker, nothing global
-            mode = {"thinking": False, "reasoning_marker": True}
+            mode = dict(extract_mod.RETRY_MODE)
         else:
             mode = {"thinking": False if config.REOCR_THINKING == "off" else None}
         try:
@@ -545,17 +524,19 @@ def _vision_passes(
 
     def ask(part: dict, i: int, total: int, k: int = 0, tile=None, meta=None) -> str:
         text, tokens = call(part, i, total, k, tile=tile, meta=meta)
-        if not retry_thin or blank.get(i) or not needs_retry(text, *tokens):
+        if not retry_thin or blank.get(i):
             return text
-        with lock:
-            retried.add(i + 1)
-        try:
-            again, _ = call(part, i, total, k, retry=True, tile=tile, meta=meta)
-        except Exception as exc:  # the retry is a bonus: its failure keeps the first answer
-            logger.warning("re-OCR retry failed: page=%s pass=%s %s", i + 1, k + 1,
-                           type(exc).__name__)  # fmt: skip
-            return text
-        return again if len((again or "").strip()) > len((text or "").strip()) else text
+
+        def again() -> str:
+            with lock:
+                retried.add(i + 1)
+            return call(part, i, total, k, retry=True, tile=tile, meta=meta)[0]
+
+        # #806 / #931: the one shared retry (needs_retry, longer text stands,
+        # a failed retry keeps the first answer)
+        where = f"re-OCR page={i + 1} pass={k + 1}"
+        answer, _ = extract_mod.retry_near_empty(text, tokens, again, where=where)
+        return answer
 
     def read(images: list[tuple[dict, dict]], i: int, total: int, k: int = 0) -> str:
         """One pass over one page: one call per image (a whole page, or the
@@ -849,16 +830,11 @@ def reread(
         if ext in extract_mod.TEXT_EXTS:
             return Reread([content.decode("utf-8", errors="replace")], "plain", "utf-8")
         if ext == "pdf":
-            import pymupdf
-
-            with pymupdf.open(stream=content, filetype="pdf") as doc:
-                layer = [p.get_text() for p in doc]
-                digital = all(born_digital(p) for p in doc)
-            # Only a born-digital text layer is the document's own text. An OCR'd
-            # layer (invisible text over a scan) is OCR of unknown quality, maybe
-            # the very text the old transcription copied: read the image instead.
-            if digital and len("".join(layer).strip()) >= 100:
-                return Reread([t.strip() for t in layer], "text_layer", "pymupdf")
+            # Only a born-digital text layer is the document's own text; the one
+            # decision shared with ingest (#931, ``PdfTextLayer.is_own_text``).
+            layer = extract_mod.pdf_text_layer(content)
+            if layer.is_own_text():
+                return Reread([t.strip() for t in layer.pages], "text_layer", "pymupdf")
         elif ext not in extract_mod.IMAGE_EXTS:
             return Reread([], "none", "-", error=f"unsupported file type .{ext}")
         if _page_count(content, ext) > extract_mod.MAX_VISION_PAGES:
@@ -1350,6 +1326,8 @@ def _facts_of(text: str, vocab) -> set[tuple]:
 
     front, pages = parse_sidecar(text)
     day = str(front.get("doc_date") or "")[:10] or None
+    if day and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        day = None  # a month-precision "YYYY-MM" (#919) is no report day
     category = category_for(str(front.get("doc_type") or "other")).value
     facts, _ = extract_lab_facts(pages, vocab, report_date=day,
                                  inline=category in _INLINE_CATEGORIES)  # fmt: skip

@@ -23,7 +23,7 @@ from oncofiles.curated import classify, llm
 from oncofiles.curated import classify_scorecard as csc
 from oncofiles.curated.contract import parse_contract
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PATIENT_A_UUID
 
 SRC = Path(__file__).parent.parent / "src" / "oncofiles"
 README = (Path(__file__).parent / "fixtures" / "curated" / "README_oncology.md").read_text()
@@ -159,7 +159,7 @@ async def seeded(db):
             "INSERT INTO documents (id, file_id, filename, original_filename, category, "
             "mime_type, size_bytes, patient_id, gdrive_id, structured_metadata) "
             "VALUES (?, ?, ?, ?, 'report', 'application/pdf', 1, ?, ?, '{}')",
-            (doc_id, f"gdrive:g{doc_id}", FILED[doc_id], FILED[doc_id], ERIKA_UUID,
+            (doc_id, f"gdrive:g{doc_id}", FILED[doc_id], FILED[doc_id], PATIENT_A_UUID,
              f"g{doc_id}"),
         )  # fmt: skip
         await db.save_ocr_page(doc_id, 1, text, "curated-sidecar")
@@ -200,7 +200,7 @@ async def _run(db, **kw):
     started = json.loads(await tool.curated_classify_scorecard(
         _ctx(db), [DOC_A, DOC_B, DOC_C, 999_999], **kw))  # fmt: skip
     assert started["kind"] == "classify_scorecard", started
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PATIENT_A_UUID]["task"], 10)
     return json.loads(await tool.curated_reocr_status(_ctx(db)))
 
 
@@ -250,8 +250,8 @@ async def test_scorecard_counts_only_and_writes_nothing_but_its_row(seeded, scor
                            "dry_run"}  # fmt: skip
     assert stored["kind"] == "classification"
     # an extraction scorecard never takes a classification row as its baseline
-    assert await db.get_last_scorecard(patient_id=ERIKA_UUID) is None
-    last = await db.get_last_scorecard(patient_id=ERIKA_UUID, kind="classification")
+    assert await db.get_last_scorecard(patient_id=PATIENT_A_UUID) is None
+    last = await db.get_last_scorecard(patient_id=PATIENT_A_UUID, kind="classification")
     assert last["id"] == row["id"]
 
 
@@ -297,7 +297,7 @@ async def test_scorecard_refusals(seeded, scorecard_env):
     assert "repeat" in out["error"]
     out = json.loads(await tool.curated_classify_scorecard(ctx, [DOC_A], label="bad label"))
     assert "label" in out["error"]
-    tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": "reocr"}
+    tool._reocr_jobs[PATIENT_A_UUID] = {"state": "running", "kind": "reocr"}
     out = json.loads(await tool.curated_classify_scorecard(ctx, [DOC_A]))
     assert "busy" in out["error"]
     assert await _rows(seeded) == []

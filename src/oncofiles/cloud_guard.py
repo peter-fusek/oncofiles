@@ -6,7 +6,9 @@ Claude.ai. Background jobs that process documents (curated index, fact
 extraction #603, data backfill #619) run inside ``local_only()``. The shared
 Anthropic client (``enhance._get_client``) and the Files API client refuse to
 work there — fail closed, no fallback. The flag is a ContextVar, so it follows
-``asyncio.to_thread`` into worker threads.
+``asyncio.to_thread`` into worker threads. Since #925 every scheduler job and
+boot-time background task is registered through ``local_only_task`` and the
+curated run is a zone, so the policy holds even with cloud AI switched on.
 
 The cloud is OFF by default: it needs ``CLOUD_AI_ENABLED`` switched on AND an
 ``ANTHROPIC_API_KEY`` (#618, privacy text #699). Otherwise the same two
@@ -17,8 +19,12 @@ never enables it.
 
 from __future__ import annotations
 
+import functools
+import inspect
+from collections.abc import Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import Any
 
 _local_only: ContextVar[str | None] = ContextVar("oncofiles_local_only", default=None)
 
@@ -52,6 +58,10 @@ def cloud_ai_disabled_reason(api_key: str | None = None) -> str | None:
     """
     from oncofiles import config
 
+    if (job := _local_only.get()) is not None:
+        # #925: inside a local-only zone the cloud is unavailable whatever the
+        # flag says, so "skip if cloud is off" checks skip here too.
+        return f"'{job}' runs on the local model only (policy 2026-11-09)"
     if not config.CLOUD_AI_ENABLED:
         return CLOUD_AI_FLAG_OFF_MESSAGE
     if not (api_key or config.ANTHROPIC_API_KEY):
@@ -78,6 +88,33 @@ def local_only(job: str):
         yield
     finally:
         _local_only.reset(token)
+
+
+LOCAL_ONLY_TASK_ATTR = "__local_only_task__"
+
+
+def local_only_task(job: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a background job target so every run happens inside ``local_only(job)`` (#925).
+
+    Every APScheduler job (and every background loop started at boot) is
+    registered through this wrapper, so the policy is enforced, not merely
+    true because cloud AI happens to be off. The wrapper is always a coroutine
+    function: an async target is awaited, a plain callable is called and an
+    awaitable it returns (``lambda: _run_x(...)``) is awaited inside the zone.
+    Job targets are async; a blocking sync target must not be registered here.
+    The wrapper carries ``LOCAL_ONLY_TASK_ATTR`` = ``job`` (lock tests).
+    """
+
+    @functools.wraps(fn)
+    async def _wrapper(*args: Any, **kwargs: Any) -> Any:
+        with local_only(job):
+            result = fn(*args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+
+    setattr(_wrapper, LOCAL_ONLY_TASK_ATTR, job)
+    return _wrapper
 
 
 def local_only_job() -> str | None:

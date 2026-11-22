@@ -17,7 +17,7 @@ from fastmcp import Context
 
 from oncofiles.curated.facts_rules import _unit_key
 from oncofiles.database._facts import LLM_LAB_FAMILY
-from oncofiles.fact_labels import LLM_NOTE, group_llm, is_llm, label_row, norm
+from oncofiles.fact_labels import LLM_NOTE, flag_source, group_llm, is_llm, label_row, norm
 from oncofiles.tools._helpers import _gdrive_url, _get_db, _is_admin_caller, _resolve_patient_id
 
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
@@ -154,6 +154,7 @@ def _feed_fact(r: dict, fact_id: str, at: str, conversions: dict, ref: dict | No
             row["ref_document_id"] = obs["ref_document_id"]
     if r["flag"]:
         row["flag"] = r["flag"]
+        row["flag_source"] = flag_source(r["flag"], meta)  # #929: printed | generic
     row["verification"] = r["verification"]
     row.update(_llm_marks(r))  # read by the model (#729, #714): say so, as everywhere
     row["document_id"] = r["source_document_id"]
@@ -599,6 +600,7 @@ async def patient_overview(ctx: Context, patient_slug: str | None = None) -> str
                         "value": r["value_canonical"],
                         "unit": r["unit_canonical"],
                         "flag": r["flag"],
+                        "flag_source": flag_source(r["flag"], r.get("metadata_json")),
                         "at": r["effective_at"],
                         "verification": r["verification"],
                         "source_document_id": r["source_document_id"],
@@ -750,7 +752,7 @@ async def fact_series(
             ),
             "ref": [r["ref_range_low"], r["ref_range_high"]],
             "flag": r["flag"],
-            "flag_source": _meta(r).get("flag_source") or ("lab" if r["flag"] else None),
+            "flag_source": flag_source(r["flag"], r.get("metadata_json")),
             "verification": r["verification"],
             **_llm_marks(r),
             "evidence": r["evidence"],
@@ -773,6 +775,7 @@ async def fact_series(
                     "at_to",
                     "value",
                     "flag",
+                    "flag_source",
                     "verification",
                     "method",
                     "verification_label",
@@ -819,6 +822,7 @@ async def document_detail(ctx: Context, document_id: int, patient_slug: str | No
                     "unit": f["unit"],
                     "ref": [f["ref_range_low"], f["ref_range_high"]],
                     "flag": f["flag"],
+                    "flag_source": flag_source(f["flag"], f.get("metadata_json")),
                     "at": f["effective_at"],
                     **_date_fields(f),
                     "page": f["page_number"],

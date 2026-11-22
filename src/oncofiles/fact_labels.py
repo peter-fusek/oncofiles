@@ -19,6 +19,7 @@ line on the page; the model chose which line belongs to which test.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Hashable
 
@@ -75,6 +76,31 @@ def verification_label(verification: str | None, extracted_by: str | None) -> di
     if verification == "unverified":
         return dict(_LABELS["llm_unverified" if llm else "unverified"])
     return dict(_LABELS[verification]) if verification in _LABELS else None
+
+
+FLAG_PRINTED = "printed"
+FLAG_GENERIC = "generic"
+
+
+def flag_source(flag: str | None, metadata: dict | str | None) -> str | None:
+    """Where a served ``flag`` comes from (#929): ``printed`` | ``generic`` | None.
+
+    ``generic``: computed in code from a generic reference range
+    (``facts_rules.GENERIC_REF`` / ``GENERIC_REF_BY_SEX``) for a value printed
+    without one, stored as ``metadata.flag_source = "generic"``. Every other
+    flag is the lab's own (a printed range, a printed arrow or mark, the stored
+    ``arrow`` source included) → ``printed``. No flag → None. ``metadata`` is
+    the fact's metadata dict or its ``metadata_json`` text."""
+    if not flag:
+        return None
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata or "{}")
+        except ValueError:
+            metadata = {}
+    if isinstance(metadata, dict) and metadata.get("flag_source") == FLAG_GENERIC:
+        return FLAG_GENERIC
+    return FLAG_PRINTED
 
 
 def label_row(row: dict, *, verification_key: str = "verification") -> dict:

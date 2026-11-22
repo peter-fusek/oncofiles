@@ -28,7 +28,7 @@ from oncofiles.enhance import (
 )
 from oncofiles.models import DocumentCategory
 from oncofiles.sync import _persist_lab_values_from_metadata
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 # Sample chemo_sheet text — the #465 case. Bundled pre-chemo CBC printout
 # underneath a chemo administration form.
@@ -48,7 +48,7 @@ ALT          32      U/L       10 - 40
 
 Regimen: Oxaliplatina 85 mg/m2 + 5-FU bolus + infuzia 46h.
 Premedikacia: Dexametazon 8 mg, Ondansetron 8 mg.
-Signed: MUDr. Porsok
+Signed: MUDr. Kornok
 """
 
 # Pure narrative consultation note — no numeric table. has_lab_table must
@@ -200,7 +200,7 @@ def test_extract_structured_metadata_fires_second_call_on_lab_table():
         "medications": ["Oxaliplatina", "5-FU"],
         "dates_mentioned": ["2027-04-15"],
         "providers": ["NOU"],
-        "doctors": ["MUDr. Porsok"],
+        "doctors": ["MUDr. Kornok"],
         "handwritten": False,
         "plain_summary": "Chemo sheet for cycle 4 of mFOLFOX6.",
         "plain_summary_sk": "Chemo list pre cyklus 4 mFOLFOX6.",
@@ -279,7 +279,7 @@ async def test_persist_lab_values_writes_rows(db: Database):
         document_date=date(2027, 4, 15),
         category=DocumentCategory.CHEMO_SHEET,
     )
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     metadata = {
         "document_type": "chemo_sheet",
@@ -296,7 +296,7 @@ async def test_persist_lab_values_writes_rows(db: Database):
     written = await _persist_lab_values_from_metadata(db, doc, metadata)
     assert written == 3
 
-    stored = await db.get_lab_snapshot(doc.id, patient_id=ERIKA_UUID)
+    stored = await db.get_lab_snapshot(doc.id, patient_id=PRIMARY_TEST_UUID)
     params = sorted(v.parameter for v in stored)
     assert params == ["ABS_NEUT", "HGB", "WBC"]
     hgb = next(v for v in stored if v.parameter == "HGB")
@@ -313,7 +313,7 @@ async def test_persist_lab_values_falls_back_to_document_date(db: Database):
         document_date=date(2027, 4, 15),
         category=DocumentCategory.CHEMO_SHEET,
     )
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     metadata = {
         "lab_values": {
@@ -325,7 +325,7 @@ async def test_persist_lab_values_falls_back_to_document_date(db: Database):
     written = await _persist_lab_values_from_metadata(db, doc, metadata)
     assert written == 1
 
-    stored = await db.get_lab_snapshot(doc.id, patient_id=ERIKA_UUID)
+    stored = await db.get_lab_snapshot(doc.id, patient_id=PRIMARY_TEST_UUID)
     assert stored[0].lab_date == date(2027, 4, 15)
 
 
@@ -333,7 +333,7 @@ async def test_persist_lab_values_falls_back_to_document_date(db: Database):
 async def test_persist_lab_values_no_block_returns_zero(db: Database):
     """Metadata without lab_values block → no writes."""
     doc = make_doc(file_id="f_no_labs")
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
     metadata = {"document_type": "consultation", "findings": []}
     written = await _persist_lab_values_from_metadata(db, doc, metadata)
@@ -388,7 +388,7 @@ async def _insert_doc_with_metadata(
         document_date=doc_date,
         category=category,
     )
-    doc = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
     await db.save_ocr_page(doc.id, 1, ocr_text, "pymupdf-native")
     if metadata_json is not None:
         await db.update_structured_metadata(doc.id, metadata_json)
@@ -437,7 +437,7 @@ async def test_backfill_lab_values_dry_run_writes_nothing(db: Database):
     assert result["lab_values_added"] == 0
 
     # DB confirms no rows were inserted
-    stored = await db.get_lab_snapshot(doc_id, patient_id=ERIKA_UUID)
+    stored = await db.get_lab_snapshot(doc_id, patient_id=PRIMARY_TEST_UUID)
     assert stored == []
 
 
@@ -493,8 +493,8 @@ async def test_backfill_lab_values_writes_when_not_dry_run(db: Database):
     assert set(result["categories"]) >= {"chemo_sheet"}
 
     # Exactly one doc has stored values
-    stored1 = await db.get_lab_snapshot(doc1, patient_id=ERIKA_UUID)
-    stored2 = await db.get_lab_snapshot(doc2, patient_id=ERIKA_UUID)
+    stored1 = await db.get_lab_snapshot(doc1, patient_id=PRIMARY_TEST_UUID)
+    stored2 = await db.get_lab_snapshot(doc2, patient_id=PRIMARY_TEST_UUID)
     # The tool orders by doc_date DESC so doc2 (2027-05-01) is processed first
     processed_docs = (stored1, stored2)
     total = len(stored1) + len(stored2)

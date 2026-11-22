@@ -26,7 +26,9 @@ from datetime import date
 
 from oncofiles.curated.contract import ContractError, nfc, parse_contract
 from oncofiles.curated.drive_ops import Item
-from oncofiles.curated.runner import _is_sidecar, walk
+from oncofiles.curated.naming import PRECISION_KEY, PRECISION_MONTH, date_precision
+from oncofiles.curated.review_codes import codes_of
+from oncofiles.curated.runner import _is_sidecar, review_override, walk
 from oncofiles.models import DocumentCategory
 
 CURATED_FILE_PREFIX = "gdrive:"
@@ -43,7 +45,13 @@ INDEX_ENGINE = "curated-sidecar"
 #      value keeps its unit and printed reference range (#899)
 # v23: a lab-table row without a unit keeps the range printed right after the
 #      value; a Bory result item wrapped onto the next line is read whole (#907)
-INDEX_VERSION = 23
+# v24: curated.review_reasons (codes only) and curated.review_override (bool) are
+#      kept for the dashboard (#919); no parser change, but every row must be
+#      re-read once to carry them
+# v25: a month-precision date (#919: YYYYMM00 name, doc_date "YYYY-MM" or
+#      doc_date_precision: month) is stored as document_date NULL plus
+#      doc_date_precision "month" and doc_month "YYYY-MM" in the metadata
+INDEX_VERSION = 25
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)
@@ -184,6 +192,26 @@ def _filename_date(name: str) -> date | None:
         return None
 
 
+def _filename_month(name: str) -> str | None:
+    """``YYYY-MM`` of a ``YYYYMM00-…`` name (month precision, #919)."""
+    token = name[:8]
+    if len(name) > 8 and name[8] in "-_" and date_precision(token) == PRECISION_MONTH:
+        return f"{token[:4]}-{token[4:6]}"
+    return None
+
+
+_MONTH_RE = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])(?:-00)?$")
+
+
+def _front_month(front: dict) -> str | None:
+    """``YYYY-MM`` when the front matter dates the document by month (#919):
+    ``doc_date: "YYYY-MM"`` (or ``YYYY-MM-00``), with or without
+    ``doc_date_precision: month``."""
+    value = front.get("doc_date")
+    m = _MONTH_RE.match(value.strip()) if isinstance(value, str) else None
+    return f"{m.group(1)}-{m.group(2)}" if m else None
+
+
 def _filename_fields(name: str) -> list[str]:
     stem = name.rsplit(".", 1)[0] if "." in name else name
     return stem.split("-")
@@ -224,6 +252,12 @@ class IndexRecord:
     tags: list[str] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     pages: list[str] = field(default_factory=list)
+    # #919: review state for the dashboard, codes and a boolean only (never the
+    # reason sentences, which can quote document content, nor the override text)
+    review_reasons: list[str] = field(default_factory=list)
+    review_override: bool = False
+    # #919: "YYYY-MM" of a month-precision date (document_date stays None)
+    doc_month: str | None = None
 
     @property
     def file_id(self) -> str:
@@ -272,14 +306,22 @@ def _record(folder: str, category: DocumentCategory, item: Item) -> IndexRecord:
         source_md5=item.md5,
         original_filename=nfc(item.name),
         document_date=_filename_date(item.name),
+        doc_month=_filename_month(nfc(item.name)),
         institution=fields[2] if len(fields) >= 6 and fields[2] != "Unknown" else None,
         description="-".join(fields[5:]) if len(fields) > 5 else None,
     )
 
 
-def _apply_sidecar(rec: IndexRecord, front: dict, pages: list[str]) -> None:
+def _apply_sidecar(rec: IndexRecord, front: dict, pages: list[str], text: str = "") -> None:
     rec.pages = pages
-    rec.document_date = _iso_date(front.get("doc_date")) or rec.document_date
+    day = _iso_date(front.get("doc_date"))
+    month = _front_month(front)
+    if day is not None and front.get(PRECISION_KEY) != PRECISION_MONTH:
+        rec.document_date, rec.doc_month = day, None  # a printed day wins
+    elif month is not None:
+        rec.document_date, rec.doc_month = None, month
+    elif front.get(PRECISION_KEY) == PRECISION_MONTH and day is not None:
+        rec.document_date, rec.doc_month = None, day.isoformat()[:7]
     if not rec.institution and front.get("institution") not in (None, "Unknown"):
         rec.institution = str(front["institution"])
     summary = front.get("summary")
@@ -300,6 +342,9 @@ def _apply_sidecar(rec: IndexRecord, front: dict, pages: list[str]) -> None:
         "date_evidence", "metadata_unverified", "summary_source",
     )  # fmt: skip
     rec.metadata = {k: front[k] for k in keep if k in front and front[k] not in (None, "")}
+    rec.review_reasons = codes_of(front.get("review_reasons"))
+    # an ACTIVE #900 override: non-empty and not parked by a failed hard check
+    rec.review_override = bool(text) and review_override(text) is not None
 
 
 def scan(
@@ -353,8 +398,9 @@ def scan(
                 else:
                     raw = drive.download(side.id)
                     rec.sidecar_sha = hashlib.sha256(raw).hexdigest()
-                    front, pages = parse_sidecar(raw.decode("utf-8", errors="replace"))
-                    _apply_sidecar(rec, front, pages)
+                    side_text = raw.decode("utf-8", errors="replace")
+                    front, pages = parse_sidecar(side_text)
+                    _apply_sidecar(rec, front, pages, side_text)
             elif ext in TEXT_SOURCE_EXTS and item.size <= MAX_TEXT_SOURCE_BYTES:
                 # A text source (notes, timelines) is its own text; no sidecar.
                 rec.sidecar_modified = item.modified
@@ -363,7 +409,13 @@ def scan(
                 else:
                     text = drive.download(item.id).decode("utf-8", errors="replace")
                     front, pages = parse_sidecar(text)
-                    _apply_sidecar(rec, front, pages)
+                    _apply_sidecar(rec, front, pages, text)
                     rec.metadata["text_source"] = True
+            if rec.doc_month:
+                # #919: month precision: no fake day in document_date (facts,
+                # timeline and lab dating read it as a day), the month as metadata
+                rec.document_date = None
+                rec.metadata[PRECISION_KEY] = PRECISION_MONTH
+                rec.metadata["doc_month"] = rec.doc_month
             records.append(rec)
     return IndexScan(records, contract.version, skipped, _iso_births(contract))

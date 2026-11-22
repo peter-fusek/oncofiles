@@ -2,40 +2,48 @@
 
 from __future__ import annotations
 
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 # ── get_documents_by_ids ─────────────────────────────────────────────
 
 
 async def test_get_documents_by_ids_empty(db):
     """Empty ID set returns empty dict."""
-    result = await db.get_documents_by_ids(set(), patient_id=ERIKA_UUID)
+    result = await db.get_documents_by_ids(set(), patient_id=PRIMARY_TEST_UUID)
     assert result == {}
 
 
 async def test_get_documents_by_ids_single(db):
     """Single ID returns matching document."""
-    doc = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-    result = await db.get_documents_by_ids({doc.id}, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(make_doc(file_id="f1"), patient_id=PRIMARY_TEST_UUID)
+    result = await db.get_documents_by_ids({doc.id}, patient_id=PRIMARY_TEST_UUID)
     assert doc.id in result
     assert result[doc.id].filename == doc.filename
 
 
 async def test_get_documents_by_ids_multiple(db):
     """Multiple IDs returned in single query."""
-    d1 = await db.insert_document(make_doc(file_id="f1", filename="a.pdf"), patient_id=ERIKA_UUID)
-    d2 = await db.insert_document(make_doc(file_id="f2", filename="b.pdf"), patient_id=ERIKA_UUID)
-    d3 = await db.insert_document(make_doc(file_id="f3", filename="c.pdf"), patient_id=ERIKA_UUID)
-    result = await db.get_documents_by_ids({d1.id, d2.id, d3.id}, patient_id=ERIKA_UUID)
+    doc_a = await db.insert_document(
+        make_doc(file_id="f1", filename="a.pdf"), patient_id=PRIMARY_TEST_UUID
+    )
+    doc_b = await db.insert_document(
+        make_doc(file_id="f2", filename="b.pdf"), patient_id=PRIMARY_TEST_UUID
+    )
+    doc_c = await db.insert_document(
+        make_doc(file_id="f3", filename="c.pdf"), patient_id=PRIMARY_TEST_UUID
+    )
+    result = await db.get_documents_by_ids(
+        {doc_a.id, doc_b.id, doc_c.id}, patient_id=PRIMARY_TEST_UUID
+    )
     assert len(result) == 3
-    assert result[d1.id].filename == "a.pdf"
-    assert result[d3.id].filename == "c.pdf"
+    assert result[doc_a.id].filename == "a.pdf"
+    assert result[doc_c.id].filename == "c.pdf"
 
 
 async def test_get_documents_by_ids_missing(db):
     """Missing IDs are simply absent from result."""
-    doc = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-    result = await db.get_documents_by_ids({doc.id, 9999}, patient_id=ERIKA_UUID)
+    doc = await db.insert_document(make_doc(file_id="f1"), patient_id=PRIMARY_TEST_UUID)
+    result = await db.get_documents_by_ids({doc.id, 9999}, patient_id=PRIMARY_TEST_UUID)
     assert len(result) == 1
     assert doc.id in result
 
@@ -55,7 +63,7 @@ async def test_get_previous_lab_values_single_entry(db):
 
     from oncofiles.models import LabValue
 
-    d1 = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
+    d1 = await db.insert_document(make_doc(file_id="f1"), patient_id=PRIMARY_TEST_UUID)
     v1 = LabValue(
         lab_date=date(2026, 3, 1), parameter="WBC", value=5.0, unit="10^9/L", document_id=d1.id
     )
@@ -70,8 +78,8 @@ async def test_get_previous_lab_values_two_entries(db):
 
     from oncofiles.models import LabValue
 
-    d1 = await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-    d2 = await db.insert_document(make_doc(file_id="f2"), patient_id=ERIKA_UUID)
+    d1 = await db.insert_document(make_doc(file_id="f1"), patient_id=PRIMARY_TEST_UUID)
+    d2 = await db.insert_document(make_doc(file_id="f2"), patient_id=PRIMARY_TEST_UUID)
     await db.insert_lab_values(
         [
             LabValue(

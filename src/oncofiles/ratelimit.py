@@ -13,7 +13,11 @@ Every HTTP request is put into one *route class*:
             ``/revoke``, ``/oauth/*``, ``/dashboard/verify``) — stricter, IP-keyed
 ``api``     dashboard JSON API (``/api/*``, ``/dashboard/config``) and the operator
             MCP endpoint ``/ops/mcp`` (#887)
-``public``  everything else (landing pages, static assets, ``/readiness``)
+``inbound`` the inbound mail webhooks ``/inbound/*`` (#950): their own buckets,
+            keyed by the client IP, so a flood of them never drains the
+            anonymous ``/api/*`` budget and vice versa
+``public``  everything else (landing pages, static assets, ``/readiness``,
+            ``/api/public-config``)
 ``exempt``  ``/health`` — never limited, never size-checked (Coolify's
             healthcheck and CI's smoke test poll it)
 
@@ -66,6 +70,14 @@ plain text on public pages) and ``413`` for bodies over the class limit —
 rejected from ``Content-Length`` before the body is read, or while streaming
 a chunked body as soon as the running total crosses the limit.
 
+The dashboard upload (``/api/upload``, #921) keeps the ``api`` buckets but has
+its own body limit ``RATE_LIMIT_UPLOAD_MAX_BODY_BYTES`` (default 26 MiB: one
+25 MiB file plus the multipart framing); the route checks each file again.
+The ``inbound`` class (#950) is not size-checked here by default
+(``RATE_LIMIT_INBOUND_MAX_BODY_BYTES`` = 0): a disabled inbound route must
+answer 404, never 413, so each route checks that its adapter is on and only
+then caps the body itself (36 MiB raw MIME, 8 MiB Brevo JSON).
+
 Kill switch: ``RATE_LIMIT_ENABLED=false`` turns the middleware into a
 pass-through.
 """
@@ -92,14 +104,25 @@ MCP = "mcp"
 AUTH = "auth"
 API = "api"
 PUBLIC = "public"
-CLASSES = (MCP, AUTH, API, PUBLIC)
+INBOUND = "inbound"
+CLASSES = (MCP, AUTH, API, PUBLIC, INBOUND)
 
 _EXEMPT_PATHS = frozenset({"/health"})
 _AUTH_PATHS = frozenset({"/authorize", "/token", "/register", "/revoke", "/dashboard/verify"})
 _AUTH_PREFIXES = ("/oauth/",)
 _API_PATHS = frozenset({"/dashboard/config"})
+# Unauthenticated JSON the landing reads (env only, no DB): class public.
+_PUBLIC_API_PATHS = frozenset({"/api/public-config"})
 _API_PREFIXES = ("/api/", "/ops/")
-_JSON_CLASSES = frozenset({MCP, API, AUTH})
+_INBOUND_PREFIX = "/inbound/"
+_JSON_CLASSES = frozenset({MCP, API, AUTH, INBOUND})
+# Paths with their own body limit (bytes); the class buckets still apply.
+UPLOAD_PATHS = frozenset({"/api/upload"})
+DEFAULT_UPLOAD_MAX_BODY_BYTES = 26 * 1024 * 1024
+# 0 = the middleware does not size-check /inbound/*: each route answers 404
+# while its adapter is off and only then caps the body itself (infra review),
+# so a disabled route never answers 413.
+DEFAULT_INBOUND_MAX_BODY_BYTES = 0
 
 
 def classify(path: str) -> str:
@@ -110,8 +133,12 @@ def classify(path: str) -> str:
         return MCP
     if path in _AUTH_PATHS or path.startswith(_AUTH_PREFIXES):
         return AUTH
+    if path in _PUBLIC_API_PATHS:
+        return PUBLIC
     if path in _API_PATHS or path.startswith(_API_PREFIXES):
         return API
+    if path.startswith(_INBOUND_PREFIX):
+        return INBOUND
     return PUBLIC
 
 
@@ -184,6 +211,10 @@ DEFAULTS: dict[str, ClassLimits] = {
     AUTH: ClassLimits(Limit(30, 20), Limit(120, 60), Limit(120, 60), 64 * 1024),
     API: ClassLimits(Limit(300, 120), Limit(1200, 400), Limit(120, 60), 1024 * 1024),
     PUBLIC: ClassLimits(Limit(300, 150), Limit(1200, 400), Limit(1200, 400), 64 * 1024),
+    # One provider posting mail: per-IP and global buckets of their own.
+    INBOUND: ClassLimits(
+        Limit(60, 30), Limit(120, 60), Limit(120, 60), DEFAULT_INBOUND_MAX_BODY_BYTES
+    ),
 }
 DEFAULT_MCP_CONCURRENCY = 4
 LOG_INTERVAL_S = 60.0
@@ -200,10 +231,11 @@ class RateLimitConfig:
     )
     max_principals: int = DEFAULT_MAX_PRINCIPALS
     static_bearer: str = ""
+    upload_max_body_bytes: int = DEFAULT_UPLOAD_MAX_BODY_BYTES
 
     @classmethod
     def from_env(cls, static_bearer: str = "") -> RateLimitConfig:
-        """Read env vars. Per class ``X`` in MCP/AUTH/API/PUBLIC:
+        """Read env vars. Per class ``X`` in MCP/AUTH/API/PUBLIC/INBOUND:
         ``RATE_LIMIT_X_PER_MIN``, ``RATE_LIMIT_X_BURST``,
         ``RATE_LIMIT_X_GLOBAL_PER_MIN``, ``RATE_LIMIT_X_GLOBAL_BURST``,
         ``RATE_LIMIT_X_ANON_PER_MIN``, ``RATE_LIMIT_X_ANON_BURST``,
@@ -238,6 +270,9 @@ class RateLimitConfig:
             max_principals=int(_env_num("RATE_LIMIT_MAX_PRINCIPALS", DEFAULT_MAX_PRINCIPALS))
             or DEFAULT_MAX_PRINCIPALS,
             static_bearer=static_bearer,
+            upload_max_body_bytes=int(
+                _env_num("RATE_LIMIT_UPLOAD_MAX_BODY_BYTES", DEFAULT_UPLOAD_MAX_BODY_BYTES)
+            ),
         )
 
 
@@ -376,7 +411,7 @@ def principal_for(
 ) -> Principal:
     """Return the bucket principal for this request (no DB)."""
     ip = client_ip(scope, cfg.trusted_proxies)
-    if route_class == AUTH:
+    if route_class in (AUTH, INBOUND):
         return Principal("ip:" + ip, trusted=False)
     auth = _header(scope, b"authorization").strip()
     if auth[:7].lower() == "bearer ":
@@ -564,6 +599,8 @@ class RateLimitMiddleware:
             return
 
         max_body = self.limits[route_class].max_body_bytes
+        if path in UPLOAD_PATHS:
+            max_body = self.config.upload_max_body_bytes
 
         # 1. Body size from Content-Length — before reading anything.
         if max_body > 0:

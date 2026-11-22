@@ -17,7 +17,15 @@ from __future__ import annotations
 
 from typing import Any
 
-CONSENT_VERSION = "2026-11-17"
+CONSENT_VERSION = "2026-11-21b"
+
+# ``patient_consents.kind`` (migration 097): ``wizard`` = the #857 checkbox,
+# ``by_sending`` = consent by sending documents to welcome@ (#950 phase 2,
+# maintainer decision 2026-11-21: the terms say that whoever sends documents
+# agrees to them; the sender is told so in the reply).
+CONSENT_KIND_WIZARD = "wizard"
+CONSENT_KIND_BY_SENDING = "by_sending"
+CONSENT_KINDS = (CONSENT_KIND_WIZARD, CONSENT_KIND_BY_SENDING)
 
 CONSENT_REQUIRED = "consent_required"
 CONSENT_VERSION_MISMATCH = "consent_version_mismatch"

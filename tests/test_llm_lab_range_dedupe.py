@@ -24,7 +24,7 @@ from oncofiles import config, fact_identity, pre_store
 from oncofiles.curated import lab_store, llm
 from oncofiles.database._facts import LLM_LAB_FAMILY
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 DOB = "2027-01-02"  # invented
 DOC = 8261
@@ -45,7 +45,8 @@ RANGE_META = {"date_source": "printed_range", "date_precision": "range",
 def _item(label, value, unit, evidence, date):
     return {"label_as_printed": label, "value": value, "comparator": None,
             "unit_as_printed": unit, "ref_range_as_printed": None, "flag_as_printed": None,
-            "date_as_printed": date, "date_role": "sample", "evidence": evidence}  # fmt: skip
+            "date_as_printed": date, "date_role": "sample", "date_evidence": date,
+            "evidence": evidence}  # fmt: skip
 
 
 def model_chat(system, user, info=None, **kw):
@@ -65,7 +66,7 @@ def model_chat(system, user, info=None, **kw):
 async def _rule_fact(db, *, day=END, meta=RANGE_META, value=0.47):
     """What the rule parser stores for the ALT result of PAGE_1."""
     return await db.replace_document_facts(
-        patient_id=ERIKA_UUID, document_id=DOC, extracted_by="rule:test",
+        patient_id=PRIMARY_TEST_UUID, document_id=DOC, extracted_by="rule:test",
         facts=[{"code": "ALT", "label": "S-ALT", "value_num": value, "value_canonical": value,
                 "occurred_at": day, "page_number": 1, "evidence": ALT_LINE,
                 "metadata": dict(meta or {})}],
@@ -79,7 +80,7 @@ async def seeded(db):
         "INSERT INTO documents (id, file_id, filename, original_filename, category, mime_type, "
         "size_bytes, patient_id, gdrive_id, structured_metadata, document_date) "
         "VALUES (?, ?, ?, ?, 'discharge', 'application/pdf', 1, ?, ?, ?, ?)",
-        (DOC, f"gdrive:g{DOC}", f"d{DOC}.pdf", f"d{DOC}.pdf", ERIKA_UUID, f"g{DOC}",
+        (DOC, f"gdrive:g{DOC}", f"d{DOC}.pdf", f"d{DOC}.pdf", PRIMARY_TEST_UUID, f"g{DOC}",
          json.dumps(meta), "2028-06-09"),
     )  # fmt: skip
     await db.save_ocr_page(DOC, 1, PAGE_1, "curated-sidecar")
@@ -95,7 +96,7 @@ def local_model(monkeypatch):
     monkeypatch.setattr(config, "LLM_LAB_WRITE_ENABLED", True)  # this test only
     monkeypatch.setattr(llm, "chat", model_chat)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
-    monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: {DOB}})
+    monkeypatch.setattr(tool, "_readme_births", {PRIMARY_TEST_UUID: {DOB}})
     monkeypatch.setattr(pre_store, "make_copy", lambda db, job: f"oncofiles-copy-{job}.db")
 
 
@@ -108,8 +109,8 @@ def _ctx(db):
 async def _run(db, **kw):
     started = json.loads(await tool.curated_lab_extract(_ctx(db), [DOC], **kw))
     assert "error" not in started, started
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    job = tool._reocr_jobs[ERIKA_UUID]
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    job = tool._reocr_jobs[PRIMARY_TEST_UUID]
     assert job["state"] == "done", job
     return job["report"]["documents"][0]
 
@@ -203,15 +204,20 @@ GOLDEN_RULE_RANGE_ID = "ddf5a185-2e43-57a1-b02d-37d5cb765550"  # the #818 golden
 def test_a_range_dated_llm_fact_id_keys_on_the_range_and_differs_by_the_salt_only():
     twins = [{**GOLDEN_FACT, "evidence": "a"}, {**GOLDEN_FACT, "evidence": "b"}]
     ids = fact_identity.ids_for_new_facts(
-        ERIKA_UUID, GOLDEN_DOC, twins, set(), family=LLM_LAB_FAMILY
+        PRIMARY_TEST_UUID, GOLDEN_DOC, twins, set(), family=LLM_LAB_FAMILY
     )
     assert tuple(ids) == GOLDEN_LLM_RANGE_IDS
-    rule_key = fact_identity.fact_key(ERIKA_UUID, GOLDEN_DOC, GOLDEN_FACT)
-    llm_key = fact_identity.fact_key(ERIKA_UUID, GOLDEN_DOC, GOLDEN_FACT, family=LLM_LAB_FAMILY)
+    rule_key = fact_identity.fact_key(PRIMARY_TEST_UUID, GOLDEN_DOC, GOLDEN_FACT)
+    llm_key = fact_identity.fact_key(
+        PRIMARY_TEST_UUID, GOLDEN_DOC, GOLDEN_FACT, family=LLM_LAB_FAMILY
+    )
     # the key holds the range (start/end), not the day the value was placed on …
     assert json.loads(rule_key)[3] == "2027-09-01/2027-09-09"
     moved = {**GOLDEN_FACT, "occurred_at": "2027-09-05"}  # e.g. the old midpoint
-    assert fact_identity.fact_key(ERIKA_UUID, GOLDEN_DOC, moved, family=LLM_LAB_FAMILY) == llm_key
+    assert (
+        fact_identity.fact_key(PRIMARY_TEST_UUID, GOLDEN_DOC, moved, family=LLM_LAB_FAMILY)
+        == llm_key
+    )
     # … and is the rule key with the family salt in front, nothing else
     assert llm_key == f"{LLM_LAB_FAMILY}|{rule_key}"
     assert fact_identity.fact_uuid(rule_key, 0) == GOLDEN_RULE_RANGE_ID
@@ -221,7 +227,10 @@ def test_a_range_dated_llm_fact_id_keys_on_the_range_and_differs_by_the_salt_onl
                                          "date_range_end": "2027-09-09"}}  # fmt: skip
     plain = {**GOLDEN_FACT, "metadata": {}}
     for f in (other, plain):
-        assert fact_identity.fact_key(ERIKA_UUID, GOLDEN_DOC, f, family=LLM_LAB_FAMILY) != llm_key
+        assert (
+            fact_identity.fact_key(PRIMARY_TEST_UUID, GOLDEN_DOC, f, family=LLM_LAB_FAMILY)
+            != llm_key
+        )
 
 
 async def test_the_stored_range_fact_has_the_range_keyed_id(seeded, local_model):
@@ -234,7 +243,7 @@ async def test_the_stored_range_fact_has_the_range_keyed_id(seeded, local_model)
                                        ("ALT", 2): (OTHER_START, OTHER_END)}.items():  # fmt: skip
         row = rows[code, page]
         key = fact_identity.natural_key(
-            ERIKA_UUID, DOC, code=code, label=None, occurred_at=end, page=page,
+            PRIMARY_TEST_UUID, DOC, code=code, label=None, occurred_at=end, page=page,
             meta={"date_range_start": start, "date_range_end": end}, family=LLM_LAB_FAMILY,
         )  # fmt: skip
         assert f'"{start}/{end}"' in key
@@ -242,12 +251,12 @@ async def test_the_stored_range_fact_has_the_range_keyed_id(seeded, local_model)
         assert (
             row["fhir_id"]
             == fact_identity.ids_for_rows(
-                ERIKA_UUID, DOC, [{**row, "fhir_id": None}], family=LLM_LAB_FAMILY
+                PRIMARY_TEST_UUID, DOC, [{**row, "fhir_id": None}], family=LLM_LAB_FAMILY
             )[row["id"]]
         )
         # the rule parser's id for the same printed result is another id
         rule = fact_identity.natural_key(
-            ERIKA_UUID, DOC, code=code, label=None, occurred_at=end, page=page,
+            PRIMARY_TEST_UUID, DOC, code=code, label=None, occurred_at=end, page=page,
             meta={"date_range_start": start, "date_range_end": end},
         )  # fmt: skip
         assert key == f"{LLM_LAB_FAMILY}|{rule}"
@@ -292,7 +301,10 @@ async def test_a_rule_range_blocks_an_llm_fact_dated_on_a_day_inside_it(seeded, 
     db = seeded
     await _rule_fact(db)
     plan = await lab_store.plan_document(
-        db, patient_id=ERIKA_UUID, document_id=DOC, facts=[_llm(day, {"date_source": "printed"})]
+        db,
+        patient_id=PRIMARY_TEST_UUID,
+        document_id=DOC,
+        facts=[_llm(day, {"date_source": "printed"})],
     )
     assert plan["skipped"] == ({"skipped_rule_exists": 1} if blocked else {})
     assert len(plan["facts"]) == (0 if blocked else 1)
@@ -311,7 +323,7 @@ async def test_an_llm_range_is_blocked_by_a_rule_fact_dated_on_a_day_inside_it(
     db = seeded
     await _rule_fact(db, day=day, meta={"date_source": "printed"})
     plan = await lab_store.plan_document(
-        db, patient_id=ERIKA_UUID, document_id=DOC, facts=[_llm(END, RANGE_META)]
+        db, patient_id=PRIMARY_TEST_UUID, document_id=DOC, facts=[_llm(END, RANGE_META)]
     )
     assert plan["skipped"] == ({"skipped_rule_exists": 1} if blocked else {})
     assert len(plan["facts"]) == (0 if blocked else 1)

@@ -27,7 +27,7 @@ from oncofiles.persistent_oauth import (
     _verified_patient_id,
 )
 from oncofiles.tools._helpers import _resolve_patient_id
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 JANA_SLUG = "jana-test"
 JANA_EMAIL = "jana.caregiver@example.com"
@@ -51,7 +51,7 @@ async def two_patients(db: Database) -> Database:
     bound pid via the conftest db fixture."""
     await db.db.execute(
         "UPDATE patients SET slug = ?, caregiver_email = ? WHERE patient_id = ?",
-        (JANA_SLUG, JANA_EMAIL, ERIKA_UUID),
+        (JANA_SLUG, JANA_EMAIL, PRIMARY_TEST_UUID),
     )
     await db.db.execute(
         "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) "
@@ -96,7 +96,7 @@ async def test_bearer_bound_caller_can_resolve_own_slug(
     Jana's slug is allowed (bearer match)."""
     ctx = _StubCtx(two_patients)
     pid = await _resolve_patient_id(JANA_SLUG, ctx)
-    assert pid == ERIKA_UUID
+    assert pid == PRIMARY_TEST_UUID
 
 
 async def test_bearer_bound_caller_blocked_from_other_slug(
@@ -268,7 +268,7 @@ async def test_slug_omitted_returns_bound_pid(two_patients: Database, reset_scop
     behavior: return whatever the middleware bound for this request."""
     ctx = _StubCtx(two_patients)
     pid = await _resolve_patient_id(None, ctx)
-    assert pid == ERIKA_UUID  # set by conftest db fixture
+    assert pid == PRIMARY_TEST_UUID  # set by conftest db fixture
 
 
 async def test_slug_omitted_no_binding_raises_when_required(

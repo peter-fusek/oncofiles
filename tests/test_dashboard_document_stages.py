@@ -25,9 +25,9 @@ from starlette.responses import JSONResponse
 from oncofiles import dashboard_activity, document_stage, server
 from oncofiles.database import Database
 from oncofiles.tools.hygiene import _build_document_matrix, _is_extractable
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
-A_UUID = ERIKA_UUID
+A_UUID = PRIMARY_TEST_UUID
 B_UUID = "00000000-0000-4000-8000-0000000009b1"
 A_EMAIL = "stage-carer-a@example.test"
 B_EMAIL = "stage-carer-b@example.test"
@@ -250,7 +250,9 @@ async def test_row_keeps_every_old_key_and_gains_the_new_ones(db):
         "has_metadata", "has_date", "has_institution", "is_synced", "is_standard_name",
         "fully_complete",
     }  # fmt: skip
-    new = {"uploaded_at", "steps", "ready", "stage", "attention_reason", "curated"}
+    new = {"uploaded_at", "steps", "ready", "stage", "attention_reason", "curated",
+           "review_reasons"}  # fmt: skip
+    assert row["review_reasons"] == []  # codes only, and only for review_needed (#919)
     assert set(row) == old | new
     # uploaded_at is documents.created_at as an explicit UTC ISO string
     parsed = datetime.strptime(row["uploaded_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
@@ -1050,5 +1052,9 @@ async def test_schedules_serves_admin_and_operator(two_patients, bearer):
         resp = await server.api_schedules(_request(two_patients))
     assert resp.status_code == 200
     body = _body(resp)
-    assert set(body) == {"jobs", "prompt_stats"}
-    assert body["jobs"]
+    assert set(body) == {"scheduler", "curated_loop", "jobs", "inactive", "prompt_stats"}
+    # No scheduler runs in the test process: no invented jobs, every known
+    # job is listed as not active, with a reason.
+    assert body["jobs"] == []
+    assert body["scheduler"]["running"] is False
+    assert body["inactive"] and all(j["reason"] for j in body["inactive"])

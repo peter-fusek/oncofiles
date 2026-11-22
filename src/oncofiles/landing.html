@@ -142,8 +142,8 @@
         },
         {
           "@type": "Question",
-          "name": "When can I connect my own Google Drive?",
-          "acceptedAnswer": { "@type": "Answer", "text": "We open it for new users in November 2026. Join the waitlist on oncofiles.com and we will let you know by email. Until then you can look at the demo with an invented patient." }
+          "name": "How do I start with my own documents?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Sign in at oncofiles.com with Google, create a patient and pick the Google Drive folder that already holds your documents. If signing in does not work or you have questions, write to us at peter.fusek@instarea.sk. You can look at the demo with an invented patient right away, without signing in." }
         },
         {
           "@type": "Question",
@@ -287,19 +287,19 @@
     .lead { font: 300 clamp(1.2rem, 2.2vw, 1.55rem)/1.35 var(--display); color: var(--ink); max-width: 40ch; margin-top: 14px; }
     code { font-family: var(--num); font-size: 0.9em; background: var(--bg-2); border: 1px solid var(--rule); padding: 1px 6px; border-radius: 4px; color: var(--ink); overflow-wrap: anywhere; }
 
-    /* Buttons and the waitlist form */
+    /* Buttons and the trial paths */
     .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 48px; padding: 11px 22px; border: 2px solid var(--coral); border-radius: 10px; background: var(--coral); color: #000059; font: 700 1rem/1.2 var(--sans); text-decoration: none; text-align: center; cursor: pointer; }
     .btn:hover { background: #ff6b6b; border-color: #ff6b6b; }
     .btn:disabled { cursor: progress; }
     .btn-ghost { background: transparent; border-color: var(--ink); color: var(--ink); }
     .btn-ghost:hover { background: var(--ink); border-color: var(--ink); color: var(--bg); }
-    .nl-form { display: flex; gap: 10px; flex-wrap: wrap; max-width: 540px; }
-    .nl-form input { flex: 1 1 240px; min-width: 0; min-height: 48px; padding: 10px 14px; border: 2px solid var(--rule-2); border-radius: 10px; background: #ffffff; color: #000059; font: inherit; font-size: 1rem; }
-    .nl-form input::placeholder { color: #5b6b82; }
-    .nl-msg { font-size: 0.92rem; margin-top: 8px; min-height: 1.5em; }
-    .nl-msg.success { color: var(--ok); } .nl-msg.error { color: var(--err); }
-    .nl-spinner { width: 16px; height: 16px; border: 2px solid rgba(0, 0, 89, 0.3); border-top-color: #000059; border-radius: 50%; display: inline-block; animation: spin 0.7s linear infinite; }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    /* Trial paths: which one shows depends on GET /api/public-config.
+       [data-when] elements carry `hidden` until the config says so. */
+    [data-when][hidden] { display: none !important; }
+    .trial-note { margin-top: 14px; font-size: 1rem; color: var(--ink-2); max-width: 54ch; }
+    .trial-note a { color: var(--link); font-weight: 600; overflow-wrap: anywhere; }
+    .try-steps { margin: 0; padding-left: 1.4em; display: grid; gap: 8px; max-width: 56ch; }
+    .try-actions { display: flex; flex-wrap: wrap; gap: 12px; }
 
     /* ── Sticky bar ───────────────────────────────────────── */
     header.site { position: sticky; top: 0; z-index: 900; }
@@ -999,7 +999,7 @@
           <a class="nav-signin" href="/dashboard" title="Prihlásenie k vlastným údajom" data-sk-title="Prihlásenie k vlastným údajom" data-en-title="Sign in to your own data" data-sk="Prihlásiť sa" data-en="Sign in">Prihlásiť sa</a>
         </div>
         <button id="lang-toggle" class="lang" type="button" data-action="toggleLang" aria-label="Switch language / Prepnúť jazyk">EN</button>
-        <a class="btn btn-nav" href="#join"><span class="cta-long" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</span><span class="cta-short" data-sk="Pridať sa" data-en="Join">Pridať sa</span></a>
+        <a class="btn btn-nav" href="#join"><span class="cta-long" data-sk="Vyskúšať" data-en="Try it">Vyskúšať</span><span class="cta-short" data-sk="Vyskúšať" data-en="Try it">Vyskúšať</span></a>
       </nav>
     </div>
   </header>
@@ -1014,11 +1014,18 @@
           <p class="tagline" data-sk="Zdravotné záznamy, v ktorých má každé číslo svoj zdroj" data-en="Medical records where every number has a source">Zdravotné záznamy, v ktorých má každé číslo svoj zdroj</p>
           <h1 id="hero-title" data-sk="Stoh lekárskych správ ešte nie je informácia." data-en="A stack of medical reports is not information.">Stoh lekárskych správ ešte nie je informácia.</h1>
           <p class="lede" data-sk="Oncofiles prečíta dokumenty od vašich lekárov, uloží ich do vášho Google Drive a pri každom údaji si pamätá stranu a riadok, odkiaľ pochádza. Potom sa pýtate v Claude a každá odpoveď ukáže svoj zdroj." data-en="Oncofiles reads the documents your doctors gave you, files them in your own Google Drive and remembers the page and line every fact came from. Then you ask in Claude, and every answer shows its source.">Oncofiles prečíta dokumenty od vašich lekárov, uloží ich do vášho Google Drive a pri každom údaji si pamätá stranu a riadok, odkiaľ pochádza. Potom sa pýtate v Claude a každá odpoveď ukáže svoj zdroj.</p>
-          <div class="hero-cta">
-            <a class="btn" href="#join" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</a>
-            <a class="btn btn-ghost" href="/demo" data-sk="Pozrieť ukážku s vymyslenou pacientkou" data-en="See the demo with an invented patient">Pozrieť ukážku s vymyslenou pacientkou</a>
+          <!-- Trial paths (GET /api/public-config): until it answers "open", the
+               page promises no self-service; the e-mail path shows only while the
+               inbound welcome address is live (the address is filled in from the
+               config, it is not in this markup). -->
+          <div class="hero-cta" id="trial">
+            <a class="btn" href="/dashboard" data-when="open" hidden data-sk="Prihlásiť sa cez Google a vybrať priečinok na Drive" data-en="Sign in with Google and pick your Drive folder">Prihlásiť sa cez Google a vybrať priečinok na Drive</a>
+            <a class="btn" href="/demo" data-demo-cta data-sk="Pozrieť ukážku s vymyslenou pacientkou" data-en="See the demo with an invented patient">Pozrieť ukážku s vymyslenou pacientkou</a>
           </div>
-          <p class="badge"><i aria-hidden="true"></i><span data-sk="Pripájanie vlastného Drive spúšťame v novembri 2026" data-en="Connecting your own Drive opens in November 2026">Pripájanie vlastného Drive spúšťame v novembri 2026</span></p>
+          <p class="trial-note" data-when="open" hidden data-sk="Na vyskúšanie stačí účet Google a priečinok na Drive, v ktorom už dokumentáciu máte. Ukážka je bez prihlásenia." data-en="To try it, all you need is a Google account and the Drive folder that already holds your documents. The demo needs no sign-in.">Na vyskúšanie stačí účet Google a priečinok na Drive, v ktorom už dokumentáciu máte. Ukážka je bez prihlásenia.</p>
+          <p class="trial-note" data-when="mail" hidden><span data-sk="alebo pošlite prvý e-mail s prílohou z Gmailu na" data-en="or send your first e-mail with an attachment from Gmail to">alebo pošlite prvý e-mail s prílohou z Gmailu na</span> <a data-welcome-address></a></p>
+          <p class="trial-note" data-when="closed"><span data-sk="S vlastnými dokumentmi je to zatiaľ na pozvanie." data-en="Using your own documents is by invitation for now.">S vlastnými dokumentmi je to zatiaľ na pozvanie.</span> <a href="mailto:peter.fusek@instarea.sk" data-sk="Napíšte nám" data-en="Write to us">Napíšte nám</a><span data-sk=" a pošleme vám pozvánku." data-en=" and we will send you an invitation."> a pošleme vám pozvánku.</span></p>
+          <p class="badge"><i aria-hidden="true"></i><span data-sk="V prevádzke od novembra 2026" data-en="Live since November 2026">V prevádzke od novembra 2026</span></p>
           <p class="eu-line"><svg class="eu-flag" aria-hidden="true"><use href="#g-eu"/></svg><span data-sk="Prevádzkované v EÚ (Slovensko), na vlastnom serveri s lokálnym modelom." data-en="Hosted in the EU (Slovakia), on our own server with a local model.">Prevádzkované v EÚ (Slovensko), na vlastnom serveri s lokálnym modelom.</span></p>
           <p class="lede-note" data-sk="Oncofiles nenahrádza lekára. Pomáha vám a vašim blízkym pripraviť sa na rozhovor s ním." data-en="Oncofiles does not replace your doctor. It helps you and your family prepare for the conversation.">Oncofiles nenahrádza lekára. Pomáha vám a vašim blízkym pripraviť sa na rozhovor s ním.</p>
         </div>
@@ -1516,7 +1523,7 @@ Nič sa nemaže, len presúva do koša.
               <span class="step-n" aria-hidden="true">1</span>
               <div>
                 <h3 data-sk="Majte správy v Oncofiles" data-en="Have your reports in Oncofiles">Majte správy v Oncofiles</h3>
-                <p><span data-sk="Pripájanie vlastného Google Drive spúšťame v novembri 2026." data-en="Connecting your own Google Drive opens in November 2026.">Pripájanie vlastného Google Drive spúšťame v novembri 2026.</span> <a href="#join" data-sk="Pridajte sa na zoznam" data-en="Join the list">Pridajte sa na zoznam</a><span data-sk=", napíšeme vám, keď sa otvorí." data-en=", and we will email you when it opens.">, napíšeme vám, keď sa otvorí.</span></p>
+                <p><span data-sk="Prihláste sa cez Google a vyberte priečinok na Google Drive, v ktorom už dokumentáciu máte." data-en="Sign in with Google and pick the Google Drive folder that already holds your documents.">Prihláste sa cez Google a vyberte priečinok na Google Drive, v ktorom už dokumentáciu máte.</span> <a href="#join" data-sk="Ako začať" data-en="How to start">Ako začať</a></p>
               </div>
             </li>
             <li>
@@ -1562,7 +1569,7 @@ Nič sa nemaže, len presúva do koša.
               </div>
             </li>
           </ol>
-          <p class="setup-cta"><a class="btn" href="#join" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</a><a href="/demo" data-sk="Pozrieť ukážku s vymyslenou pacientkou" data-en="See the demo with an invented patient">Pozrieť ukážku s vymyslenou pacientkou</a></p>
+          <p class="setup-cta"><a class="btn" href="#join" data-sk="Vyskúšať" data-en="Try it">Vyskúšať</a><a href="/demo" data-sk="Pozrieť ukážku s vymyslenou pacientkou" data-en="See the demo with an invented patient">Pozrieť ukážku s vymyslenou pacientkou</a></p>
         </div>
       </section>
     </section>
@@ -1654,7 +1661,7 @@ Nič sa nemaže, len presúva do koša.
               <li data-sk="Každá hodnota so zdrojovým dokumentom, stranou a presným textom, z ktorého pochádza" data-en="Every value with its source document, page and the exact text it came from">Každá hodnota so zdrojovým dokumentom, stranou a presným textom, z ktorého pochádza</li>
               <li data-sk="Pripojenie ku Claude a ChatGPT cez MCP (stav každého klienta je uvedený vyššie)" data-en="Connectors for Claude and ChatGPT via MCP (each client's status is shown above)">Pripojenie ku Claude a ChatGPT cez MCP (stav každého klienta je uvedený vyššie)</li>
               <li data-sk="FHIR R4: čítanie, vyhľadávanie a export všetkých záznamov pacienta" data-en="FHIR R4: read, search and export of a patient's full record">FHIR R4: čítanie, vyhľadávanie a export všetkých záznamov pacienta</li>
-              <li class="rm-note" data-sk="Pripojenie vlastného Drive pre nových používateľov otvárame v novembri 2026." data-en="Connecting your own Drive opens to new users in November 2026.">Pripojenie vlastného Drive pre nových používateľov otvárame v novembri 2026.</li>
+              <li class="rm-note" data-sk="V prevádzke od novembra 2026: prihlásenie cez Google a výber vlastného priečinka na Drive." data-en="Live since November 2026: sign in with Google and pick your own Drive folder.">V prevádzke od novembra 2026: prihlásenie cez Google a výber vlastného priečinka na Drive.</li>
             </ul>
           </li>
           <li class="rm-col rm-wip" data-status="in-progress">
@@ -1715,8 +1722,8 @@ Nič sa nemaže, len presúva do koša.
             <div class="a"><p data-sk="Nie. Súbory len premenúva a presúva podľa pravidiel v README. Ak treba niečo odstrániť, ide to iba do koša Google Drive, odkiaľ sa to dá obnoviť." data-en="No. It only renames and moves files according to the README rules. If something has to go, it only goes to the Google Drive trash, from where it can be restored.">Nie. Súbory len premenúva a presúva podľa pravidiel v README. Ak treba niečo odstrániť, ide to iba do koša Google Drive, odkiaľ sa to dá obnoviť.</p></div>
           </details>
           <details>
-            <summary><h4 data-sk="Kedy si môžem pripojiť vlastný Google Drive?" data-en="When can I connect my own Google Drive?">Kedy si môžem pripojiť vlastný Google Drive?</h4></summary>
-            <div class="a"><p data-sk="Pre nových používateľov ho spúšťame v novembri 2026. Pridajte sa na zoznam na oncofiles.com a dáme vám vedieť emailom. Dovtedy si môžete pozrieť ukážku s vymyslenou pacientkou." data-en="We open it for new users in November 2026. Join the waitlist on oncofiles.com and we will let you know by email. Until then you can look at the demo with an invented patient.">Pre nových používateľov ho spúšťame v novembri 2026. Pridajte sa na zoznam na oncofiles.com a dáme vám vedieť emailom. Dovtedy si môžete pozrieť ukážku s vymyslenou pacientkou.</p></div>
+            <summary><h4 data-sk="Ako začnem s vlastnými dokumentmi?" data-en="How do I start with my own documents?">Ako začnem s vlastnými dokumentmi?</h4></summary>
+            <div class="a"><p data-sk="Prihláste sa na oncofiles.com cez Google, vytvorte pacienta a vyberte priečinok na Google Drive, v ktorom už dokumentáciu máte. Ak sa vám nedarí prihlásiť alebo máte otázky, napíšte nám na peter.fusek@instarea.sk. Ukážku s vymyslenou pacientkou si môžete pozrieť hneď, bez prihlásenia." data-en="Sign in at oncofiles.com with Google, create a patient and pick the Google Drive folder that already holds your documents. If signing in does not work or you have questions, write to us at peter.fusek@instarea.sk. You can look at the demo with an invented patient right away, without signing in.">Prihláste sa na oncofiles.com cez Google, vytvorte pacienta a vyberte priečinok na Google Drive, v ktorom už dokumentáciu máte. Ak sa vám nedarí prihlásiť alebo máte otázky, napíšte nám na peter.fusek@instarea.sk. Ukážku s vymyslenou pacientkou si môžete pozrieť hneď, bez prihlásenia.</p></div>
           </details>
           <details>
             <summary><h4 data-sk="Ako pripojím Oncofiles ku Claude alebo ChatGPT?" data-en="How do I connect Oncofiles to Claude or ChatGPT?">Ako pripojím Oncofiles ku Claude alebo ChatGPT?</h4></summary>
@@ -1750,22 +1757,27 @@ Nič sa nemaže, len presúva do koša.
         </div>
       </section>
 
-      <!-- Closing: the waitlist (#waitlist is the anchor other pages link to) -->
+      <!-- Closing: try it. #join and #waitlist stay (other pages, the dashboard
+           and onboarding refusal bodies link to both); the waitlist form is gone. -->
       <section class="block" id="join">
         <div class="band tone-navy join-band">
           <i class="circle circle-turq" aria-hidden="true"></i><i class="circle circle-coral" aria-hidden="true"></i><i class="circle circle-peach" aria-hidden="true"></i>
           <div class="wrap pad">
             <div class="join" id="waitlist">
-              <h3 data-sk="Chcete byť medzi prvými?" data-en="Want to be among the first?">Chcete byť medzi prvými?</h3>
-              <p data-sk="Open source, zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného Drive spúšťame v novembri 2026." data-en="Open source, free up to 500 documents per patient. Connecting your own Drive opens in November 2026.">Open source, zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného Drive spúšťame v novembri 2026.</p>
-              <form class="nl-form" data-nl-source="waitlist-bottom">
-            <label class="sr-only" for="wl-email-bottom" data-sk="Váš email" data-en="Your email">Váš email</label>
-            <input id="wl-email-bottom" type="email" required autocomplete="email" data-placeholder-sk="Váš email" data-placeholder-en="Your email" placeholder="Váš email">
-            <button type="submit" class="btn nl-btn" data-label-sk="Pridať sa na zoznam" data-label-en="Join the waitlist" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</button>
-          </form>
-              <div class="nl-msg" data-nl-msg="waitlist-bottom" role="status"></div>
-              <p class="fine" data-sk="Napíšeme vám, keď sa otvorí. Nič iné neposielame." data-en="We will email you when it opens. Nothing else.">Napíšeme vám, keď sa otvorí. Nič iné neposielame.</p>
-              <p class="join-links"><a href="/demo" data-sk="Pozrieť ukážku" data-en="See the demo">Pozrieť ukážku</a><a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener" data-sk="Kód na GitHube" data-en="Code on GitHub">Kód na GitHube</a></p>
+              <h3 data-sk="Vyskúšajte to" data-en="Try it">Vyskúšajte to</h3>
+              <p data-sk="Open source, zadarmo do 500 dokumentov na pacienta. Ukážka s vymyslenou pacientkou je bez prihlásenia." data-en="Open source, free up to 500 documents per patient. The demo with an invented patient needs no sign-in.">Open source, zadarmo do 500 dokumentov na pacienta. Ukážka s vymyslenou pacientkou je bez prihlásenia.</p>
+              <ol class="try-steps" data-when="open" hidden>
+                <li data-sk="Prihláste sa cez Google." data-en="Sign in with Google.">Prihláste sa cez Google.</li>
+                <li data-sk="Vytvorte pacienta a vyberte priečinok na Google Drive, v ktorom už dokumentáciu máte." data-en="Create a patient and pick the Google Drive folder that already holds the documents.">Vytvorte pacienta a vyberte priečinok na Google Drive, v ktorom už dokumentáciu máte.</li>
+                <li data-sk="Oncofiles dokumenty prečíta a zaradí. Potom sa pýtate v Claude." data-en="Oncofiles reads and files them. Then you ask in Claude.">Oncofiles dokumenty prečíta a zaradí. Potom sa pýtate v Claude.</li>
+              </ol>
+              <p data-when="mail" hidden><span data-sk="Alebo pošlite prvý e-mail s prílohou z Gmailu na" data-en="Or send your first e-mail with an attachment from Gmail to">Alebo pošlite prvý e-mail s prílohou z Gmailu na</span> <a data-welcome-address></a></p>
+              <p data-when="closed"><span data-sk="S vlastnými dokumentmi je to zatiaľ na pozvanie." data-en="Using your own documents is by invitation for now.">S vlastnými dokumentmi je to zatiaľ na pozvanie.</span> <a href="mailto:peter.fusek@instarea.sk" data-sk="Napíšte nám" data-en="Write to us">Napíšte nám</a><span data-sk=" a pošleme vám pozvánku." data-en=" and we will send you an invitation."> a pošleme vám pozvánku.</span></p>
+              <p class="try-actions">
+                <a class="btn" href="/dashboard" data-when="open" hidden data-sk="Prihlásiť sa cez Google" data-en="Sign in with Google">Prihlásiť sa cez Google</a>
+                <a class="btn" href="/demo" data-demo-cta data-sk="Pozrieť ukážku" data-en="See the demo">Pozrieť ukážku</a>
+              </p>
+              <p class="join-links"><a href="#connect" data-sk="Ako pripojiť Claude" data-en="How to connect Claude">Ako pripojiť Claude</a><a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener" data-sk="Kód na GitHube" data-en="Code on GitHub">Kód na GitHube</a></p>
             </div>
           </div>
         </div>
@@ -2106,59 +2118,28 @@ Nič sa nemaže, len presúva do koša.
       if (e.target.id === 'bug-title' || e.target.id === 'bug-desc') updateBugLink();
     });
 
-    /* Waitlist: POST /api/newsletter/subscribe only (no membership check, #879) */
-    function nlSubmit(form) {
-      var source = form.getAttribute('data-nl-source');
-      var input = form.querySelector('input[type="email"]');
-      var btn = form.querySelector('.nl-btn');
-      var msgEl = document.querySelector('[data-nl-msg="' + source + '"]');
-      var email = input.value.trim();
-      if (!email) return;
-      btn.disabled = true;
-      var spinner = document.createElement('span');
-      spinner.className = 'nl-spinner';
-      btn.textContent = '';
-      btn.appendChild(spinner);
-      msgEl.textContent = '';
-      msgEl.className = 'nl-msg';
-      /* #879: no membership pre-check; the e-mail travels only in the POST
-         body, and the answer is the same for a new and an existing address. */
-      fetch('/api/newsletter/subscribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email, source: source })
-      })
-        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
-        .then(function (res) {
-          if (res.ok && res.data.ok) {
-            /* #834: "check your e-mail" only when the server can send one */
-            if (res.data.email_queued === true) {
-              msgEl.textContent = lang === 'en' ? 'Thank you, check your e-mail.' : 'Ďakujeme, skontrolujte si e-mail.';
-            } else {
-              msgEl.textContent = lang === 'en' ? "Thank you, you're on the list." : 'Ďakujeme, ste na zozname.';
-            }
-            msgEl.className = 'nl-msg success';
-            input.value = '';
-            if (typeof gtag === 'function') gtag('event', 'newsletter_signup', { source: source });
-          } else {
-            throw new Error((res.data && res.data.error) || 'Subscription failed');
-          }
-        })
-        .catch(function (err) {
-          msgEl.textContent = err.message || (lang === 'en' ? 'Something went wrong.' : 'Niečo sa pokazilo.');
-          msgEl.className = 'nl-msg error';
-        })
-        .finally(function () {
-          btn.disabled = false;
-          btn.textContent = btn.getAttribute('data-label-' + lang) || btn.textContent;
-        });
+    /* Trial paths: one GET of /api/public-config (no auth, env only). Until it
+       answers, the page shows the closed state: demo first, "by invitation".
+       "open" shows the sign-in path; the e-mail path needs "open" AND a live
+       inbound welcome address, which is written in from the config. */
+    var WELCOME_RE = /^[a-z0-9._+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
+    function applyTrialConfig(cfg) {
+      var open = !!cfg && cfg.onboarding_mode === 'open';
+      var addr = cfg && typeof cfg.welcome_address === 'string' ? cfg.welcome_address : '';
+      var mail = open && cfg.inbound_welcome_enabled === true && WELCOME_RE.test(addr);
+      document.querySelectorAll('[data-when="open"]').forEach(function (el) { el.hidden = !open; });
+      document.querySelectorAll('[data-when="closed"]').forEach(function (el) { el.hidden = open; });
+      document.querySelectorAll('[data-when="mail"]').forEach(function (el) { el.hidden = !mail; });
+      document.querySelectorAll('[data-welcome-address]').forEach(function (a) {
+        if (mail) { a.textContent = addr; a.setAttribute('href', 'mailto:' + addr); }
+        else { a.textContent = ''; a.removeAttribute('href'); }
+      });
+      document.querySelectorAll('[data-demo-cta]').forEach(function (a) { a.classList.toggle('btn-ghost', open); });
     }
-    document.addEventListener('submit', function (e) {
-      var form = e.target.closest('.nl-form');
-      if (!form) return;
-      e.preventDefault();
-      nlSubmit(form);
-    });
+    fetch('/api/public-config', { credentials: 'omit' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(applyTrialConfig)
+      .catch(function () { /* keep the closed state */ });
 
     /* Chapter links in the sticky bar: mark the chapter that crosses the
        middle of the viewport (aria-current), nothing else moves. */

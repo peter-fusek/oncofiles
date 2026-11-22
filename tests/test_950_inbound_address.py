@@ -1,0 +1,1499 @@
+"""#950 phase 1: a private document e-mail address per existing patient.
+
+Covers the address (derivation, Gmail prefix, rotation, hash-only storage),
+the webhook (inert / signature / size cap / always 202), parsing (forwarded
+mail, inline images, signature logos, duplicates, types, archives, limits),
+the sender rule (caregiver + passing auth only), filing through the #935
+upload backend with a stubbed Drive, the receipt and loop safety, logs
+without addresses or file names, the dashboard routes' ACL and the demo twin.
+
+Synthetic only: invented addresses (example.test and invented Gmail local
+parts), invented file names and bytes, dates in 2027.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import itertools
+import json
+import logging
+from email.message import EmailMessage
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from starlette.exceptions import HTTPException
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
+from oncofiles import dashboard_upload, inbound_email, server
+from oncofiles.database import Database
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
+
+SRC = Path(server.__file__).parent
+ROOT = SRC.parent.parent
+
+PID = PRIMARY_TEST_UUID
+OTHER_PID = "00000000-0000-4000-8000-000000000950"
+CARER = "synthetic.carer950@gmail.com"
+OTHER_CARER = "other.carer950@example.test"
+STRANGER = "stranger950@example.test"
+SECRET = "synthetic-mime-hmac-secret-950"  # INBOUND_MIME_HMAC_SECRET
+BREVO_SECRET = "synthetic-brevo-token-950"  # INBOUND_BREVO_TOKEN
+SUBJECT = "Vysledky Synteticke 2027"
+FILENAMES = ("SynthLabReport2027.pdf", "SynthScanPhoto.jpg", "SynthNote.txt")
+
+
+# ── fixtures and builders ───────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _env(monkeypatch):
+    monkeypatch.setattr("oncofiles.config.MCP_BEARER_TOKEN", "synthetic-bearer-950")
+    monkeypatch.delenv("INBOUND_ADDRESS_SECRET", raising=False)
+    monkeypatch.delenv("AUDIT_EMAIL_HASH_SECRET", raising=False)
+    monkeypatch.setenv(inbound_email.MIME_SECRET_ENV, SECRET)
+    monkeypatch.setenv(inbound_email.BREVO_TOKEN_ENV, BREVO_SECRET)
+    monkeypatch.setenv("INBOUND_JOBS_SECRET", "synthetic-inbound-jobs-secret-952")
+    monkeypatch.delenv("MAIL_FROM", raising=False)
+    inbound_email.reset_state()
+    yield
+    inbound_email.reset_state()
+
+
+@pytest.fixture
+async def idb(db: Database) -> Database:
+    await db.db.execute(
+        "UPDATE patients SET slug = ?, caregiver_email = ?, display_name = ? WHERE patient_id = ?",
+        ("synth950-a", CARER, "Jana Synteticka", PID),
+    )
+    await db.db.execute(
+        "INSERT INTO patients (patient_id, slug, display_name, caregiver_email) VALUES (?,?,?,?)",
+        (OTHER_PID, "synth950-b", "Bea Synthetic", OTHER_CARER),
+    )
+    await db.db.commit()
+    return db
+
+
+class _Drive:
+    """Stub of the #935 targets: records what the inbox upload received."""
+
+    def __init__(self):
+        self.files: list[tuple[str, bytes, str]] = []
+
+
+@pytest.fixture
+def drive(monkeypatch):
+    """Stub Drive under the real ``dashboard_upload.handle_upload``."""
+    stub = _Drive()
+
+    async def _target(db, patient_id, log_pid=None):
+        return dashboard_upload._Target("curated_inbox", object(), "synthetic-root")
+
+    def _upload(gdrive, root_id, files):
+        out = []
+        for f in files:
+            stub.files.append((f.name, f.data, f.mime))
+            out.append({"status": "uploaded", "name": f.name})
+        return out
+
+    monkeypatch.setattr(dashboard_upload, "_resolve_target", _target)
+    monkeypatch.setattr("oncofiles.curated.inbox_upload.upload_to_inbox", _upload)
+    return stub
+
+
+@pytest.fixture
+def mails(monkeypatch):
+    sent: list[dict] = []
+
+    async def _send(to, subject, text, **kw):
+        sent.append({"to": list(to), "subject": subject, "text": text, **kw})
+        return True
+
+    monkeypatch.setattr("oncofiles.mailer.send_mail", _send)
+    return sent
+
+
+def pdf(n: int = 0, size: int = 20_000) -> bytes:
+    return b"%PDF-1.7\n%synthetic " + str(n).encode() + b"\n" + b"0" * size
+
+
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+IHDR_HEAD = bytes(3) + b"\rIHDR"
+IHDR_TAIL = b"\x08\x02"
+IHDR_TAIL += bytes(3)
+JPEG_SOI = b"\xff\xd8\xff\xe0"
+WORD = 4  # bytes of a PNG dimension
+SMALL = 100
+
+
+def _be(n: int) -> bytes:
+    return n.to_bytes(WORD, "big")
+
+
+def png(width: int, height: int, pad: int = 20_000) -> bytes:
+    ihdr = IHDR_HEAD + _be(width) + _be(height)
+    return PNG_SIG + ihdr + IHDR_TAIL + bytes(pad)
+
+
+def jpeg(size: int = 20_000) -> bytes:
+    return JPEG_SOI + bytes(size)
+
+
+def gif(side: int) -> bytes:
+    dims = side.to_bytes(2, "little")
+    return b"GIF89a" + dims + dims + bytes(SMALL)
+
+
+MP4_BOX = bytes(3) + bytes([24]) + b"ftyp"
+MP4_BRAND = b"mp42"
+
+
+async def address_of(db: Database, pid: str = PID) -> str:
+    return (await inbound_email.ensure_address(db, pid))["address"]
+
+
+_MSG_SEQ = itertools.count(1)
+
+
+async def drain() -> None:
+    """Wait for the Brevo route's background processing."""
+    while inbound_email._BACKGROUND:
+        await asyncio.gather(*list(inbound_email._BACKGROUND))
+
+
+def mail(
+    to: str,
+    *,
+    sender: str = CARER,
+    files: list[tuple[str, bytes, str]] | None = None,
+    headers: dict | None = None,
+) -> EmailMessage:
+    msg = EmailMessage()
+    msg["From"] = f"Synthetic Carer <{sender}>"
+    msg["To"] = to
+    msg["Subject"] = SUBJECT
+    msg["Message-ID"] = f"<synthetic-{next(_MSG_SEQ)}@example.test>"
+    msg["Date"] = "Mon, 15 Mar 2027 10:00:00 +0000"
+    for k, v in (headers or {}).items():
+        msg[k] = v
+    msg.set_content("Body text that must never be stored: synthetic 2027.")
+    for name, data, ctype in files or []:
+        main, sub = ctype.split("/", 1)
+        msg.add_attachment(data, maintype=main, subtype=sub, filename=name)
+    return msg
+
+
+def parsed(msg: EmailMessage, *, auth: str = "pass", original_to: str = ""):
+    return inbound_email.parse_raw_mime(msg.as_bytes(), original_to=original_to, auth=auth)
+
+
+def _request(db: Database, body: bytes, headers: dict) -> Request:
+    app = MagicMock()
+    app.state.fastmcp_server._lifespan_result = {"db": db}
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/inbound/email",
+        "query_string": b"",
+        "headers": [(k.lower().encode(), str(v).encode()) for k, v in headers.items()],
+        "app": app,
+    }
+    sent = {"done": False}
+
+    async def receive():
+        if sent["done"]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent["done"] = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(scope, receive)
+
+
+def signed_headers(body: bytes, original_to: str = "", auth: str = "pass") -> dict:
+    headers = {
+        "content-length": str(len(body)),
+        inbound_email.SIGNATURE_HEADER: inbound_email.sign(SECRET, original_to, auth, body),
+        inbound_email.AUTH_HEADER: auth,
+    }
+    if original_to:
+        headers[inbound_email.RECIPIENT_HEADER] = original_to
+    return headers
+
+
+# ── address ──────────────────────────────────────────────────────────────
+
+
+def test_token_is_derived_deterministic_and_unambiguous():
+    first_tok = inbound_email.derive_token(PID, 1)
+    assert first_tok == inbound_email.derive_token(PID, 1)
+    assert len(first_tok) == 10 and set(first_tok) <= set(inbound_email.TOKEN_ALPHABET)
+    assert not set(first_tok) & set("ilou")
+    assert inbound_email.derive_token(PID, 2) != first_tok
+    assert inbound_email.derive_token(OTHER_PID, 1) != first_tok
+
+
+def test_token_key_is_purpose_bound_and_overridable(monkeypatch):
+    t1 = inbound_email.derive_token(PID, 1)
+    monkeypatch.setattr("oncofiles.config.MCP_BEARER_TOKEN", "another-synthetic-bearer")
+    assert inbound_email.derive_token(PID, 1) != t1
+    monkeypatch.setenv("INBOUND_ADDRESS_SECRET", "synthetic-override-950")
+    t_override = inbound_email.derive_token(PID, 1)
+    monkeypatch.setattr("oncofiles.config.MCP_BEARER_TOKEN", "synthetic-bearer-950")
+    assert inbound_email.derive_token(PID, 1) == t_override  # independent of the bearer
+
+
+@pytest.mark.parametrize(
+    ("caregiver", "prefix"),
+    [
+        ("synthetic.carer950@gmail.com", "synthetic.carer950"),
+        ("Synthetic.Carer950@GMAIL.com", "synthetic.carer950"),
+        ("synthetic.carer950+labs@gmail.com", "synthetic.carer950"),
+        ("synthetic.carer950@gmail.com, second@example.test", "synthetic.carer950"),
+        ("first@example.test, synthetic.carer950@gmail.com", ""),  # first entry only
+        ("carer950@example.test", ""),
+        ("carer950@googlemail.example", ""),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_gmail_prefix(caregiver, prefix):
+    assert inbound_email.gmail_prefix(caregiver) == prefix
+
+
+def test_format_and_parse_address():
+    token = inbound_email.derive_token(PID, 1)
+    addr = inbound_email.format_address(token, CARER)
+    assert addr == f"synthetic.carer950-{token}@{inbound_email.INBOUND_DOMAIN}"
+    assert inbound_email.format_address(token, OTHER_CARER) == (
+        f"{token}@{inbound_email.INBOUND_DOMAIN}"
+    )
+    assert inbound_email.token_from_address(addr) == token
+    assert inbound_email.token_from_address(f"Name <{addr}>") == token
+    # the prefix is never checked; a +tag is dropped; case does not matter
+    other = f"whoever-{token}+x@{inbound_email.INBOUND_DOMAIN.upper()}"
+    assert inbound_email.token_from_address(other) == token
+    assert inbound_email.token_from_address(f"{token}@example.test") is None
+    assert inbound_email.token_from_address(f"short-abc@{inbound_email.INBOUND_DOMAIN}") is None
+
+
+def test_crockford_reading_rules():
+    # o -> 0, i / l -> 1
+    assert inbound_email.token_from_address(f"x-oil0123456@{inbound_email.INBOUND_DOMAIN}") == (
+        "0110123456"
+    )
+
+
+async def test_db_keeps_only_the_hash_and_rotation_deactivates(idb):
+    first = await inbound_email.ensure_address(idb, PID)
+    again = await inbound_email.ensure_address(idb, PID)
+    assert first["address"] == again["address"] and first["version"] == 1
+    old_token = inbound_email.token_from_address(first["address"])
+    async with idb.db.execute("SELECT * FROM inbound_addresses") as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+    assert len(rows) == 1
+    flat = json.dumps(rows)
+    assert old_token not in flat and "@" not in flat and "carer" not in flat
+    assert rows[0]["token_hash"] == inbound_email.token_hash(old_token)
+
+    rotated = await inbound_email.rotate_address(idb, PID)
+    new_token = inbound_email.token_from_address(rotated["address"])
+    assert rotated["version"] == 2 and new_token != old_token
+    old = await idb.find_inbound_address(inbound_email.token_hash(old_token))
+    new = await idb.find_inbound_address(inbound_email.token_hash(new_token))
+    assert old["active"] == 0 and new["active"] == 1 and new["patient_id"] == PID
+    async with idb.db.execute(
+        "SELECT COUNT(*) FROM inbound_addresses WHERE patient_id = ? AND active = 1", (PID,)
+    ) as cur:
+        assert (await cur.fetchone())[0] == 1
+
+
+def test_migration_only_adds_the_table():
+    sql = (ROOT / "migrations" / "095_inbound_addresses.sql").read_text()
+    code = "\n".join(line for line in sql.splitlines() if not line.strip().startswith("--"))
+    assert "CREATE TABLE IF NOT EXISTS inbound_addresses" in code
+    assert "patient_id TEXT NOT NULL REFERENCES patients(patient_id)" in code
+    assert "token_hash TEXT NOT NULL UNIQUE" in code
+    for verb in ("INSERT", "UPDATE", "DELETE", "DROP", "ALTER"):
+        assert verb not in code.upper(), verb
+    assert "token TEXT" not in code and "address TEXT" not in code
+
+
+# ── webhook ──────────────────────────────────────────────────────────────
+
+
+async def test_webhook_is_404_while_the_secret_is_unset(idb, monkeypatch):
+    monkeypatch.delenv(inbound_email.MIME_SECRET_ENV)  # the Brevo token stays set
+    body = b"From: x\r\n\r\nhello"
+    with pytest.raises(HTTPException) as exc:
+        await server.inbound_email_webhook(_request(idb, body, signed_headers(body)))
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.parametrize("kind", ["missing", "wrong", "other_secret", "tampered_to", "flip_auth"])
+async def test_webhook_refuses_a_bad_signature_with_the_same_404(idb, drive, kind):
+    addr = await address_of(idb)
+    body = mail(addr, files=[(FILENAMES[0], pdf(), "application/pdf")]).as_bytes()
+    headers = signed_headers(body, original_to=addr, auth="fail")
+    if kind == "missing":
+        del headers[inbound_email.SIGNATURE_HEADER]
+    elif kind == "wrong":
+        headers[inbound_email.SIGNATURE_HEADER] = "sha256=" + "0" * 64
+    elif kind == "other_secret":
+        headers[inbound_email.SIGNATURE_HEADER] = inbound_email.sign("x", addr, "fail", body)
+    elif kind == "tampered_to":
+        headers[inbound_email.RECIPIENT_HEADER] = f"y-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}"
+    else:
+        headers[inbound_email.AUTH_HEADER] = "pass"  # verdict is inside the signature
+    with pytest.raises(HTTPException) as exc:
+        await server.inbound_email_webhook(_request(idb, body, headers))
+    assert exc.value.status_code == 404
+    assert drive.files == []
+
+
+async def test_webhook_size_cap_before_reading(idb, monkeypatch):
+    monkeypatch.setattr(inbound_email, "MAX_BODY_BYTES", 1000)
+    body = b"x" * 2000
+    headers = signed_headers(body)
+    resp = await server.inbound_email_webhook(_request(idb, body, headers))
+    assert resp.status_code == 413
+    # a body longer than it declares is cut while streaming too
+    headers["content-length"] = "10"
+    resp = await server.inbound_email_webhook(_request(idb, body, headers))
+    assert resp.status_code == 413
+
+
+async def test_webhook_unknown_token_is_a_silent_202(idb, drive, mails):
+    addr = f"someone-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}"
+    body = mail(addr, files=[(FILENAMES[0], pdf(), "application/pdf")]).as_bytes()
+    resp = await server.inbound_email_webhook(_request(idb, body, signed_headers(body, addr)))
+    assert resp.status_code == 202 and json.loads(resp.body) == {"status": "accepted"}
+    assert drive.files == [] and mails == []
+    assert inbound_email.unmatched_overview()["totals"]["unknown_token"] == 1
+
+
+async def test_webhook_inactive_token_is_dropped(idb, drive, mails):
+    old = await address_of(idb)
+    await inbound_email.rotate_address(idb, PID)
+    body = mail(old, files=[(FILENAMES[0], pdf(), "application/pdf")]).as_bytes()
+    resp = await server.inbound_email_webhook(_request(idb, body, signed_headers(body, old)))
+    assert resp.status_code == 202
+    assert drive.files == [] and mails == []
+    assert inbound_email.unmatched_overview()["totals"]["inactive_token"] == 1
+
+
+async def test_webhook_end_to_end_files_and_replies(idb, drive, mails):
+    addr = await address_of(idb)
+    body = mail(addr, files=[(FILENAMES[0], pdf(), "application/pdf")]).as_bytes()
+    resp = await server.inbound_email_webhook(_request(idb, body, signed_headers(body, addr)))
+    assert resp.status_code == 202 and json.loads(resp.body) == {"status": "accepted"}
+    assert [f[0] for f in drive.files] == [FILENAMES[0]]
+    assert len(mails) == 1 and mails[0]["to"] == [CARER]
+
+
+async def test_unparseable_body_is_accepted_and_dropped(idb, monkeypatch):
+    def _boom(*a, **k):
+        raise inbound_email.UnparseableMessageError("x")
+
+    monkeypatch.setattr(inbound_email, "parse_raw_mime", _boom)
+    body = b"\x00\x01"
+    resp = await server.inbound_email_webhook(_request(idb, body, signed_headers(body)))
+    assert resp.status_code == 202
+
+
+async def test_recipient_falls_back_to_the_message_headers(idb, drive, mails):
+    addr = await address_of(idb)
+    msg = mail(f"Somebody <{STRANGER}>", files=[(FILENAMES[0], pdf(), "application/pdf")])
+    msg["Delivered-To"] = addr
+    result = await inbound_email.process_message(idb, parsed(msg))
+    assert result.outcome == "filed" and result.accepted == 1
+
+
+# ── senders ──────────────────────────────────────────────────────────────
+
+
+async def test_caregiver_with_passing_auth_is_filed_through_the_935_backend(idb, drive, mails):
+    addr = await address_of(idb)
+    calls = []
+    real = dashboard_upload.handle_upload
+
+    async def spy(db, patient_id, uploads, **kw):
+        calls.append((patient_id, len(uploads), kw))
+        return await real(db, patient_id, uploads, **kw)
+
+    files = [
+        (FILENAMES[0], pdf(1), "application/pdf"),
+        (FILENAMES[1], jpeg(), "image/jpeg"),
+        (FILENAMES[2], b"Synthetic note 2027, nothing else.", "text/plain"),
+    ]
+    with patch.object(dashboard_upload, "handle_upload", spy):
+        result = await inbound_email.process_message(idb, parsed(mail(addr, files=files)))
+    assert result.outcome == "filed" and result.accepted == 3
+    sizes = [c[1] for c in calls]
+    assert sizes == [1] * len(FILENAMES)  # one file per call, as the dashboard
+    pids = {c[0] for c in calls}
+    kws = [c[2] for c in calls]
+    assert pids == {PID}
+    assert all(kw == {"log_pid": PID[:4]} for kw in kws)
+    assert [(n, m) for n, _d, m in drive.files] == [
+        (FILENAMES[0], "application/pdf"),
+        (FILENAMES[1], "image/jpeg"),
+        (FILENAMES[2], "text/plain"),
+    ]
+
+
+async def test_caregiver_matching_is_case_insensitive(idb, drive, mails):
+    addr = await address_of(idb)
+    msg = mail(addr, sender=CARER.upper(), files=[(FILENAMES[0], pdf(), "application/pdf")])
+    assert (await inbound_email.process_message(idb, parsed(msg))).accepted == 1
+
+
+async def test_unknown_sender_is_not_filed_and_listed_for_the_admin(idb, drive, mails):
+    addr = await address_of(idb)
+    msg = mail(addr, sender=STRANGER, files=[(FILENAMES[0], pdf(), "application/pdf")])
+    result = await inbound_email.process_message(idb, parsed(msg))
+    assert result.outcome == "unmatched"
+    assert drive.files == [] and mails == []
+    over = inbound_email.unmatched_overview()
+    [entry] = over["senders"]
+    assert entry["reasons"] == {"unknown_sender": 1} and entry["files"] == 1
+    assert entry["patient"] == PID[:4] and len(entry["sender_hash"]) == 16
+    flat = json.dumps(over)
+    assert "@" not in flat and "stranger" not in flat and PID not in flat
+
+
+async def test_another_patients_caregiver_is_an_unknown_sender(idb, drive, mails):
+    addr = await address_of(idb)
+    msg = mail(addr, sender=OTHER_CARER, files=[(FILENAMES[0], pdf(), "application/pdf")])
+    assert (await inbound_email.process_message(idb, parsed(msg))).outcome == "unmatched"
+    assert drive.files == []
+
+
+async def test_caregiver_with_failed_auth_is_not_filed(idb, drive, mails):
+    addr = await address_of(idb)
+    msg = mail(addr, files=[(FILENAMES[0], pdf(), "application/pdf")])
+    for auth in ("fail", "", "softfail"):
+        inbound_email.reset_state()
+        result = await inbound_email.process_message(idb, parsed(msg, auth=auth))
+        assert result.outcome == "unmatched"
+        assert inbound_email.unmatched_overview()["senders"][0]["reasons"] == {"auth_failed": 1}
+    assert drive.files == [] and mails == []
+
+
+async def test_patient_is_routed_only_by_the_token(idb, drive, mails):
+    """The From of another patient's caregiver never re-routes a mail."""
+    addr_b = await address_of(idb, OTHER_PID)
+    msg = mail(addr_b, sender=CARER, files=[(FILENAMES[0], pdf(), "application/pdf")])
+    result = await inbound_email.process_message(idb, parsed(msg))
+    assert result.outcome == "unmatched" and result.patient_prefix == OTHER_PID[:4]
+    assert drive.files == []
+
+
+async def test_patient_without_drive_is_not_filed(idb, mails, monkeypatch):
+    async def _no_drive(db, patient_id, log_pid=None):
+        return dashboard_upload.refusal("no_drive", 409)
+
+    monkeypatch.setattr(dashboard_upload, "_resolve_target", _no_drive)
+    addr = await address_of(idb)
+    files = [(f"Synth{i}.pdf", pdf(i), "application/pdf") for i in range(3)]
+    result = await inbound_email.process_message(idb, parsed(mail(addr, files=files)))
+    assert result.accepted == 0 and result.skipped == {"no_drive": 3}
+    assert inbound_email.unmatched_overview()["totals"]["skipped_no_drive"] == 3
+
+
+# ── parsing and screening ────────────────────────────────────────────────
+
+
+async def test_forwarded_rfc822_attachments_are_taken(idb, drive, mails):
+    addr = await address_of(idb)
+    inner = mail("lab@example.test", sender="lab@example.test")
+    inner.add_attachment(pdf(7), maintype="application", subtype="pdf", filename="SynthFwd.pdf")
+    outer = mail(addr)
+    outer.add_attachment(inner)  # message/rfc822
+    result = await inbound_email.process_message(idb, parsed(outer))
+    assert result.accepted == 1
+    assert [f[0] for f in drive.files] == ["SynthFwd.pdf"]
+
+
+async def test_forwarded_eml_file_is_taken(idb, drive, mails):
+    addr = await address_of(idb)
+    inner = mail("lab@example.test", sender="lab@example.test")
+    inner.add_attachment(pdf(8), maintype="application", subtype="pdf", filename="SynthEml.pdf")
+    outer = mail(addr, files=[("forwarded.eml", inner.as_bytes(), "application/octet-stream")])
+    result = await inbound_email.process_message(idb, parsed(outer))
+    assert result.accepted == 1
+    assert [f[0] for f in drive.files] == ["SynthEml.pdf"]
+
+
+async def test_inline_image_is_taken_and_named(idb, drive, mails):
+    addr = await address_of(idb)
+    msg = mail(addr)
+    msg.add_alternative("<p>synthetic</p><img src='cid:scan'>", subtype="html")
+    html = msg.get_payload()[-1]
+    html.add_related(png(1200, 1600), maintype="image", subtype="png", cid="<scan>")
+    result = await inbound_email.process_message(idb, parsed(msg))
+    assert result.accepted == 1
+    name = drive.files[0][0]
+    assert name.startswith("email-image-") and name.endswith(".png")
+
+
+async def test_signature_logos_are_skipped(idb, drive, mails):
+    addr = await address_of(idb)
+    files = [
+        ("logo.png", png(120, 40, pad=50_000), "image/png"),  # small dimensions
+        ("tiny.jpg", jpeg(size=2000), "image/jpeg"),  # under 10 kB
+        ("logo.gif", gif(64), "image/gif"),
+    ]
+    result = await inbound_email.process_message(idb, parsed(mail(addr, files=files)))
+    assert result.accepted == 0 and result.skipped == {"signature_image": 3}
+    assert drive.files == []
+
+
+async def test_duplicates_are_skipped(idb, drive, mails):
+    addr = await address_of(idb)
+    same = pdf(42)
+    files = [("SynthA.pdf", same, "application/pdf"), ("SynthB.pdf", same, "application/pdf")]
+    first = await inbound_email.process_message(idb, parsed(mail(addr, files=files)))
+    assert first.accepted == 1 and first.skipped == {"duplicate": 1}
+    # the same file again in a later mail (recent mail filings)
+    again = await inbound_email.process_message(idb, parsed(mail(addr, files=files[:1])))
+    assert again.accepted == 0 and again.skipped == {"duplicate": 1}
+
+
+async def test_duplicate_of_an_existing_document_by_md5(idb, drive, mails):
+    import hashlib
+
+    data = pdf(99)
+    doc = await idb.insert_document(make_doc(file_id="synth950-doc"), patient_id=PID)
+    await idb.update_gdrive_md5(doc.id, hashlib.md5(data).hexdigest())
+    addr = await address_of(idb)
+    msg = mail(addr, files=[("SynthKnown.pdf", data, "application/pdf")])
+    result = await inbound_email.process_message(idb, parsed(msg))
+    assert result.accepted == 0 and result.skipped == {"duplicate": 1}
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "ctype", "code"),
+    [
+        ("SynthArchive.zip", b"PK\x03\x04" + b"\x00" * 500, "application/zip", "archive_refused"),
+        ("SynthDoc.pdf", b"PK\x03\x04" + b"\x00" * 500, "application/pdf", "archive_refused"),
+        ("SynthTar.gz", b"\x1f\x8b" + b"\x00" * 500, "application/gzip", "archive_refused"),
+        ("SynthWord.docx", b"PK\x03\x04" + b"\x00" * 500, "application/msword", "archive_refused"),
+        ("SynthProgram.exe", b"MZ" + b"\x00" * 500, "application/octet-stream", "type_not_allowed"),
+        (
+            "SynthMovie.mp4",
+            MP4_BOX + MP4_BRAND + bytes(SMALL),
+            "video/mp4",
+            "type_not_allowed",
+        ),
+        ("SynthFake.pdf", jpeg(), "application/pdf", "content_mismatch"),
+        ("synth.vcf", b"##fileformat=VCFv4.2\n", "text/plain", "raw_genotype_excluded"),
+        (
+            "SynthExport.txt",
+            b"rs1000001 AA\nrs1000002 AG\nrs1000003 GG\nrs1000004 CT\n",
+            "text/plain",
+            "raw_genotype_excluded",
+        ),
+        ("SynthTable.txt", b"col,col\n1,2\n", "text/csv", None),
+    ],
+)
+async def test_type_allowlist_by_magic_bytes(idb, drive, mails, name, data, ctype, code):
+    addr = await address_of(idb)
+    result = await inbound_email.process_message(
+        idb, parsed(mail(addr, files=[(name, data, ctype)]))
+    )
+    if code is None:
+        assert result.accepted == 1
+    else:
+        assert result.accepted == 0 and result.skipped == {code: 1}
+        assert drive.files == []
+
+
+def test_allowlist_is_the_dashboard_one():
+    """The final word is the #935 check: nothing it refuses is filed by mail."""
+    for ext in (".docx", ".odt", ".gif", ".zip"):
+        assert ext not in dashboard_upload.ALLOWED_TYPES
+    att = inbound_email.InboundAttachment("SynthPhoto", jpeg(), "image/jpeg")
+    assert inbound_email.screen(att, 0) == ("SynthPhoto.jpg", "image/jpeg")
+
+
+async def test_file_count_and_size_limits(idb, drive, mails, monkeypatch):
+    addr = await address_of(idb)
+    files = [(f"Synth{i:02d}.pdf", pdf(i, 100), "application/pdf") for i in range(22)]
+    result = await inbound_email.process_message(idb, parsed(mail(addr, files=files)))
+    assert result.accepted == 20 and result.skipped == {"too_many_files": 2}
+
+    inbound_email.reset_state()
+    monkeypatch.setattr(inbound_email, "MAX_BYTES_PER_MAIL", 50_000)
+    files = [(f"Big{i}.pdf", pdf(100 + i, 20_000), "application/pdf") for i in range(4)]
+    result = await inbound_email.process_message(idb, parsed(mail(addr, files=files)))
+    assert result.accepted == 2 and result.skipped == {"mail_too_large": 2}
+
+
+async def test_per_address_caps(idb, drive, mails, monkeypatch):
+    monkeypatch.setattr(inbound_email, "MAX_MAILS_PER_HOUR", 1)
+    addr = await address_of(idb)
+    first = await inbound_email.process_message(
+        idb, parsed(mail(addr, files=[("S1.pdf", pdf(1), "application/pdf")]))
+    )
+    second = await inbound_email.process_message(
+        idb, parsed(mail(addr, files=[("S2.pdf", pdf(2), "application/pdf")]))
+    )
+    assert first.outcome == "filed" and second.outcome == "rate_limited"
+
+    inbound_email.reset_state()
+    monkeypatch.setattr(inbound_email, "MAX_MAILS_PER_HOUR", 20)
+    monkeypatch.setattr(inbound_email, "MAX_FILES_PER_DAY", 2)
+    files = [(f"D{i}.pdf", pdf(10 + i), "application/pdf") for i in range(3)]
+    result = await inbound_email.process_message(idb, parsed(mail(addr, files=files)))
+    assert result.accepted == 2 and result.skipped == {"daily_file_cap": 1}
+
+
+async def test_bodies_are_never_filed_or_stored(idb, drive, mails):
+    addr = await address_of(idb)
+    result = await inbound_email.process_message(idb, parsed(mail(addr)))
+    assert result.accepted == 0 and drive.files == []
+    assert mails == []  # nothing accepted or skipped: no receipt either
+
+
+async def test_same_message_id_twice_is_one_delivery(idb, drive, mails):
+    addr = await address_of(idb)
+    msg = mail(addr, files=[("S1.pdf", pdf(1), "application/pdf")])
+    first = await inbound_email.process_message(idb, parsed(msg))
+    second = await inbound_email.process_message(idb, parsed(msg))
+    assert first.accepted == 1 and second.outcome == "duplicate_delivery"
+    assert len(drive.files) == 1
+
+
+# ── receipt and loop safety ──────────────────────────────────────────────
+
+
+async def test_receipt_has_counts_and_the_terms_sentence_only(idb, drive, mails):
+    addr = await address_of(idb)
+    files = [
+        (FILENAMES[0], pdf(1), "application/pdf"),
+        ("SynthArchive.zip", b"PK\x03\x04" + b"\x00" * 50, "application/zip"),
+        ("SynthProgram.exe", b"MZ" + b"\x00" * 50, "application/octet-stream"),
+    ]
+    await inbound_email.process_message(idb, parsed(mail(addr, files=files)))
+    [sent] = mails
+    assert sent["to"] == [CARER] and sent["tags"] == ["inbound_receipt"]
+    text = sent["subject"] + sent["text"]
+    assert inbound_email.TERMS_SENTENCE_SK in text and inbound_email.TERMS_SENTENCE_EN in text
+    assert "https://oncofiles.com/terms" in text
+    assert "1 súbor" in text and "1 file" in text
+    assert "archive_refused" in text and "type_not_allowed" in text
+    for secret in (*FILENAMES, "SynthArchive", "SynthProgram", "Jana", "Synteticka", SUBJECT):
+        assert secret not in text
+    assert "synthetic.carer950" not in text and addr not in text
+
+
+async def test_one_receipt_per_address_per_ten_minutes(idb, drive, mails):
+    addr = await address_of(idb)
+    for i in range(3):
+        msg = mail(addr, files=[(f"S{i}.pdf", pdf(i), "application/pdf")])
+        await inbound_email.process_message(idb, parsed(msg))
+    assert len(drive.files) == 3 and len(mails) == 1
+    assert inbound_email.unmatched_overview()["totals"]["reply_throttled"] == 2
+
+
+@pytest.mark.parametrize(
+    ("headers", "sender", "reason"),
+    [
+        ({"Auto-Submitted": "auto-replied"}, CARER, "auto_submitted"),
+        ({"Auto-Submitted": "auto-generated"}, CARER, "auto_submitted"),
+        ({"Precedence": "bulk"}, CARER, "bulk"),
+        ({"Precedence": "list"}, CARER, "bulk"),
+        ({"Precedence": "junk"}, CARER, "bulk"),
+        ({"List-Id": "<synthetic.example.test>"}, CARER, "bulk"),
+        ({"Return-Path": "<>"}, CARER, "bounce"),
+        ({}, "MAILER-DAEMON@example.test", "bounce"),
+        ({}, "postmaster@example.test", "bounce"),
+        ({}, "noreply@oncofiles.com", "own_domain"),
+        ({}, f"robot@{inbound_email.INBOUND_DOMAIN}", "own_domain"),
+    ],
+)
+async def test_loop_and_bounce_mail_is_ignored(idb, drive, mails, headers, sender, reason):
+    addr = await address_of(idb)
+    msg = mail(
+        addr, sender=sender, files=[(FILENAMES[0], pdf(), "application/pdf")], headers=headers
+    )
+    result = await inbound_email.process_message(idb, parsed(msg))
+    assert result.outcome == "ignored_loop"
+    assert drive.files == [] and mails == []
+    assert inbound_email.unmatched_overview()["totals"][f"ignored_{reason}"] == 1
+
+
+async def test_auto_submitted_no_is_not_a_loop(idb, drive, mails):
+    addr = await address_of(idb)
+    msg = mail(
+        addr, files=[(FILENAMES[0], pdf(), "application/pdf")], headers={"Auto-Submitted": "no"}
+    )
+    assert (await inbound_email.process_message(idb, parsed(msg))).accepted == 1
+
+
+async def test_delivery_report_and_own_message_id_are_ignored(idb, drive, mails, monkeypatch):
+    addr = await address_of(idb)
+    raw_report = (
+        f"From: Mail Delivery <{CARER}>\r\nTo: {addr}\r\nSubject: {SUBJECT}\r\n"
+        "Message-ID: <report.950@example.test>\r\nMIME-Version: 1.0\r\n"
+        'Content-Type: multipart/report; report-type=delivery-status; boundary="b950"\r\n\r\n'
+        "--b950\r\nContent-Type: text/plain\r\n\r\nsynthetic\r\n"
+        "--b950\r\nContent-Type: message/delivery-status\r\n\r\nReporting-MTA: dns; x\r\n\r\n"
+        "--b950--\r\n"
+    ).encode()
+    report = inbound_email.parse_raw_mime(raw_report, auth="pass")
+    assert report.is_report
+    assert (await inbound_email.process_message(idb, report)).outcome == "ignored_loop"
+
+    monkeypatch.setenv("MAIL_FROM", "Oncofiles <noreply@mail.example.test>")
+    own = mail(addr, files=[(FILENAMES[0], pdf(), "application/pdf")])
+    del own["Message-ID"]
+    own["Message-ID"] = "<abc.950@mail.example.test>"
+    assert (await inbound_email.process_message(idb, parsed(own))).outcome == "ignored_loop"
+    assert drive.files == [] and mails == []
+
+
+# ── logs ─────────────────────────────────────────────────────────────────
+
+
+async def test_logs_carry_no_address_subject_or_file_name(idb, drive, mails, caplog):
+    caplog.set_level(logging.DEBUG)
+    addr = await address_of(idb)
+    files = [
+        (FILENAMES[0], pdf(1), "application/pdf"),
+        ("SynthArchive.zip", b"PK\x03\x04" + b"\x00" * 50, "application/zip"),
+    ]
+    await inbound_email.process_message(idb, parsed(mail(addr, files=files)))
+    stranger = mail(addr, sender=STRANGER, files=files)
+    await inbound_email.process_message(idb, parsed(stranger))
+    body = mail(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}", files=files).as_bytes()
+    await server.inbound_email_webhook(_request(idb, body, signed_headers(body)))
+    bad = signed_headers(body)
+    bad[inbound_email.SIGNATURE_HEADER] = "sha256=00"
+    with pytest.raises(HTTPException):
+        await server.inbound_email_webhook(_request(idb, body, bad))
+    # our own loggers (aiosqlite's DEBUG echo of SQL parameters is a library trace)
+    text = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("oncofiles"))
+    assert "inbound:" in text
+    for secret in (
+        "@",
+        "synthetic.carer950",
+        "stranger950",
+        SUBJECT,
+        *FILENAMES,
+        "SynthArchive",
+        inbound_email.token_from_address(addr),
+        PID,  # only the 4-character prefix
+    ):
+        assert secret not in text, secret
+    assert PID[:4] in text
+
+
+# ── dashboard routes ─────────────────────────────────────────────────────
+
+
+def _dash_request(db, patient_id=None, *, body=None):
+    request = MagicMock()
+    request.query_params = {"patient_id": patient_id} if patient_id is not None else {}
+    request.path_params = {}
+    request.headers = {"authorization": "Bearer session:synthetic"}
+    request.cookies = {}
+    request.app.state.fastmcp_server._lifespan_result = {"db": db}
+    request.json = AsyncMock(return_value=body or {})
+    return request
+
+
+def _caller(email, *, admin=False, bearer=False):
+    unauthorized = JSONResponse({"error": "unauthorized"}, status_code=401)
+    return (
+        patch.object(server, "_get_dashboard_email", return_value=email),
+        patch.object(server, "_check_bearer", return_value=None if bearer else unauthorized),
+        patch.object(server, "_is_admin_email", return_value=admin),
+    )
+
+
+async def _call(route, request, email, **kw):
+    patch_email, patch_bearer, patch_admin = _caller(email, **kw)
+    with patch_email, patch_bearer, patch_admin:
+        return await route(request)
+
+
+async def test_get_address_for_the_caregiver(idb):
+    resp = await _call(server.api_inbound_address, _dash_request(idb, "synth950-a"), CARER)
+    assert resp.status_code == 200
+    data = json.loads(resp.body)
+    assert data["enabled"] is True
+    assert data["address"].startswith("synthetic.carer950-")
+    assert data["address"].endswith("@" + inbound_email.INBOUND_DOMAIN)
+    assert data["terms_url"].endswith("/terms")
+
+
+async def test_get_address_foreign_equals_unknown(idb):
+    foreign = await _call(server.api_inbound_address, _dash_request(idb, "synth950-b"), CARER)
+    unknown = await _call(server.api_inbound_address, _dash_request(idb, "synth950-zz"), CARER)
+    assert foreign.status_code == unknown.status_code == 404
+    assert foreign.body == unknown.body
+    async with idb.db.execute("SELECT COUNT(*) FROM inbound_addresses") as cur:
+        assert (await cur.fetchone())[0] == 0
+
+
+async def test_get_address_read_only_for_admin_and_off_when_disabled(idb, monkeypatch):
+    resp = await _call(
+        server.api_inbound_address, _dash_request(idb, "synth950-b"), CARER, admin=True
+    )
+    assert resp.status_code == 403 and json.loads(resp.body)["error"] == "read_only"
+    monkeypatch.delenv(inbound_email.MIME_SECRET_ENV)
+    monkeypatch.delenv(inbound_email.BREVO_TOKEN_ENV)
+    resp = await _call(server.api_inbound_address, _dash_request(idb, "synth950-a"), CARER)
+    assert json.loads(resp.body) == {"enabled": False}
+    async with idb.db.execute("SELECT COUNT(*) FROM inbound_addresses") as cur:
+        assert (await cur.fetchone())[0] == 0
+
+
+async def test_rotate_route_acl_and_effect(idb):
+    before = await address_of(idb)
+    foreign = await _call(
+        server.api_inbound_address_rotate,
+        _dash_request(idb, body={"patient_id": "synth950-b"}),
+        CARER,
+    )
+    unknown = await _call(
+        server.api_inbound_address_rotate,
+        _dash_request(idb, body={"patient_id": "synth950-zz"}),
+        CARER,
+    )
+    assert foreign.status_code == unknown.status_code == 404 and foreign.body == unknown.body
+    admin = await _call(
+        server.api_inbound_address_rotate,
+        _dash_request(idb, body={"patient_id": "synth950-a"}),
+        "admin950@example.test",
+        admin=True,
+    )
+    assert admin.status_code == 403
+    assert await address_of(idb) == before
+    ok = await _call(
+        server.api_inbound_address_rotate,
+        _dash_request(idb, body={"patient_id": "synth950-a"}),
+        CARER,
+    )
+    assert ok.status_code == 200
+    after = json.loads(ok.body)
+    assert after["version"] == 2 and after["address"] != before
+
+
+async def test_unmatched_route_is_admin_only(idb):
+    resp = await _call(server.api_inbound_unmatched, _dash_request(idb), CARER)
+    assert resp.status_code == 403
+    resp = await _call(
+        server.api_inbound_unmatched, _dash_request(idb), "admin950@example.test", admin=True
+    )
+    assert resp.status_code == 200 and "senders" in json.loads(resp.body)
+
+
+def test_rate_limit_class_of_its_own():
+    from oncofiles import ratelimit
+
+    for path in ("/inbound/email", "/inbound/brevo"):
+        assert ratelimit.classify(path) == ratelimit.INBOUND
+    assert ratelimit.classify("/api/upload") == ratelimit.API
+    cfg = ratelimit.RateLimitConfig.from_env()
+    inbound = cfg.classes[ratelimit.INBOUND]
+    # the routes cap the body after their enabled check; the middleware never 413s them
+    assert inbound.max_body_bytes == 0
+    assert inbound.anon_global.per_minute > 0
+
+
+def test_inbound_flood_does_not_drain_the_api_bucket():
+    from oncofiles import ratelimit
+
+    mw = ratelimit.RateLimitMiddleware(lambda *a: None, ratelimit.RateLimitConfig())
+    # drain the inbound anonymous budget entirely
+    while mw.check(ratelimit.INBOUND, "ip:192.0.2.9", False) == 0:
+        pass
+    assert mw.check(ratelimit.API, "ip:192.0.2.10", False) == 0
+
+
+# ── dashboard markup and demo twin ───────────────────────────────────────
+
+
+HTML = (SRC / "dashboard.html").read_text()
+JS = (SRC / "dashboard.js").read_text()
+
+
+def test_address_card_markup():
+    start = HTML.index('id="inbound-card"')
+    card = HTML[start : HTML.index("</section>", start)]
+    for action in ("copyInboundAddress", "downloadInboundVcard", "rotateInboundAddress"):
+        assert f'data-action="{action}"' in card
+    assert 'href="/terms"' in card
+    assert "data-sk=" in card and "data-en=" in card
+    assert not any(f" on{e}=" in card for e in ("click", "change", "input"))
+    # maintainer decision A: the sharing note, SK + EN, static markup (no innerHTML)
+    note = card[card.index("inbound-share-note") :]
+    note = note[: note.index("</p>")]
+    assert 'data-sk="Adresa obsahuje časť vašej Gmail adresy' in note
+    assert "len v rodine a s ošetrujúcim tímom" in note
+    assert 'data-en="The address contains part of your Gmail address' in note
+    assert "only within the family and the care team" in note
+    # the card is in both variants; the admin panel is app-only
+    app_only = HTML[HTML.index("<!--app-only-->\n <!-- Administration") :]
+    assert "toggleAdminPanel|inbound|@this" in app_only[: app_only.index("<!--/app-only-->")]
+    assert HTML.index('id="inbound-card"') < HTML.index("<!--app-only-->\n <!-- Administration")
+
+
+def test_dashboard_js_wiring():
+    assert "if (path === '/api/inbound-address') return d.inbound_address;" in JS
+    blocked = JS[
+        JS.index("var DEMO_BLOCKED_ACTIONS") : JS.index("};", JS.index("var DEMO_BLOCKED_ACTIONS"))
+    ]
+    assert "rotateInboundAddress: 1" in blocked
+    section = JS[
+        JS.index("// ── Document e-mail address (#950)") : JS.index("// ── Patient selector")
+    ]
+    assert "innerHTML" not in section and "confirm(" not in section and "alert(" not in section
+    assert "'/api/inbound-unmatched'" in JS
+
+
+def test_demo_twin_has_an_invented_address():
+    from oncofiles import demo_dashboard
+
+    built = demo_dashboard.build([], "0.0.0-test")
+    twin = built["inbound_address"]
+    assert twin["enabled"] is True
+    local, _, domain = twin["address"].partition("@")
+    assert domain == inbound_email.INBOUND_DOMAIN
+    assert inbound_email.token_from_address(twin["address"]) == demo_dashboard.DEMO_INBOUND_TOKEN
+    assert local.startswith("jana.example-")
+
+
+def test_claude_md_mentions_the_feature():
+    text = (ROOT / "CLAUDE.md").read_text()
+    assert "#950" in text and "INBOUND_MIME_HMAC_SECRET" in text
+    assert "INBOUND_BREVO_TOKEN" in text and "INBOUND_WEBHOOK_SECRET" not in text
+
+
+# ── Brevo adapter (D3 = Brevo) ───────────────────────────────────────────
+
+AUTHSERV = "mx.synthetic-relay.example"
+
+
+@pytest.fixture
+def brevo(monkeypatch):
+    """BREVO_API_KEY set; attachment downloads served from a dict.
+
+    The sender verdict is DKIM only (#966). These tests are about the queue
+    and the core, so a parsed item arrives here already VERIFIED, with the
+    verdict of its ``auth`` (its ``EMLDownloadToken`` starts with
+    ``eml-pass`` or ``eml-fail``), exactly as the worker hands it to
+    ``enqueue(verified=True)`` after the claimed bucket. The claimed bucket
+    and the real DKIM verification are covered by
+    ``tests/test_950_dkim_verification.py``.
+    """
+    from oncofiles import inbound_dkim
+
+    monkeypatch.setenv(inbound_email.BREVO_API_KEY_ENV, "synthetic-brevo-key-950")
+    monkeypatch.delenv(inbound_email.BREVO_AUTHSERV_ENV, raising=False)
+    real_parse = inbound_email.parse_brevo_item
+
+    def _parse(item):
+        msg = real_parse(item)
+        msg.auth_pass = msg.eml_ref.startswith("eml-pass")
+        msg.auth_mode = ""  # the verdict is final (as after the worker's verification)
+        return msg
+
+    async def _verify(eml_token, sender, api_key, recipient_ok):
+        ok = eml_token.startswith("eml-pass")
+        return inbound_dkim.Verdict(ok, None if ok else "dkim_invalid")
+
+    monkeypatch.setattr(inbound_email, "parse_brevo_item", _parse)
+    monkeypatch.setattr(inbound_dkim, "verify_message", _verify)
+    store: dict[str, bytes] = {}
+    fetched: list[str] = []
+
+    def _fetcher(token, api_key, limit):
+        async def fetch():
+            fetched.append(token)
+            data = store.get(token)
+            return data if data is not None and len(data) <= limit else None
+
+        return fetch
+
+    monkeypatch.setattr(inbound_email, "_brevo_fetcher", _fetcher)
+    return store, fetched
+
+
+def ar_line(sender: str = CARER, dmarc: str = "pass", authserv: str = AUTHSERV) -> str:
+    domain = sender.rpartition("@")[2]
+    return f"{authserv}; spf=pass; dkim=pass; dmarc={dmarc} header.from={domain}"
+
+
+def dkim_header(sender: str = CARER) -> str:
+    domain = sender.rpartition("@")[2]
+    return f"v=1; a=rsa-sha256; d={domain}; s=s2027; h=from:to:date; bh=AAAA; b=AAAA"
+
+
+def brevo_item(to: str, *, sender: str = CARER, files=(), auth: str = "pass", headers=None):
+    hdrs = {"Authentication-Results": ar_line(sender, auth), "DKIM-Signature": dkim_header(sender)}
+    hdrs.update(headers or {})
+    return {
+        "EMLDownloadToken": f"eml-{auth}-synthetic",
+        "Uuid": ["00000000-0000-4000-8000-00000000b950"],
+        "MessageId": f"<brevo-{len(files)}-{to[:3]}-{sender[:3]}@example.test>",
+        "InReplyTo": None,
+        "From": {"Name": "Synthetic Carer", "Address": sender},
+        "To": [{"Name": None, "Address": to}],
+        "Recipients": [to],
+        "Cc": [],
+        "ReplyTo": None,
+        "SentAtDate": "Mon, 15 Mar 2027 10:00:00 +0000",
+        "Subject": SUBJECT,
+        "RawHtmlBody": "<p>never stored</p>",
+        "RawTextBody": "never stored",
+        "ExtractedMarkdownMessage": "never stored",
+        "ExtractedMarkdownSignature": None,
+        "SpamScore": 0.5,
+        "Attachments": [
+            {
+                "Name": name,
+                "ContentType": ctype,
+                "ContentLength": size,
+                "ContentID": None,
+                "DownloadToken": token,
+            }
+            for name, ctype, size, token in files
+        ],
+        "Headers": hdrs,
+    }
+
+
+def brevo_request(db, payload, token=BREVO_SECRET):
+    body = json.dumps(payload).encode()
+    headers = {"content-length": str(len(body)), "content-type": "application/json"}
+    if token is not None:
+        headers[inbound_email.BREVO_TOKEN_HEADER] = token
+    req = _request(db, body, headers)
+    req.scope["path"] = "/inbound/brevo"
+    return req
+
+
+@pytest.mark.parametrize("token", [None, "", "wrong", BREVO_SECRET + "x", SECRET])
+async def test_brevo_bad_token_is_404(idb, drive, brevo, token):
+    addr = await address_of(idb)
+    payload = {"items": [brevo_item(addr, files=[("S.pdf", "application/pdf", 10, "t1")])]}
+    with pytest.raises(HTTPException) as exc:
+        await server.inbound_brevo_webhook(brevo_request(idb, payload, token))
+    assert exc.value.status_code == 404
+    assert drive.files == [] and brevo[1] == []
+
+
+async def test_brevo_inert_without_secret(idb, monkeypatch):
+    monkeypatch.delenv(inbound_email.BREVO_TOKEN_ENV)  # the MIME secret stays set
+    with pytest.raises(HTTPException) as exc:
+        await server.inbound_brevo_webhook(brevo_request(idb, {"items": []}))
+    assert exc.value.status_code == 404
+
+
+async def test_brevo_body_cap(idb, monkeypatch):
+    monkeypatch.setattr(inbound_email, "BREVO_MAX_BODY_BYTES", 100)
+    resp = await server.inbound_brevo_webhook(brevo_request(idb, {"items": ["x" * 500]}))
+    assert resp.status_code == 413
+
+
+async def test_brevo_caregiver_is_filed_after_download(idb, drive, mails, brevo):
+    store, fetched = brevo
+    store["tok-a"] = pdf(1)
+    store["tok-b"] = jpeg()
+    addr = await address_of(idb)
+    item = brevo_item(
+        addr,
+        files=[
+            (FILENAMES[0], "application/pdf", len(store["tok-a"]), "tok-a"),
+            (FILENAMES[1], "image/jpeg", len(store["tok-b"]), "tok-b"),
+        ],
+    )
+    resp = await server.inbound_brevo_webhook(brevo_request(idb, {"items": [item]}))
+    await drain()
+    assert resp.status_code == 202 and json.loads(resp.body) == {"status": "accepted"}
+    assert fetched == ["tok-a", "tok-b"]
+    assert [f[0] for f in drive.files] == list(FILENAMES[:2])
+    assert len(mails) == 1 and mails[0]["to"] == [CARER]
+
+
+async def test_brevo_unknown_sender_downloads_nothing(idb, drive, mails, brevo):
+    store, fetched = brevo
+    store["tok-a"] = pdf(1)
+    addr = await address_of(idb)
+    item = brevo_item(addr, sender=STRANGER, files=[("S.pdf", "application/pdf", 10, "tok-a")])
+    await server.inbound_brevo_webhook(brevo_request(idb, {"items": [item]}))
+    await drain()
+    assert fetched == [] and drive.files == [] and mails == []
+    assert inbound_email.unmatched_overview()["senders"][0]["reasons"] == {"unknown_sender": 1}
+
+
+@pytest.mark.parametrize("case", ["env_unset", "env_set", "foreign_authserv"])
+async def test_an_authentication_results_header_never_passes(idb, drive, mails, monkeypatch, case):
+    """#966: Brevo sends no Authentication-Results, so any such header comes
+    from the sender. The verdict is DKIM only: parsing never passes a mail,
+    whatever its A-R lines say and whether INBOUND_BREVO_AUTHSERV_ID is set."""
+    monkeypatch.setenv(inbound_email.BREVO_API_KEY_ENV, "synthetic-brevo-key-950")
+    addr = await address_of(idb)
+    item = brevo_item(addr, files=[("S.pdf", "application/pdf", 10, "tok-a")])
+    if case == "env_set":
+        monkeypatch.setenv(inbound_email.BREVO_AUTHSERV_ENV, AUTHSERV)
+    else:
+        monkeypatch.delenv(inbound_email.BREVO_AUTHSERV_ENV, raising=False)
+    if case == "foreign_authserv":
+        item["Headers"]["Authentication-Results"] = "attacker.example; dmarc=pass"
+    msg = inbound_email.parse_brevo_item(item)
+    assert msg.auth_pass is False and msg.auth_mode == "dkim"
+    result = await inbound_email.process_message(idb, msg)
+    assert result.outcome == "unmatched" and drive.files == []
+
+
+def test_brevo_headers_list_shape_and_loop_headers(brevo):
+    item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}")
+    item["Headers"] = [
+        {"Name": "Authentication-Results", "Value": ar_line()},
+        {"Name": "Auto-Submitted", "Value": "auto-replied"},
+    ]
+    msg = inbound_email.parse_brevo_item(item)
+    assert inbound_email.loop_reason(msg) == "auto_submitted"
+
+
+async def test_brevo_limits_and_missing_key(idb, drive, mails, brevo, monkeypatch):
+    store, fetched = brevo
+    addr = await address_of(idb)
+    big = dashboard_upload.MAX_FILE_BYTES + 1
+    item = brevo_item(addr, files=[("Big.pdf", "application/pdf", big, "tok-big")])
+    result = await inbound_email.process_message(idb, inbound_email.parse_brevo_item(item))
+    assert result.skipped == {"file_too_large": 1} and fetched == []
+
+    inbound_email.reset_state()
+    monkeypatch.delenv(inbound_email.BREVO_API_KEY_ENV)
+    item = brevo_item(addr, files=[("S.pdf", "application/pdf", 10, "tok-x")])
+    result = await inbound_email.process_message(idb, inbound_email.parse_brevo_item(item))
+    assert result.accepted == 0 and result.skipped == {"fetch_failed": 1}
+
+
+def test_brevo_bodies_are_never_read():
+    import inspect
+
+    src = inspect.getsource(inbound_email.parse_brevo_item)
+    code = src.split('"""', 2)[2]
+    for name in ("RawHtmlBody", "RawTextBody", "ExtractedMarkdownMessage"):
+        assert f'"{name}"' not in code
+
+
+# ── security review: separate secrets, trusted A-R line, separate caps ───
+
+
+async def test_each_adapter_has_its_own_secret(idb, drive, mails, monkeypatch):
+    """The Brevo token is never an HMAC key of the MIME route, and vice versa."""
+    addr = await address_of(idb)
+    body = mail(addr, files=[(FILENAMES[0], pdf(), "application/pdf")]).as_bytes()
+    headers = signed_headers(body, addr)
+    headers[inbound_email.SIGNATURE_HEADER] = inbound_email.sign(BREVO_SECRET, addr, "pass", body)
+    with pytest.raises(HTTPException) as exc:
+        await server.inbound_email_webhook(_request(idb, body, headers))
+    assert exc.value.status_code == 404
+    with pytest.raises(HTTPException) as exc:
+        await server.inbound_brevo_webhook(brevo_request(idb, {"items": []}, SECRET))
+    assert exc.value.status_code == 404
+    # only the Brevo route configured: the MIME route is a 404, Brevo answers
+    monkeypatch.delenv(inbound_email.MIME_SECRET_ENV)
+    with pytest.raises(HTTPException):
+        await server.inbound_email_webhook(_request(idb, body, signed_headers(body, addr)))
+    resp = await server.inbound_brevo_webhook(brevo_request(idb, {"items": []}))
+    assert resp.status_code == 202
+    assert drive.files == []
+
+
+@pytest.mark.parametrize("keep", [inbound_email.MIME_SECRET_ENV, inbound_email.BREVO_TOKEN_ENV])
+async def test_card_is_enabled_by_either_adapter(idb, monkeypatch, keep):
+    for env in (inbound_email.MIME_SECRET_ENV, inbound_email.BREVO_TOKEN_ENV):
+        if env != keep:
+            monkeypatch.delenv(env)
+    assert inbound_email.is_enabled()
+    resp = await _call(server.api_inbound_address, _dash_request(idb, "synth950-a"), CARER)
+    assert json.loads(resp.body)["enabled"] is True
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        [ar_line()],
+        [ar_line(), ar_line()],
+        ["other.example; dmarc=pass header.from=gmail.com", ar_line()],
+        [f"{AUTHSERV}; dmarc=pass header.from=GMAIL.COM"],
+    ],
+)
+def test_authentication_results_lines_never_pass(monkeypatch, lines):
+    """#966: even a perfect-looking line with the configured authserv-id."""
+    monkeypatch.setenv(inbound_email.BREVO_AUTHSERV_ENV, AUTHSERV)
+    item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}")
+    item["Headers"] = {"Authentication-Results": lines}
+    assert inbound_email.parse_brevo_item(item).auth_pass is False
+
+
+def test_authserv_env_is_ignored_with_one_error(monkeypatch, caplog):
+    monkeypatch.setattr(inbound_email, "_warned_authserv", False)
+    monkeypatch.setenv(inbound_email.BREVO_AUTHSERV_ENV, AUTHSERV)
+    caplog.set_level(logging.ERROR, logger="oncofiles.inbound_email")
+    assert inbound_email.verification_mode() == "dkim"
+    assert inbound_email.verification_mode() == "dkim"
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and "ignored" in errors[0].getMessage()
+    assert AUTHSERV not in caplog.text
+
+
+async def test_unmatched_flood_never_blocks_the_caregiver(idb, drive, mails, monkeypatch):
+    monkeypatch.setattr(inbound_email, "MAX_MAILS_PER_HOUR", 2)
+    monkeypatch.setattr(inbound_email, "MAX_UNMATCHED_PER_HOUR", 5)
+    addr = await address_of(idb)
+    outcomes = []
+    for i in range(12):
+        msg = mail(addr, sender=STRANGER, files=[(f"F{i}.pdf", pdf(i), "application/pdf")])
+        outcomes.append((await inbound_email.process_message(idb, parsed(msg))).outcome)
+    for i in range(3):
+        msg = mail(addr, files=[(f"C{i}.pdf", pdf(50 + i), "application/pdf")])
+        outcomes.append(
+            (await inbound_email.process_message(idb, parsed(msg, auth="fail"))).outcome
+        )
+    assert outcomes.count("unmatched") == 5
+    assert outcomes.count("unmatched_capped") == 10
+    caregiver = mail(addr, files=[("Real.pdf", pdf(99), "application/pdf")])
+    result = await inbound_email.process_message(idb, parsed(caregiver))
+    assert result.outcome == "filed" and result.accepted == 1
+    totals = inbound_email.unmatched_overview()["totals"]
+    assert totals["unmatched_capped"] == 10 and "rate_limited" not in totals
+    # the filing quota still applies to the caregiver alone
+    for i in range(2):
+        msg = mail(addr, files=[(f"Q{i}.pdf", pdf(70 + i), "application/pdf")])
+        outcomes.append((await inbound_email.process_message(idb, parsed(msg))).outcome)
+    assert outcomes[-2:] == ["filed", "rate_limited"]
+
+
+# ── infra review: order, read slots, strict JSON, tokens, headers, hashes ─
+
+
+class _Body:
+    """A receive() that records whether the body was read at all."""
+
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read = False
+
+    def request(self, db, headers, path="/inbound/email"):
+        app = MagicMock()
+        app.state.fastmcp_server._lifespan_result = {"db": db}
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "query_string": b"",
+            "headers": [(k.lower().encode(), str(v).encode()) for k, v in headers.items()],
+            "app": app,
+        }
+
+        async def receive():
+            self.read = True
+            return {"type": "http.request", "body": self.body, "more_body": False}
+
+        return Request(scope, receive)
+
+
+@pytest.mark.parametrize("route", ["email", "brevo"])
+async def test_disabled_route_is_404_before_reading_even_when_oversize(idb, monkeypatch, route):
+    monkeypatch.delenv(inbound_email.MIME_SECRET_ENV)
+    monkeypatch.delenv(inbound_email.BREVO_TOKEN_ENV)
+    body = _Body(b"x" * 64)
+    headers = {"content-length": str(10**12)}  # would be a 413 if it were checked first
+    handler = getattr(server, f"inbound_{route}_webhook")
+    with pytest.raises(HTTPException) as exc:
+        await handler(body.request(idb, headers, f"/inbound/{route}"))
+    assert exc.value.status_code == 404 and body.read is False
+
+
+async def test_brevo_wrong_token_is_404_before_reading(idb):
+    body = _Body(b"x" * 64)
+    headers = {"content-length": str(10**12), inbound_email.BREVO_TOKEN_HEADER: "wrong"}
+    with pytest.raises(HTTPException) as exc:
+        await server.inbound_brevo_webhook(body.request(idb, headers, "/inbound/brevo"))
+    assert exc.value.status_code == 404 and body.read is False
+
+
+@pytest.mark.parametrize("route", ["email", "brevo"])
+async def test_full_read_slots_answer_503_without_reading(idb, route):
+    body = _Body(b"{}")
+    headers = {"content-length": "2", inbound_email.BREVO_TOKEN_HEADER: BREVO_SECRET}
+    handler = getattr(server, f"inbound_{route}_webhook")
+    slots = inbound_email.MIME_READ_SLOTS if route == "email" else inbound_email.BREVO_READ_SLOTS
+    held = [slots, slots]
+    for slot in held:
+        await slot.acquire()
+    try:
+        resp = await handler(body.request(idb, headers, f"/inbound/{route}"))
+    finally:
+        for slot in held:
+            slot.release()
+    assert resp.status_code == 503 and body.read is False
+
+
+async def test_full_mime_slots_never_block_brevo(idb, monkeypatch):
+    """Unauthenticated raw-MIME callers hold their own slots, never Brevo's."""
+    monkeypatch.setenv(inbound_email.BREVO_TOKEN_ENV, BREVO_SECRET)
+    for _ in range(2):
+        await inbound_email.MIME_READ_SLOTS.acquire()
+    try:
+        body = _Body(b'{"items": []}')
+        headers = {"content-length": "13", inbound_email.BREVO_TOKEN_HEADER: BREVO_SECRET}
+        resp = await server.inbound_brevo_webhook(body.request(idb, headers, "/inbound/brevo"))
+    finally:
+        for _ in range(2):
+            inbound_email.MIME_READ_SLOTS.release()
+    assert resp.status_code == 202
+
+
+async def test_slow_body_read_times_out_and_frees_the_slot(idb, monkeypatch):
+    monkeypatch.setattr(inbound_email, "READ_DEADLINE_S", 0.05)
+
+    class _Slow:
+        headers = {"content-length": "5"}
+
+        async def stream(self):
+            await asyncio.sleep(1)
+            yield b"x"
+
+    assert await server._read_capped_body_in_time(_Slow(), 10) is False
+    assert not inbound_email.MIME_READ_SLOTS.locked()
+
+
+async def test_capped_read_uses_one_buffer(idb):
+    body = _Body(b"abc")
+    raw = await server._read_capped_body(body.request(idb, {}), 10)
+    assert isinstance(raw, bytearray) and bytes(raw) == b"abc"
+    assert await server._read_capped_body(_Body(b"x" * 11).request(idb, {}), 10) is None
+
+
+def test_signature_over_a_bytearray_body():
+    body = bytearray(b"From: x\r\n\r\nhello")
+    sig = inbound_email.sign(SECRET, "a", "pass", body)
+    assert sig == inbound_email.sign(SECRET, "a", "pass", bytes(body))
+    assert inbound_email.signature_ok(SECRET, sig, "a", "pass", body)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"items": [], "items": []}',
+        b'{"items": [{"From": {"Address": "a@example.test", "Address": "b@example.test"}}]}',
+        b"not json",
+    ],
+)
+async def test_brevo_json_duplicate_keys_fail_closed(idb, drive, mails, raw, monkeypatch):
+    from oncofiles import inbound_queue
+
+    spawned = []
+
+    async def _enqueue(db, m):
+        spawned.append(m)
+
+    monkeypatch.setattr(inbound_queue, "enqueue", _enqueue)
+    headers = {"content-length": str(len(raw)), inbound_email.BREVO_TOKEN_HEADER: BREVO_SECRET}
+    resp = await server.inbound_brevo_webhook(_Body(raw).request(idb, headers, "/inbound/brevo"))
+    assert resp.status_code == 202 and spawned == []
+    with pytest.raises(inbound_email.UnparseableMessageError):
+        inbound_email.parse_json_strict(raw)
+
+
+async def test_brevo_answers_before_processing(idb, drive, mails, brevo):
+    store, fetched = brevo
+    store["tok-a"] = pdf(5)
+    addr = await address_of(idb)
+    item = brevo_item(addr, files=[(FILENAMES[0], "application/pdf", 100, "tok-a")])
+    resp = await server.inbound_brevo_webhook(brevo_request(idb, {"items": [item]}))
+    assert resp.status_code == 202
+    assert drive.files == [] and fetched == []  # nothing done yet
+    await drain()
+    assert [f[0] for f in drive.files] == [FILENAMES[0]] and fetched == ["tok-a"]
+
+
+async def test_background_failure_never_raises(idb, brevo, monkeypatch, caplog):
+    from oncofiles import inbound_queue
+
+    async def boom(db, msg, progress=None):
+        raise RuntimeError("synthetic failure with a@example.test")
+
+    monkeypatch.setattr(inbound_email, "_process_message", boom)
+    caplog.set_level(logging.INFO)
+    addr = await address_of(idb)
+    item = brevo_item(addr, files=[("S.pdf", "application/pdf", 10, "tok-a")])
+    await inbound_queue.enqueue(idb, [inbound_email.parse_brevo_item(item)])
+    inbound_queue.kick(idb)
+    await drain()
+    text = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("oncofiles"))
+    assert "state=pending reason=error:RuntimeError" in text and "@" not in text
+
+
+async def test_processing_is_serialized(idb, drive, mails, monkeypatch):
+    inside = {"now": 0, "max": 0}
+    real = inbound_email._process_message
+
+    async def tracked(db, msg):
+        inside["now"] += 1
+        inside["max"] = max(inside["max"], inside["now"])
+        await asyncio.sleep(0)
+        try:
+            return await real(db, msg)
+        finally:
+            inside["now"] -= 1
+
+    monkeypatch.setattr(inbound_email, "_process_message", tracked)
+    addr = await address_of(idb)
+    msgs = [parsed(mail(addr, files=[(f"P{i}.pdf", pdf(i), "application/pdf")])) for i in range(3)]
+    await asyncio.gather(*(inbound_email.process_message(idb, m) for m in msgs))
+    assert inside["max"] == 1 and len(drive.files) == 3
+
+
+@pytest.mark.parametrize("value", ["abc.def", "../x", "a/b", "a~b", "", "a" * 513])
+def test_download_token_shape(brevo, value):
+    item = brevo_item("x@example.test", files=[("S.pdf", "application/pdf", 10, value)])
+    msg = inbound_email.parse_brevo_item(item)
+    assert msg.attachments == [] and msg.parse_skips == {"fetch_failed": 1}
+
+
+def test_download_token_accepts_url_safe_base64(brevo):
+    item = brevo_item("x@example.test", files=[("S.pdf", "application/pdf", 10, "Ab_9-z")])
+    assert len(inbound_email.parse_brevo_item(item).attachments) == 1
+
+
+@pytest.mark.parametrize("name", ["From", "Sender", "Return-Path"])
+def test_repeated_single_valued_header_never_passes(monkeypatch, name):
+    """#966: the payload headers never pass a mail (DKIM on the EML decides)."""
+    monkeypatch.delenv(inbound_email.BREVO_AUTHSERV_ENV, raising=False)
+    item = brevo_item(f"x-{'2' * 10}@{inbound_email.INBOUND_DOMAIN}")
+    item["Headers"] = {
+        "Authentication-Results": ar_line(),
+        name: [f"<{CARER}>", "<other@example.test>"],
+    }
+    assert inbound_email.parse_brevo_item(item).auth_pass is False
+
+
+async def test_receipt_is_marked_auto_replied(idb, drive, mails):
+    addr = await address_of(idb)
+    await inbound_email.process_message(
+        idb, parsed(mail(addr, files=[(FILENAMES[0], pdf(), "application/pdf")]))
+    )
+    [sent] = mails
+    assert sent["headers"] == {"Auto-Submitted": "auto-replied"}
+
+
+def test_token_hash_is_keyed(monkeypatch):
+    import hashlib
+
+    token = inbound_email.derive_token(PID, 1)
+    keyed = inbound_email.token_hash(token)
+    assert keyed != hashlib.sha256(token.encode()).hexdigest()
+    monkeypatch.setattr("oncofiles.config.MCP_BEARER_TOKEN", "another-synthetic-bearer")
+    assert inbound_email.token_hash(token) != keyed  # depends on the server-side key

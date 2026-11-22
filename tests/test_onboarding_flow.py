@@ -14,7 +14,7 @@ from oncofiles.database import Database
 from oncofiles.models import Patient
 from oncofiles.patient_middleware import _current_patient_id
 
-ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+PRIMARY_TEST_UUID = "00000000-0000-4000-8000-000000000001"
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ async def db():
     database = Database(":memory:")
     await database.connect()
     await database.migrate()
-    token = _current_patient_id.set(ERIKA_UUID)
+    token = _current_patient_id.set(PRIMARY_TEST_UUID)
     yield database
     _current_patient_id.reset(token)
     await database.close()

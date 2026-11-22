@@ -127,7 +127,7 @@ async def upload_document(
     drive = None  # (gdrive client, uploaded metadata) on the Drive-only path
     if disabled is not None:
         drive = await _upload_drive_only(
-            ctx, db, file_bytes, filename, mime_type, patient_id=patient_id, disabled=disabled
+            ctx.info, db, file_bytes, filename, mime_type, patient_id=patient_id, disabled=disabled
         )
         if isinstance(drive, str):
             return drive  # refused or failed: nothing stored
@@ -164,44 +164,22 @@ async def upload_document(
             f"Superseded version {existing.version} (doc #{existing.id}) → new version {version}"
         )
 
-    doc = Document(
+    doc = await _insert_upload_row(
+        db,
         file_id=file_id,
         filename=filename,
-        original_filename=filename,
-        document_date=parsed.document_date,
-        institution=parsed.institution,
-        category=parsed.category,
-        description=parsed.description,
-        mime_type=stored_mime,
-        size_bytes=stored_size,
+        stored_mime=stored_mime,
+        stored_size=stored_size,
+        patient_id=patient_id,
+        drive=drive,
+        parsed=parsed,
         version=version,
         previous_version_id=previous_version_id,
     )
-    if drive is not None:
-        from oncofiles.sync import _parse_gdrive_time
 
-        doc.gdrive_id = drive[1]["id"]
-        doc.gdrive_modified_time = _parse_gdrive_time(drive[1].get("modifiedTime", ""))
-        doc.sync_state = "synced"
-
-    doc = await db.insert_document(doc, patient_id=patient_id)
-
-    gdrive_id = None
-    if drive is not None:
-        from oncofiles.files_api import DRIVE_SYNC_SOURCE
-        from oncofiles.sync import _register_drive_only
-
-        gdrive, gdrive_id = drive[0], drive[1]["id"]
-        await db.update_structured_metadata(doc.id, json.dumps({"source": DRIVE_SYNC_SOURCE}))
-        _register_drive_only(doc.id)
-        try:
-            await asyncio.to_thread(
-                gdrive.set_app_properties, gdrive_id, {"oncofiles_id": str(doc.id)}
-            )
-        except Exception:
-            logger.warning("upload_document: failed to set appProperties on %s", gdrive_id)
-    # Auto-sync to GDrive if available
-    elif gdrive := await _get_gdrive(ctx):
+    gdrive_id = drive[1]["id"] if drive is not None else None
+    # Auto-sync to GDrive if available (Files API path only)
+    if drive is None and (gdrive := await _get_gdrive(ctx)):
         try:
             folder_id = ctx.request_context.lifespan_context.get("gdrive_folder_id")
             if folder_id:
@@ -250,7 +228,7 @@ async def upload_document(
 
 
 async def _upload_drive_only(
-    ctx: Context,
+    info,
     db,
     file_bytes: bytes,
     filename: str,
@@ -266,6 +244,7 @@ async def _upload_drive_only(
     patient's own Drive client and folder, never the caller's. Returns
     ``(gdrive, uploaded)``, or a JSON error string when nothing was stored: no
     Drive connected, or the upload failed (a curated folder is write-blocked).
+    ``info``: an async progress callback (the MCP ``ctx.info``) or None.
     """
     from oncofiles.server import _create_patient_clients
 
@@ -280,7 +259,8 @@ async def _upload_drive_only(
     gdrive, folder_id = clients[0], clients[3]
 
     parsed = parse_filename(filename, patient_id=patient_id)
-    await ctx.info(f"Uploading {filename} ({len(file_bytes)} bytes) to Google Drive...")
+    if info is not None:
+        await info(f"Uploading {filename} ({len(file_bytes)} bytes) to Google Drive...")
     try:
         folder_map = await asyncio.to_thread(ensure_folder_structure, gdrive, folder_id)
         target_folder = resolve_category_folder(folder_map, parsed.category.value, folder_id)
@@ -308,6 +288,94 @@ async def _upload_drive_only(
     return gdrive, uploaded
 
 
+async def _insert_upload_row(
+    db,
+    *,
+    file_id: str,
+    filename: str,
+    stored_mime: str,
+    stored_size: int,
+    patient_id: str,
+    drive,
+    parsed,
+    version: int = 1,
+    previous_version_id: int | None = None,
+) -> Document:
+    """Insert the row of a new upload; for a Drive-only upload (#777) also mark
+    it ``drive_sync``, register it in the cloud refusal and tag the Drive file."""
+    doc = Document(
+        file_id=file_id,
+        filename=filename,
+        original_filename=filename,
+        document_date=parsed.document_date,
+        institution=parsed.institution,
+        category=parsed.category,
+        description=parsed.description,
+        mime_type=stored_mime,
+        size_bytes=stored_size,
+        version=version,
+        previous_version_id=previous_version_id,
+    )
+    if drive is not None:
+        from oncofiles.sync import _parse_gdrive_time
+
+        doc.gdrive_id = drive[1]["id"]
+        doc.gdrive_modified_time = _parse_gdrive_time(drive[1].get("modifiedTime", ""))
+        doc.sync_state = "synced"
+
+    doc = await db.insert_document(doc, patient_id=patient_id)
+
+    if drive is not None:
+        from oncofiles.files_api import DRIVE_SYNC_SOURCE
+        from oncofiles.sync import _register_drive_only
+
+        gdrive, gdrive_id = drive[0], drive[1]["id"]
+        await db.update_structured_metadata(doc.id, json.dumps({"source": DRIVE_SYNC_SOURCE}))
+        _register_drive_only(doc.id)
+        try:
+            await asyncio.to_thread(
+                gdrive.set_app_properties, gdrive_id, {"oncofiles_id": str(doc.id)}
+            )
+        except Exception:
+            logger.warning("upload_document: failed to set appProperties on %s", gdrive_id)
+    return doc
+
+
+async def store_drive_only_upload(
+    db, file_bytes: bytes, filename: str, mime_type: str, *, patient_id: str
+) -> dict:
+    """The dashboard upload (#921) for a NON-curated patient: the #777 Drive-only path.
+
+    The bytes go into the patient's own Drive folder (category / month folder,
+    as ``upload_document`` files them) and the row is Drive-only, whatever the
+    cloud setting: the browser path never sends document bytes to a cloud
+    API. ``filename`` is already sanitised and free among the patient's active
+    documents (the caller picks a suffix), so nothing is superseded here.
+    Returns ``{"status": "uploaded", "name", "document_id"}`` or
+    ``{"status": "failed", "code"}``; logs carry sizes and a name length only.
+    """
+    refused = json.dumps({"error": "drive_upload_refused"})
+    drive = await _upload_drive_only(
+        None, db, file_bytes, filename, mime_type, patient_id=patient_id, disabled=refused
+    )
+    if isinstance(drive, str):
+        err = json.loads(drive)
+        code = "no_drive" if "detail" in err else str(err.get("kind") or "drive_upload_failed")
+        return {"status": "failed", "code": code}
+    parsed = parse_filename(filename, patient_id=patient_id)
+    doc = await _insert_upload_row(
+        db,
+        file_id=drive_only_file_id(drive[1]["id"]),
+        filename=filename,
+        stored_mime=mime_type,
+        stored_size=len(file_bytes),
+        patient_id=patient_id,
+        drive=drive,
+        parsed=parsed,
+    )
+    return {"status": "uploaded", "name": doc.filename, "document_id": doc.id}
+
+
 async def list_documents(
     ctx: Context,
     limit: int = 50,
@@ -321,7 +389,7 @@ async def list_documents(
     Args:
         limit: Maximum results to return.
         offset: Skip this many results (for pagination).
-        patient_slug: Optional — explicit patient slug (e.g. 'q1b'). Required
+        patient_slug: Optional — explicit patient slug (e.g. 'jana-testova'). Required
             in stateless HTTP contexts (Claude.ai connector, ChatGPT) where
             select_patient() state does not persist across tool calls (#429).
     """
@@ -622,12 +690,20 @@ async def get_document_versions(ctx: Context, doc_id: int, patient_slug: str | N
     )
 
 
+RELATED_DOCUMENTS_NONE_NOTE = (
+    "No cross-referenced documents are stored for this document. Links are not created "
+    "automatically at the moment; use timeline or encounter_detail to find documents "
+    "of the same day or visit."
+)
+
+
 async def get_related_documents(ctx: Context, doc_id: int, patient_slug: str | None = None) -> str:
     """Get documents cross-referenced with the given document.
 
-    Returns related documents found by shared visit dates, diagnoses,
-    or explicit references. Each result includes the relationship type
-    and a confidence score.
+    Returns related documents from stored cross-references, each with the
+    relationship type and a confidence score. No local path writes
+    cross-references today (#930), so an empty list comes with an explicit
+    `note`; links are never invented.
 
     Args:
         doc_id: The integer database ID of the document.
@@ -672,7 +748,10 @@ async def get_related_documents(ctx: Context, doc_id: int, patient_slug: str | N
                 "confidence": ref["confidence"],
             }
         )
-    return json.dumps({"document_id": doc_id, "related": items, "total": len(items)})
+    result = {"document_id": doc_id, "related": items, "total": len(items)}
+    if not items:
+        result["note"] = RELATED_DOCUMENTS_NONE_NOTE
+    return json.dumps(result)
 
 
 async def get_document_group(ctx: Context, group_id: str, patient_slug: str | None = None) -> str:
@@ -781,7 +860,7 @@ async def reassign_document(ctx: Context, doc_id: int, target_patient_slug: str)
 
     Args:
         doc_id: The integer database ID of the document to reassign.
-        target_patient_slug: Target patient slug or UUID (e.g. 'nora-antalova').
+        target_patient_slug: Target patient slug or UUID (e.g. 'jana-testova').
     """
     from oncofiles.tools._helpers import _require_admin_or_raise
 

@@ -33,11 +33,21 @@
         }
         return _nativeFetch(input, init);
       };
+      // The upload (#921) uses XMLHttpRequest for its progress bar: the same
+      // chokepoint for XHR, so no request of the demo can leave this page.
+      var _nativeXhrOpen = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function (method, url) {
+        var target = new URL(String(url || ''), location.origin);
+        if (target.origin !== location.origin || DEMO_ALLOWED_PATHS.indexOf(target.pathname) === -1) {
+          throw new Error('demo: request blocked: ' + target.pathname);
+        }
+        return _nativeXhrOpen.apply(this, arguments);
+      };
     }
     // Actions that write or need an account: in the demo they only explain themselves.
     var DEMO_BLOCKED_ACTIONS = {
       showOnboarding: 1, showGdriveSetup: 1, showGdriveSetupAndToggle: 1, triggerManualSync: 1,
-      generateShareCode: 1, togglePatientArchive: 1, logout: 1
+      generateShareCode: 1, togglePatientArchive: 1, logout: 1, rotateInboundAddress: 1
     };
 
     window._dispatch = function (spec, target) {
@@ -107,6 +117,7 @@
       if (typeof relabelPatients === 'function' && patientsCache.length) relabelPatients();
       if (typeof renderTable === 'function' && docsData.length) renderTable();
       if (typeof renderActivity === 'function' && activityData) renderActivity(null);
+      if (typeof renderQuickLook === 'function' && quickLook && quickLook.id !== null) renderQuickLook();
     }
 
     function toggleDashLang() {
@@ -278,9 +289,11 @@
       var name = sessionStorage.getItem('oncofiles_name') || '';
       var userEl = document.getElementById('user-info');
       if (email && userEl) userEl.textContent = name || email;
-      loadPatients().then(function() { loadGermlineBanner(); refresh(); });
+      var patientsLoaded = loadPatients().then(function() { loadGermlineBanner(); refresh(); });
       if (DEMO) return;  // static invented data: nothing to poll
-      loadOnboardingStatus();
+      var statusLoaded = loadOnboardingStatus();
+      // First visit: no patient yet and onboarding open -> straight into the wizard.
+      patientsLoaded.then(function() { return statusLoaded; }).then(maybeStartFirstVisit);
       if (autoRefreshTimer) clearInterval(autoRefreshTimer);
       autoRefreshTimer = setInterval(refresh, 60000);
     }
@@ -315,6 +328,8 @@
       sessionStorage.removeItem('oncofiles_email');
       sessionStorage.removeItem('oncofiles_name');
       _swrCacheClearAll();
+      closeQuickLook();
+      resetThumbs();  // previews belong to this sign-in
       TOKEN = '';
       authMode = '';
       if (autoRefreshTimer) clearInterval(autoRefreshTimer);
@@ -603,12 +618,27 @@
       var path = new URL(url, location.origin).pathname;
       var d = (demoData && demoData.dashboard) || {};
       if (path === '/status') return d.status;
-      if (path === '/api/documents') return d.documents;
+      if (path === '/api/documents') return withDemoUploads(d.documents);
       if (path === '/api/activity') return d.activity;
+      if (path === '/api/inbound-address') return d.inbound_address;
+      if (path === '/api/trial-status') return d.trial_status;
       if (path === '/api/patients') return d.patients;
       if (path === '/api/patient-budget') return { show_pill: false };
       if (path === '/api/manifest') return { generated_at: new Date().toISOString(), invented: true, documents: (d.documents || {}).documents || [] };
-      if (path.indexOf('/api/doc-detail/') === 0) return (d.details || {})[path.split('/').pop()] || { error: 'not found' };
+      if (path.indexOf('/api/doc-detail/') === 0) {
+        var detailId = path.split('/').pop();
+        return (d.details || {})[detailId] || { error: 'not found' };
+      }
+      if (path === '/api/doc-thumbnails') {
+        // the ids asked for, each with its drawing or null, like the real route (#948)
+        var all = d.thumbnails || {};
+        var out = {};
+        String(new URL(url, location.origin).searchParams.get('ids') || '').split(',').forEach(function (id) {
+          id = id.trim();
+          if (id) out[id] = all[id] || null;
+        });
+        return { thumbnails: out };
+      }
       return null;
     }
 
@@ -627,6 +657,633 @@
       el.classList.add('visible');
       if (demoNoticeTimer) clearTimeout(demoNoticeTimer);
       demoNoticeTimer = setTimeout(function () { el.classList.remove('visible'); }, 4500);
+    }
+
+    // ── Add documents (#921) ────────────────────────────────────────────
+    // Files go one at a time (one request each: the server holds one DB
+    // connection and one Drive writer) to POST /api/upload, which puts them
+    // unchanged into the patient's inbox on Drive. In the demo nothing is
+    // sent: the files become invented inbox rows ("Waiting to be processed"),
+    // the same shape GET /api/documents gives a file waiting in the inbox.
+
+    var UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+    var UPLOAD_MAX_FILES = 20;
+    var UPLOAD_EXTS = ['pdf', 'jpg', 'jpeg', 'png', 'heic', 'heif', 'tif', 'tiff', 'webp', 'md', 'txt'];
+    var UPLOAD_GENOTYPE_EXTS = ['vcf', 'gz', 'csv', 'tsv'];
+    var UPLOAD_CODE_TEXT = {
+      type_not_allowed: ['Tento typ súboru sa nenahráva.', 'This file type is not accepted.'],
+      raw_genotype_excluded: ['Surové genetické dáta sa nenahrávajú.', 'Raw genetic data is not accepted.'],
+      file_too_large: ['Súbor má viac ako 25 MB.', 'The file is larger than 25 MB.'],
+      empty_file: ['Súbor je prázdny.', 'The file is empty.'],
+      content_mismatch: ['Obsah súboru nezodpovedá jeho prípone.', 'The file content does not match its extension.'],
+      not_attempted: ['Neodoslané, predchádzajúci súbor zlyhal.', 'Not sent, the previous file failed.'],
+      failed: ['Nahrávanie zlyhalo. Skúste to znova neskôr.', 'The upload failed. Try again later.']
+    };
+    var UPLOAD_SLOW_TEXT = ['Spojenie bolo na tento súbor príliš pomalé alebo sa prerušilo. Skúste Wi-Fi alebo menší súbor.',
+      'The connection was too slow for this file or was interrupted. Try Wi-Fi or a smaller file.'];
+    var uploadQueue = Promise.resolve();
+    var demoUploads = [];
+    var demoUploadSeq = 0;
+
+    function toggleUploadPanel() {
+      var panel = document.getElementById('upload-panel');
+      var btn = document.getElementById('upload-btn');
+      if (!panel || !btn) return;
+      panel.hidden = !panel.hidden;
+      btn.setAttribute('aria-expanded', panel.hidden ? 'false' : 'true');
+    }
+
+    function closeUploadPanel() {
+      var panel = document.getElementById('upload-panel');
+      var btn = document.getElementById('upload-btn');
+      if (panel) panel.hidden = true;
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+    }
+
+    function openUploadPanel() {
+      var panel = document.getElementById('upload-panel');
+      if (panel && panel.hidden) toggleUploadPanel();
+    }
+
+    function uploadFromInput(input) {
+      var files = Array.prototype.slice.call(input.files || []);
+      input.value = '';  // the same file can be chosen again
+      uploadFiles(files);
+    }
+
+    function fmtSize(bytes) {
+      if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' kB';
+      return (bytes / (1024 * 1024)).toFixed(1).replace('.', dashLang === 'sk' ? ',' : '.') + ' MB';
+    }
+
+    function uploadExt(name) {
+      var i = name.lastIndexOf('.');
+      return i > 0 ? name.slice(i + 1).toLowerCase() : '';
+    }
+
+    /** The browser's own check (the server checks again): a refusal code or ''. */
+    function uploadPrecheck(file) {
+      var ext = uploadExt(file.name || '');
+      if (UPLOAD_GENOTYPE_EXTS.indexOf(ext) !== -1) return 'raw_genotype_excluded';
+      if (UPLOAD_EXTS.indexOf(ext) === -1) return 'type_not_allowed';
+      if (!file.size) return 'empty_file';
+      if (file.size > UPLOAD_MAX_BYTES) return 'file_too_large';
+      return '';
+    }
+
+    function uploadNote(sk, en) {
+      var note = document.getElementById('upload-note');
+      if (!note) return;
+      if (!sk) { note.hidden = true; note.textContent = ''; return; }
+      setI18n(note, sk, en);
+      note.hidden = false;
+    }
+
+    /** One row of the upload list; returns setters for its progress and state. */
+    function uploadItem(file) {
+      var list = document.getElementById('upload-list');
+      var li = document.createElement('li');
+      li.className = 'upload-item';
+      var mark = stateMark('progress');
+      li.appendChild(mark);
+      var main = document.createElement('div');
+      main.className = 'upload-main';
+      var name = document.createElement('span');
+      name.className = 'upload-name';
+      name.textContent = file.name;
+      main.appendChild(name);
+      var meta = document.createElement('span');
+      meta.className = 'upload-meta';
+      meta.textContent = fmtSize(file.size || 0);
+      main.appendChild(meta);
+      var bar = document.createElement('progress');
+      bar.className = 'upload-bar';
+      bar.max = 100;
+      bar.value = 0;
+      bar.setAttribute('aria-label', file.name);
+      main.appendChild(bar);
+      var state = document.createElement('span');
+      state.className = 'upload-state';
+      setI18n(state, 'Čaká na odoslanie', 'Waiting to be sent');
+      main.appendChild(state);
+      li.appendChild(main);
+      if (list) list.insertBefore(li, list.firstChild);
+      return {
+        progress: function (pct) { bar.value = pct; setI18n(state, 'Odosiela sa… ' + pct + ' %', 'Sending… ' + pct + ' %'); },
+        done: function (kind, sk, en) {
+          li.replaceChild(stateMark(kind), li.firstChild);
+          li.classList.add('is-' + kind);
+          bar.value = 100;
+          bar.hidden = true;
+          setI18n(state, sk, en);
+        }
+      };
+    }
+
+    function uploadFiles(files) {
+      files = (files || []).filter(function (f) { return f && f.name && f.name.charAt(0) !== '.'; });
+      if (!files.length) return;
+      openUploadPanel();
+      if (files.length > UPLOAD_MAX_FILES) {
+        uploadNote('Naraz najviac ' + UPLOAD_MAX_FILES + ' súborov; vybrali ste ' + files.length + '. Rozdeľte ich, prosím, na menšie dávky.',
+          'At most ' + UPLOAD_MAX_FILES + ' files at a time; you chose ' + files.length + '. Please split them into smaller batches.');
+        return;
+      }
+      if (DEMO) { simulateDemoUpload(files); return; }  // nothing leaves the browser
+      if (isAdminMode || !currentPatientId) return;
+      uploadNote('', '');
+      var items = files.map(function (f) { return { file: f, row: uploadItem(f) }; });
+      items.forEach(function (it) {
+        uploadQueue = uploadQueue.then(function () { return uploadOne(it.file, it.row); });
+      });
+      uploadQueue = uploadQueue.then(function () { refresh(); });
+    }
+
+    /** Send one file; always resolves (a failure is shown on its row). */
+    function uploadOne(file, row) {
+      var code = uploadPrecheck(file);
+      if (code) {
+        var t = UPLOAD_CODE_TEXT[code];
+        row.done('attention', t[0], t[1]);
+        return Promise.resolve();
+      }
+      return new Promise(function (resolve) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/upload?patient_id=' + encodeURIComponent(currentPatientId));
+        xhr.setRequestHeader('Authorization', authHeader());
+        xhr.upload.onprogress = function (e) {
+          if (e.lengthComputable) row.progress(Math.min(99, Math.round(e.loaded * 100 / e.total)));
+        };
+        // A request longer than the proxy's read timeout (60 s) is cut: on a weak
+        // uplink a large file ends as a reset, a timeout or a 502/504. Say so
+        // plainly; never retry by itself (the person decides).
+        var tooSlow = function () {
+          row.done('attention', UPLOAD_SLOW_TEXT[0], UPLOAD_SLOW_TEXT[1]);
+          resolve();
+        };
+        xhr.onerror = tooSlow;
+        xhr.ontimeout = tooSlow;
+        xhr.onload = function () {
+          var data = {};
+          try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) { data = {}; }
+          if (xhr.status === 401) { logout(); resolve(); return; }
+          if (xhr.status === 502 || xhr.status === 504 || xhr.status === 0) { tooSlow(); return; }
+          if (xhr.status === 413) {
+            row.done('attention', UPLOAD_CODE_TEXT.file_too_large[0], UPLOAD_CODE_TEXT.file_too_large[1]);
+          } else if (xhr.status !== 200) {
+            row.done('attention', data.message_sk || 'Nahrávanie bolo odmietnuté.', data.message_en || 'The upload was refused.');
+          } else {
+            var f = (data.files || [])[0] || {};
+            if (f.status === 'uploaded') {
+              if (data.path === 'curated_inbox') {
+                row.done('ready', 'V priečinku pre nové súbory; spracovanie začne o niekoľko minút.', 'In the inbox; processing starts in a few minutes.');
+              } else {
+                row.done('ready', 'Uložené na Google Drive; čaká na vyťaženie.', 'Saved to Google Drive; waiting for extraction.');
+              }
+            } else {
+              var text = UPLOAD_CODE_TEXT[f.code] || UPLOAD_CODE_TEXT.failed;
+              row.done('attention', text[0], text[1]);
+            }
+          }
+          resolve();
+        };
+        var form = new FormData();
+        form.append('files', file, file.name);
+        xhr.send(form);
+      });
+    }
+
+    /** Demo: invented rows only, nothing is read or sent. */
+    function simulateDemoUpload(files) {
+      var now = new Date().toISOString().slice(0, 19);
+      files.forEach(function (f) {
+        var row = uploadItem(f);
+        var code = uploadPrecheck(f);
+        if (code) { row.done('attention', UPLOAD_CODE_TEXT[code][0], UPLOAD_CODE_TEXT[code][1]); return; }
+        demoUploadSeq += 1;
+        // the same shape as an inbox row of GET /api/documents (dashboard_inbox.row)
+        demoUploads.push({
+          id: 'inbox:demo-upload-' + demoUploadSeq, inbox: true, filename: f.name, category: null,
+          date: null, institution: null, gdrive_id: null, size: f.size || 0, mime: f.type || '',
+          uploaded_at: now, has_ocr: false, has_ai: false,
+          has_metadata: false, has_date: false, has_institution: false, is_synced: false,
+          is_standard_name: false, fully_complete: false, curated: true, attention_reason: null,
+          ready: false, stage: 'in_inbox', steps: { extracted: false, named: false, filed: false }
+        });
+        row.done('ready', 'Ukážka: nič sa neodoslalo, riadok je len v tomto prehliadači.', 'Demo: nothing was uploaded, the row exists only in this browser.');
+      });
+      uploadNote('Ukážka: súbory sa neodoslali. V aplikácii by išli do priečinka pacienta na Google Drive a hneď by sa tu zobrazili ako „Čaká na spracovanie“.',
+        'Demo: nothing was uploaded. In the app the files would go into the patient folder on Google Drive and show up here right away as “Waiting to be processed”.');
+      refresh();
+    }
+
+    function withDemoUploads(docs) {
+      if (!docs || !demoUploads.length) return docs;
+      var copy = JSON.parse(JSON.stringify(docs));
+      copy.documents = (copy.documents || []).concat(JSON.parse(JSON.stringify(demoUploads)));
+      if (copy.summary) {
+        copy.summary.total = (copy.summary.total || 0) + demoUploads.length;
+        copy.summary.in_progress = (copy.summary.in_progress || 0) + demoUploads.length;
+        copy.summary.inbox = (copy.summary.inbox || 0) + demoUploads.length;
+      }
+      return copy;
+    }
+
+    /** Drop files or folders anywhere on the document section. */
+    function droppedFiles(dt) {
+      var items = dt && dt.items ? Array.prototype.slice.call(dt.items) : [];
+      var entries = items.map(function (it) { return it.webkitGetAsEntry ? it.webkitGetAsEntry() : null; })
+        .filter(function (e) { return e; });
+      if (!entries.length) return Promise.resolve(Array.prototype.slice.call((dt && dt.files) || []));
+      function walk(entry) {
+        if (entry.isFile) return new Promise(function (res) { entry.file(function (f) { res([f]); }, function () { res([]); }); });
+        if (!entry.isDirectory) return Promise.resolve([]);
+        var reader = entry.createReader();
+        return new Promise(function (res) {
+          var all = [];
+          (function more() {
+            reader.readEntries(function (batch) {
+              if (!batch.length) {
+                Promise.all(all.map(walk)).then(function (lists) { res([].concat.apply([], lists)); });
+                return;
+              }
+              all = all.concat(batch);
+              more();
+            }, function () { res([]); });
+          })();
+        });
+      }
+      return Promise.all(entries.map(walk)).then(function (lists) { return [].concat.apply([], lists); });
+    }
+
+    function initUploadDrop() {
+      var zone = document.querySelector('.docs-section');
+      if (!zone) return;
+      function canUpload(e) {
+        var types = e.dataTransfer ? Array.prototype.slice.call(e.dataTransfer.types || []) : [];
+        var btn = document.getElementById('upload-btn');
+        return types.indexOf('Files') !== -1 && btn && !btn.hidden;
+      }
+      zone.addEventListener('dragover', function (e) {
+        if (!canUpload(e)) return;
+        e.preventDefault();
+        zone.classList.add('is-dropping');
+      });
+      zone.addEventListener('dragleave', function (e) {
+        if (!zone.contains(e.relatedTarget)) zone.classList.remove('is-dropping');
+      });
+      zone.addEventListener('drop', function (e) {
+        zone.classList.remove('is-dropping');
+        if (!canUpload(e)) return;
+        e.preventDefault();
+        droppedFiles(e.dataTransfer).then(uploadFiles);
+      });
+    }
+    initUploadDrop();
+
+    // ── Document e-mail address (#950) ──────────────────────────────────
+    // The caregiver's private address for documents: copy, vCard, rotate (an
+    // armed second click, no browser dialog). Hidden for an admin's read-only
+    // view (the server refuses too) and while the server has it switched off.
+    // In /demo the address is invented and rotating only explains itself.
+
+    var inboundData = null;
+    var inboundFor = null;
+    var inboundArmed = null;
+
+    function inboundStatus(sk, en) {
+      var el = document.getElementById('inbound-status');
+      if (!el) return;
+      if (!sk) { el.hidden = true; el.textContent = ''; return; }
+      setI18n(el, sk, en);
+      el.hidden = false;
+    }
+
+    function hideInboundCard() {
+      var card = document.getElementById('inbound-card');
+      if (card) card.hidden = true;
+      inboundData = null;
+    }
+
+    function showInboundAddress(data) {
+      var card = document.getElementById('inbound-card');
+      var addr = document.getElementById('inbound-address');
+      if (!card || !addr) return;
+      inboundData = data;
+      addr.textContent = data.address;
+      card.hidden = false;
+    }
+
+    async function loadInboundAddress(force) {
+      if (!document.getElementById('inbound-card')) return;
+      if (isAdminMode || (!DEMO && !currentPatientId)) { hideInboundCard(); inboundFor = null; return; }
+      if (!force && inboundFor === currentPatientId) return;
+      inboundFor = currentPatientId;
+      inboundStatus('', '');
+      try {
+        var data = await apiFetch('/api/inbound-address');
+        if (!data || !data.enabled || !data.address) { hideInboundCard(); return; }
+        showInboundAddress(data);
+      } catch (e) {
+        hideInboundCard();
+      }
+    }
+
+    function copyInboundAddress() {
+      if (!inboundData) return;
+      var text = inboundData.address;
+      var done = function () { inboundStatus('Adresa je skopírovaná.', 'The address is copied.'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () {
+          inboundStatus('Kopírovanie sa nepodarilo; označte adresu a skopírujte ju ručne.',
+            'Copying failed; select the address and copy it by hand.');
+        });
+        return;
+      }
+      var el = document.getElementById('inbound-address');
+      if (el && window.getSelection) {
+        var range = document.createRange();
+        range.selectNodeContents(el);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    }
+
+    function downloadInboundVcard() {
+      if (!inboundData) return;
+      var name = dashLang === 'sk' ? 'Oncofiles dokumenty' : 'Oncofiles documents';
+      var card = ['BEGIN:VCARD', 'VERSION:3.0', 'FN:' + name, 'N:;' + name + ';;;',
+        'EMAIL;TYPE=INTERNET:' + inboundData.address, 'END:VCARD', ''].join('\r\n');
+      var url = URL.createObjectURL(new Blob([card], { type: 'text/vcard' }));
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'oncofiles-documents.vcf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    }
+
+    async function rotateInboundAddress() {
+      if (!inboundData || isAdminMode || !currentPatientId) return;
+      var btn = document.getElementById('inbound-rotate-btn');
+      if (inboundArmed !== currentPatientId) {
+        inboundArmed = currentPatientId;
+        if (btn) {
+          btn.classList.add('armed');
+          setI18n(btn, 'Stará adresa prestane fungovať. Kliknite znova', 'The old address stops working. Click again');
+        }
+        setTimeout(function () {
+          if (inboundArmed === null) return;
+          inboundArmed = null;
+          if (btn) { btn.classList.remove('armed'); setI18n(btn, 'Vytvoriť novú adresu', 'Create a new address'); }
+        }, 6000);
+        return;
+      }
+      inboundArmed = null;
+      if (btn) { btn.classList.remove('armed'); setI18n(btn, 'Vytvoriť novú adresu', 'Create a new address'); }
+      try {
+        var resp = await fetch('/api/inbound-address/rotate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
+          body: JSON.stringify({ patient_id: currentPatientId })
+        });
+        if (resp.status === 401) { logout(); return; }
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+        if (!data || !data.address) throw new Error('no address');
+        showInboundAddress(data);
+        inboundStatus('Nová adresa je aktívna; stará už dokumenty neprijíma.',
+          'The new address is active; the old one no longer takes documents.');
+      } catch (e) {
+        inboundStatus('Novú adresu sa nepodarilo vytvoriť. Skúste to znova neskôr.',
+          'A new address could not be created. Try again later.');
+      }
+    }
+
+    // Admin zone: mail to patient addresses that was not filed (counts only).
+    var INBOUND_REASON_TEXT = {
+      unknown_sender: ['odosielateľ nie je opatrovateľ', 'sender is not the caregiver'],
+      auth_failed: ['overenie odosielateľa neprešlo', 'sender check failed'],
+      // #950 phase 2: welcome@ mail that did not start a trial
+      welcome_auth_failed: ['welcome@: overenie odosielateľa neprešlo', 'welcome@: sender check failed'],
+      welcome_not_gmail: ['welcome@: odosielateľ nie je z Gmailu', 'welcome@: sender is not on Gmail'],
+      caregiver_multiple_patients: ['welcome@: opatrovateľ viacerých pacientov', 'welcome@: caregiver of several patients'],
+      not_live: ['welcome@: ešte nie je spustené (INBOUND_GO_LIVE)', 'welcome@: not live yet (INBOUND_GO_LIVE)']
+    };
+
+    // ── First steps of a welcome@ trial (#950 phase 2) ──────────────────
+    // Shown only for a patient that started by e-mail: trial days left, the
+    // documents being read, Connect AI (the existing share modal) and Connect
+    // Google Drive later (the existing wizard, step 2). Counts only.
+    var trialFor = null;
+
+    function hideTrialCard() {
+      var card = document.getElementById('trial-card');
+      if (card) card.hidden = true;
+    }
+
+    function showTrialCard(data) {
+      var card = document.getElementById('trial-card');
+      if (!card) return;
+      var days = Number(data.days_left || 0);
+      setI18n(document.getElementById('trial-days'),
+        'Skúšobný účet: dokumenty u nás počkajú ešte ' + days + ' dní, kým si pripojíte vlastný Google Drive.',
+        'Trial account: the documents wait with us for ' + days + ' more days, until you connect your own Google Drive.');
+      var total = Number(data.documents || 0);
+      var reading = Number(data.reading || 0);
+      setI18n(document.getElementById('trial-step-docs'),
+        'Dokumenty: ' + total + ' prijatých, ' + reading + ' sa ešte číta.',
+        'Documents: ' + total + ' received, ' + reading + ' still being read.');
+      var docsMark = document.getElementById('trial-step-docs-mark');
+      if (docsMark) docsMark.className = 'step-mark' + (total > 0 && reading === 0 ? ' done' : '');
+      var driveMark = document.getElementById('trial-step-drive-mark');
+      if (driveMark) driveMark.className = 'step-mark' + (data.drive_connected ? ' done' : '');
+      var driveBtn = document.getElementById('trial-drive-btn');
+      if (driveBtn) driveBtn.hidden = !!data.drive_connected || isAdminMode;
+      card.hidden = false;
+    }
+
+    async function loadTrialStatus(force) {
+      if (!document.getElementById('trial-card')) return;
+      if (!DEMO && !currentPatientId) { hideTrialCard(); trialFor = null; return; }
+      if (!force && trialFor === currentPatientId) return;
+      trialFor = currentPatientId;
+      try {
+        var data = await apiFetch('/api/trial-status');
+        if (!data || !data.trial) { hideTrialCard(); return; }
+        showTrialCard(data);
+      } catch (e) {
+        hideTrialCard();
+      }
+    }
+
+    // Google caps an unverified OAuth client at 100 users: warn from 80 on,
+    // by shape (diamond vs. disc) and by text, never by colour alone.
+    var OAUTH_USERS_WARN = 80;
+
+    function renderOauthUsers(data) {
+      var line = document.getElementById('oauth-users-line');
+      if (!line || !data) return;
+      clearEl(line);
+      var n = Number(data.google_oauth_users) || 0;
+      var cap = Number(data.cap) || 100;
+      var warn = n >= OAUTH_USERS_WARN;
+      line.className = 'curated-ops-note oauth-users-line' + (warn ? ' is-warn' : '');
+      var mark = document.createElement('span');
+      mark.className = 'state-mark ' + (warn ? 'attention' : 'ready');
+      mark.setAttribute('aria-hidden', 'true');
+      line.appendChild(mark);
+      var text = document.createElement('span');
+      setI18n(text,
+        'Používatelia Google OAuth: ' + n + ' / ' + cap +
+          (warn ? ' (pozor: blíži sa limit Googlu pre neoverenú aplikáciu)' : ''),
+        'Google OAuth users: ' + n + ' / ' + cap +
+          (warn ? ' (warning: approaching Google’s unverified-app cap)' : ''));
+      line.appendChild(text);
+    }
+
+    // #950 phase 3: time-to-value funnel of welcome@ trials (counts and
+    // median durations only; no ids, addresses, names or files).
+    var TRIAL_FUNNEL_STEPS = {
+      received: ['Prijatý mail', 'Mail received'],
+      first_reply: ['Prvá odpoveď', 'First reply'],
+      signed_in: ['Prihlásenie', 'Signed in'],
+      first_doc_ready: ['Prvý dokument pripravený', 'First document ready'],
+      first_mcp_call: ['Prvé volanie AI', 'First AI call'],
+      drive_connected: ['Pripojený Drive', 'Drive connected']
+    };
+
+    function funnelDuration(s) {
+      if (s === null || s === undefined) return '–';
+      if (s < 120) return s + ' s';
+      if (s < 7200) return Math.round(s / 60) + ' min';
+      if (s < 172800) return Math.round(s / 3600) + ' h';
+      return Math.round(s / 86400) + ' d';
+    }
+
+    function renderTrialFunnel(body, funnel) {
+      if (!funnel || !funnel.trials) return;
+      var head = document.createElement('p');
+      head.className = 'curated-ops-meta';
+      setI18n(head,
+        'Skúšobné účty (welcome@): ' + funnel.trials + ', presunuté do Drive: ' + (funnel.converted || 0) +
+          ', mail „pripravené“: ' + (funnel.ready_mail_sent || 0) + '.',
+        'Trials (welcome@): ' + funnel.trials + ', moved to Drive: ' + (funnel.converted || 0) +
+          ', "ready" mails: ' + (funnel.ready_mail_sent || 0) + '.');
+      body.appendChild(head);
+      var table = document.createElement('table');
+      table.className = 'inbound-admin-table';
+      var tr = document.createElement('tr');
+      [['Krok', 'Step'], ['Počet', 'Count'], ['Medián od mailu', 'Median from mail'],
+        ['Medián od predch.', 'Median from previous']].forEach(function (h) {
+        var th = document.createElement('th');
+        setI18n(th, h[0], h[1]);
+        tr.appendChild(th);
+      });
+      table.appendChild(tr);
+      (funnel.steps || []).forEach(function (st) {
+        var row = document.createElement('tr');
+        var label = TRIAL_FUNNEL_STEPS[st.step] || [st.step, st.step];
+        [label, [String(st.count), String(st.count)],
+          [funnelDuration(st.median_s_from_received), funnelDuration(st.median_s_from_received)],
+          [funnelDuration(st.median_s_from_previous), funnelDuration(st.median_s_from_previous)]
+        ].forEach(function (cell) {
+          var td = document.createElement('td');
+          setI18n(td, cell[0], cell[1]);
+          row.appendChild(td);
+        });
+        table.appendChild(row);
+      });
+      body.appendChild(table);
+    }
+
+    function renderInboundUnmatched(data) {
+      var totalsEl = document.getElementById('inbound-admin-totals');
+      var body = document.getElementById('inbound-admin-body');
+      if (!totalsEl || !body) return;
+      var t = (data && data.totals) || {};
+      var unmatched = (t.unmatched_unknown_sender || 0) + (t.unmatched_auth_failed || 0);
+      setI18n(totalsEl,
+        (data && data.enabled ? 'Príjem pošty je zapnutý. ' : 'Príjem pošty je vypnutý (chýba tajomstvo webhooku). ') +
+          'Zaradené správy: ' + (t.mails_filed || 0) + ', prijaté súbory: ' + (t.files_accepted || 0) +
+          ', nezaradené: ' + unmatched + ', neznáma adresa: ' + ((t.unknown_token || 0) + (t.inactive_token || 0)) + '.',
+        (data && data.enabled ? 'Receiving mail is on. ' : 'Receiving mail is off (no webhook secret). ') +
+          'Filed mails: ' + (t.mails_filed || 0) + ', files accepted: ' + (t.files_accepted || 0) +
+          ', unmatched: ' + unmatched + ', unknown address: ' + ((t.unknown_token || 0) + (t.inactive_token || 0)) + '.');
+      clearEl(body);
+      // #952: durable queue (counts survive restarts). download_expired = the
+      // attachments waited longer than Brevo keeps them; nothing was filed.
+      var jobs = data && data.jobs;
+      if (jobs) {
+        var fr = jobs.failed_reasons || {};
+        // attempts used up: generic errors plus the temporary codes that never
+        // cleared (rate limit, download, Drive, missing API key)
+        var usedUp = ['max_attempts', 'rate_limited', 'fetch_failed', 'store_failed', 'no_api_key']
+          .reduce(function (n, k) { return n + (fr[k] || 0); }, 0);
+        var jobLine = document.createElement('p');
+        jobLine.className = 'curated-ops-meta';
+        setI18n(jobLine,
+          'Fronta: čaká ' + (jobs.pending || 0) + ', spracúva sa ' + (jobs.processing || 0) +
+            ', hotové ' + (jobs.done || 0) + ', zlyhalo ' + (jobs.failed || 0) +
+            ' (prílohy expirovali: ' + (fr.download_expired || 0) + ', limit pokusov: ' + usedUp + ').',
+          'Queue: pending ' + (jobs.pending || 0) + ', processing ' + (jobs.processing || 0) +
+            ', done ' + (jobs.done || 0) + ', failed ' + (jobs.failed || 0) +
+            ' (attachments expired: ' + (fr.download_expired || 0) + ', attempts used up: ' + usedUp + ').');
+        body.appendChild(jobLine);
+      }
+      // #950: alert codes (counts only). claimed_address_refusals_high = one
+      // patient address kept getting more unverified mail than it can hold, so
+      // Brevo batches were refused (503, retried later; nothing is dropped).
+      // Likely a forgery flood on that address.
+      var alerts = (data && data.alerts) || {};
+      var refusals = alerts.claimed_address_refusals_high || 0;
+      if (refusals) {
+        var alertLine = document.createElement('p');
+        alertLine.className = 'curated-ops-meta inbound-alert';
+        setI18n(alertLine,
+          'Upozornenie: adresa pacienta opakovane dostáva viac neoverenej pošty, než unesie; dávky sa odmietajú a Brevo ich zopakuje, nič sa nezahodí (' + refusals + '×, kód claimed_address_refusals_high).',
+          'Alert: a patient address keeps getting more unverified mail than it can hold; batches are refused and Brevo retries them, nothing is dropped (' + refusals + '×, code claimed_address_refusals_high).');
+        body.appendChild(alertLine);
+      }
+      renderTrialFunnel(body, data && data.trial_funnel);
+      var senders = (data && data.senders) || [];
+      if (!senders.length) {
+        var empty = document.createElement('p');
+        empty.className = 'curated-ops-meta';
+        setI18n(empty, 'Žiadni nepriradení odosielatelia.', 'No unmatched senders.');
+        body.appendChild(empty);
+        return;
+      }
+      var table = document.createElement('table');
+      table.className = 'inbound-admin-table';
+      var head = document.createElement('tr');
+      [['Odosielateľ (odtlačok)', 'Sender (hash)'], ['Pacient', 'Patient'], ['Správy', 'Mails'],
+        ['Súbory', 'Files'], ['Dôvod', 'Reason'], ['Naposledy', 'Last']].forEach(function (h) {
+        var th = document.createElement('th');
+        setI18n(th, h[0], h[1]);
+        head.appendChild(th);
+      });
+      table.appendChild(head);
+      senders.forEach(function (s) {
+        var tr = document.createElement('tr');
+        var reasons = Object.keys(s.reasons || {}).map(function (code) {
+          var r = INBOUND_REASON_TEXT[code] || [code, code];
+          return [r[0] + ' ' + s.reasons[code], r[1] + ' ' + s.reasons[code]];
+        });
+        var when = schedTimeBoth(s.last_at);
+        [[s.sender_hash, s.sender_hash], [s.patient, s.patient], [String(s.mails), String(s.mails)],
+          [String(s.files), String(s.files)],
+          [reasons.map(function (r) { return r[0]; }).join(', '), reasons.map(function (r) { return r[1]; }).join(', ')],
+          when].forEach(function (cell) {
+          var td = document.createElement('td');
+          setI18n(td, String(cell[0] || ''), String(cell[1] || ''));
+          tr.appendChild(td);
+        });
+        table.appendChild(tr);
+      });
+      body.appendChild(table);
     }
 
     // ── Patient selector ────────────────────────────────────────────────
@@ -738,6 +1395,12 @@
       var addPatientBtn = document.querySelector('.add-patient-btn');
       // Restore it when admin mode ends (#824), same as the archive button.
       if (addPatientBtn) addPatientBtn.style.display = isAdminMode ? 'none' : '';
+      // #921: an admin's read-only view cannot add documents (the server refuses too).
+      var uploadBtn = document.getElementById('upload-btn');
+      if (uploadBtn) uploadBtn.hidden = isAdminMode;
+      if (isAdminMode) closeUploadPanel();
+      // #950: the document e-mail address is the caregiver's (a write credential).
+      if (isAdminMode) { hideInboundCard(); inboundFor = null; }
     }
 
     function switchPatient(patientId) {
@@ -864,6 +1527,10 @@
       docsSignature = '';
       openDoc = { id: null, data: null };
       activityData = null;
+      hideInboundCard();
+      inboundFor = null;
+      hideTrialCard();
+      trialFor = null;
       tableMessage('Načítavam…', 'Loading…');
       var countEl = document.getElementById('docs-count');
       if (countEl) countEl.textContent = '';
@@ -1010,6 +1677,8 @@
 
     function showOnboarding() {
       if (onboardingBlocked()) { showOnboardingClosed(null); return; }
+      var firstVisit = document.getElementById('wiz-first-visit');
+      if (firstVisit) firstVisit.style.display = 'none';  // only maybeStartFirstVisit shows it
       wizardPatientId = '';
       wizardPatientUuid = '';
       wizardBearerToken = '';
@@ -1050,7 +1719,7 @@
 
     // #852: server-side onboarding gate. /api/onboarding-status tells this
     // caller the mode and whether it may create a patient / connect Drive /
-    // set a folder; when not, a waitlist notice replaces the wizard. The
+    // set a folder; when not, an invitation notice replaces the wizard. The
     // server enforces the same rule (403 onboarding_closed), this only spares
     // the user a failing wizard. Unknown (fetch failed) = let the server decide.
     var onboardingStatus = null;
@@ -1065,6 +1734,23 @@
 
     function onboardingBlocked() {
       return !!(onboardingStatus && onboardingStatus.allowed === false);
+    }
+
+    // A signed-in caller with no patient yet, while onboarding is open, goes
+    // straight into the New Patient wizard (consent step included, #857) with
+    // one sentence on the two ways in. Once per browser session, so "Cancel"
+    // is not undone by the next reload; never in the demo or in invite/closed.
+    var FIRST_VISIT_KEY = 'oncofiles_first_visit_wizard';
+    function maybeStartFirstVisit() {
+      if (DEMO || patientsCache.length !== 0) return;
+      if (!onboardingStatus || onboardingStatus.mode !== 'open' || onboardingStatus.allowed !== true) return;
+      try {
+        if (sessionStorage.getItem(FIRST_VISIT_KEY)) return;
+        sessionStorage.setItem(FIRST_VISIT_KEY, '1');
+      } catch (e) { /* storage blocked: still show it this once */ }
+      showOnboarding();
+      var intro = document.getElementById('wiz-first-visit');
+      if (intro) intro.style.display = 'block';
     }
 
     // A refusal body from the server: {error, message_sk, message_en, waitlist_url}.
@@ -1139,7 +1825,7 @@
 
     // #857: version of the privacy + terms text the consent checkbox refers to.
     // Must equal oncofiles.patient_consent.CONSENT_VERSION (a test keeps them equal).
-    var CONSENT_VERSION = '2026-11-17';
+    var CONSENT_VERSION = '2026-11-21b';
 
     async function wizardStep1Submit() {
       var btn = document.getElementById('wiz-create-btn');
@@ -2425,6 +3111,10 @@
       } catch (e) {
         if (!trackBreaker(e)) { console.warn('Activity fetch failed:', e); renderActivity(null); }
       }
+      // #950: the document e-mail address (once per patient; hides itself on any error).
+      await loadInboundAddress(false);
+      // #950 phase 2: first steps of a welcome@ trial (counts change while documents are read).
+      await loadTrialStatus(true);
       // Budget pill (#442) — fire-and-forget, hides itself when tier is admin/paid_*.
       updateBudgetPill();
       // Admin panels load only when an admin has opened them.
@@ -2520,9 +3210,10 @@
     var docsSignature = '';          // skip a re-render when a refresh brought nothing new
     var openDoc = { id: null, data: null };  // the expanded row survives refreshes
 
-    var STAGE_RANK = { attention: 0, waiting_text: 1, waiting_name: 2, waiting_filing: 3, ready: 4 };
+    var STAGE_RANK = { attention: 0, in_inbox: 1, waiting_text: 2, waiting_name: 3, waiting_filing: 4, ready: 5 };
     var STAGE_TEXT = {
       ready: ['Pripravený na použitie', 'Ready to use'],
+      in_inbox: ['Čaká na spracovanie', 'Waiting to be processed'],
       waiting_text: ['Čaká na vyťaženie', 'Waiting for extraction'],
       waiting_name: ['Čaká na premenovanie', 'Waiting to be renamed'],
       waiting_filing: ['Čaká na zaradenie', 'Waiting to be filed'],
@@ -2540,6 +3231,43 @@
       outside_folder: ['Súbor existuje, ale nie je v priečinku tohto pacienta. Presuňte ho späť do priečinka pacienta.', 'The file exists but is not in this patient\'s folder. Move it back into the patient folder.'],
       missing_date: ['Text je prečítaný, ale nie je v ňom vytlačený dátum dokumentu, preto ho nevieme zaradiť na časovú os.', 'The text has been read, but no document date is printed in it, so it cannot be placed on the timeline.']
     };
+    // #919: concrete help per review reason code (`review_reasons` on a row,
+    // codes only); an unknown code falls back to ATTENTION_HELP.review_needed.
+    var REVIEW_REASON_HELP = {
+      name_not_standard: ['Z prečítaných údajov sa nedal zostaviť štandardný názov súboru. Skontrolujte dátum, typ a inštitúciu.', 'A standard file name could not be built from the data read. Check the date, type and institution.'],
+      no_date: ['V texte sa nenašiel dátum vyšetrenia alebo správy. Doplňte ho, ak je na origináli vytlačený.', 'No exam or report date was found in the text. Add it if it is printed on the original.'],
+      birth_date: ['Jediný nájdený dátum je dátum narodenia, nie dátum dokumentu.', 'The only date found is the date of birth, not the document date.'],
+      future_date: ['Prečítaný dátum je v budúcnosti. Porovnajte ho s originálom.', 'The date read is in the future. Compare it with the original.'],
+      implausible_date: ['Prečítaný dátum nie je možný. Porovnajte ho s originálom.', 'The date read is not plausible. Compare it with the original.'],
+      date_not_printed: ['Navrhnutý dátum nie je v texte dokumentu vytlačený. Porovnajte ho s originálom.', 'The proposed date is not printed in the document text. Compare it with the original.'],
+      date_too_old: ['Dátum je veľmi starý; mohol byť prečítaný z inej časti strany. Overte ho.', 'The date is very old; it may have been read from another part of the page. Check it.'],
+      unknown_type: ['Typ dokumentu sa nepodarilo určiť. Zvoľte správny typ.', 'The document type could not be determined. Choose the right type.'],
+      institution_unknown: ['Inštitúcia sa v texte nenašla.', 'The institution was not found in the text.'],
+      new_vocabulary: ['Dokument uvádza novú inštitúciu alebo lekára. Potvrďte, či je zápis správny.', 'The document names a new institution or doctor. Confirm that the spelling is correct.'],
+      near_vocabulary: ['Nová inštitúcia alebo lekár sa podobá na už známy záznam. Potvrďte, či ide o ten istý.', 'A new institution or doctor looks like a known entry. Confirm whether it is the same.'],
+      split_needed: ['Súbor zrejme obsahuje viac dokumentov. Treba ho rozdeliť.', 'The file seems to hold several documents. It needs to be split.'],
+      low_confidence: ['Model si pri zaradení nebol istý. Porovnajte údaje s originálom.', 'The model was not sure about the filing. Compare the data with the original.'],
+      other_person: ['Dokument zrejme patrí inej osobe s rovnakým priezviskom. Overte, komu patrí.', 'The document seems to belong to another person with the same surname. Check whose it is.'],
+      chart_page: ['Na strane je graf; jeho hodnoty sa ako údaje nečítajú. Overte text s originálom.', 'A page holds a chart; its values are never read as data. Check the text against the original.'],
+      rotated_region: ['Časť strany je otočená a neprečítala sa. Overte text s originálom.', 'Part of a page is rotated and was not read. Check the text against the original.'],
+      orientation_unsure: ['Nebolo isté, ako je strana otočená. Overte text s originálom.', 'It was not certain how the page is turned. Check the text against the original.'],
+      extraction_failed: ['Text sa nepodarilo prečítať. Systém to skúsi znova.', 'The text could not be read. The system will try again.'],
+      classification_failed: ['Zaradenie zlyhalo technicky. Systém to skúsi znova.', 'Filing failed for a technical reason. The system will try again.'],
+      no_text: ['V súbore sa nenašiel žiadny text.', 'No text was found in the file.'],
+      raw_genotype_excluded: ['Surové genetické dáta sa modelu neposielajú; súbor zaraďte ručne.', 'Raw genetic data is never sent to the model; file it by hand.'],
+      target_folder_missing: ['Cieľový priečinok pre tento typ chýba.', 'The target folder for this type is missing.']
+    };
+    function attentionHelp(doc) {
+      if (doc.attention_reason === 'review_needed' && Array.isArray(doc.review_reasons)) {
+        var sk = [], en = [];
+        doc.review_reasons.forEach(function (code) {
+          var t = REVIEW_REASON_HELP[code];
+          if (t && sk.indexOf(t[0]) === -1) { sk.push(t[0]); en.push(t[1]); }
+        });
+        if (sk.length) return [sk.join(' '), en.join(' ')];
+      }
+      return ATTENTION_HELP[doc.attention_reason] || null;
+    }
     var STEP_TEXT = {
       extracted: ['Vyťažený', 'Extracted'],
       named: ['Premenovaný', 'Renamed'],
@@ -2575,6 +3303,9 @@
     }
 
     function fmtDate(value) {
+      // #919: a document dated by month only comes as "YYYY-MM": show "03/2027", never a day
+      var month = /^(\d{4})-(\d{2})$/.exec(value == null ? '' : String(value));
+      if (month) return month[2] + '/' + month[1];
       var d = parseTs(value);
       if (!d) return '–';
       return d.toLocaleDateString(dashLang === 'sk' ? 'sk-SK' : 'en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -2609,8 +3340,11 @@
       return d.stage !== 'ready' && d.stage !== 'attention';
     }
 
-    // A new patient starts on the full list: no tile filter, no search, no open row.
+    // A new patient starts on the full list: no tile filter, no search, no open
+    // row, no quick look, and none of the previous patient's previews.
     function resetDocView() {
+      closeQuickLook();
+      resetThumbs();
       openDoc = { id: null, data: null };
       docsSignature = '';
       var search = document.getElementById('doc-search');
@@ -2642,14 +3376,20 @@
       var attentionTile = document.querySelector('#summary-cards .card[data-filter="attention"]');
       if (attentionTile) attentionTile.classList.toggle('has-items', attention > 0);
 
+      // An unchanged list draws nothing again: no flicker, no preview asked twice.
       var signature = JSON.stringify(rows);
-      if (signature === docsSignature && document.querySelector('#doc-tbody .doc-row')) return;
+      if (signature === docsSignature && docsDrawn()) return;
       docsSignature = signature;
       docsData = rows.map(function(d) {
-        d.stage_rank = STAGE_RANK[d.stage] !== undefined ? STAGE_RANK[d.stage] : 1;
+        d.stage_rank = STAGE_RANK[d.stage] !== undefined ? STAGE_RANK[d.stage] : STAGE_RANK.waiting_text;
         return d;
       });
       renderTable();
+    }
+
+    /** Whether the visible view (list or grid) already shows documents. */
+    function docsDrawn() {
+      return !!document.querySelector(docView === 'grid' ? '#doc-grid .doc-card' : '#doc-tbody .doc-row');
     }
 
     function tableMessage(sk, en) {
@@ -2657,19 +3397,25 @@
       clearEl(tbody);
       var tr = document.createElement('tr');
       var td = document.createElement('td');
-      td.setAttribute('colspan', '7');
+      td.setAttribute('colspan', '8');
       td.className = 'table-empty';
       setI18n(td, sk, en);
       tr.appendChild(td);
       tbody.appendChild(tr);
+      var grid = document.getElementById('doc-grid');
+      if (grid) {
+        clearEl(grid);
+        var li = document.createElement('li');
+        li.className = 'grid-empty';
+        grid.appendChild(setI18n(li, sk, en));
+      }
     }
 
-    function renderTable() {
-      var tbody = document.getElementById('doc-tbody');
-      var countEl = document.getElementById('docs-count');
+    /** The documents the tiles and the search let through, in the current sort order
+        (one list for the table, the grid and the quick look's previous / next). */
+    function docListView() {
       var searchEl = document.getElementById('doc-search');
       var query = (searchEl ? searchEl.value : '').toLowerCase().trim();
-
       var filtered = docsData.filter(matchesFilter);
       if (query) {
         filtered = filtered.filter(function(d) {
@@ -2678,22 +3424,6 @@
             .join(' ').toLowerCase().indexOf(query) !== -1;
         });
       }
-      if (countEl) {
-        if (docsData.length === 0) { countEl.removeAttribute('data-sk'); countEl.removeAttribute('data-en'); countEl.textContent = ''; }
-        else setI18n(countEl, 'zobrazených ' + filtered.length + ' z ' + docsData.length, 'showing ' + filtered.length + ' of ' + docsData.length);
-      }
-
-      if (docsData.length === 0) {
-        tableMessage('Zatiaľ tu nie sú žiadne dokumenty. Nahrajte súbory do priečinka pacienta na Google Drive a Oncofiles ich spracuje.',
-          'No documents yet. Put files into the patient folder on Google Drive and Oncofiles will process them.');
-        return;
-      }
-      if (filtered.length === 0) {
-        tableMessage(query ? 'Hľadaniu nezodpovedá žiadny dokument.' : 'V tomto stave nie je žiadny dokument.',
-          query ? 'No document matches the search.' : 'No document is in this state.');
-        return;
-      }
-
       // Missing values always sort last, whatever the direction.
       var sorted = filtered.slice().sort(function(a, b) {
         var va = sortCol === 'filename' ? loc(a, 'filename') : sortCol === 'institution' ? loc(a, 'institution') : a[sortCol];
@@ -2707,10 +3437,39 @@
         if (va > vb) return sortAsc ? 1 : -1;
         return 0;
       });
+      return { query: query, filtered: filtered, sorted: sorted };
+    }
+
+    function renderTable() {
+      var tbody = document.getElementById('doc-tbody');
+      var countEl = document.getElementById('docs-count');
+      var view = docListView();
+      var query = view.query;
+      var filtered = view.filtered;
+      // the previous tiles are gone: watch only the ones drawn now
+      resetThumbObserver();
+      if (quickLook.id !== null) renderQuickLookNav();
+      if (countEl) {
+        if (docsData.length === 0) { countEl.removeAttribute('data-sk'); countEl.removeAttribute('data-en'); countEl.textContent = ''; }
+        else setI18n(countEl, 'zobrazených ' + filtered.length + ' z ' + docsData.length, 'showing ' + filtered.length + ' of ' + docsData.length);
+      }
+
+      if (docsData.length === 0) {
+        tableMessage('Zatiaľ tu nie sú žiadne dokumenty. Pridajte ich tlačidlom „Pridať dokumenty“ alebo ich nahrajte do priečinka pacienta na Google Drive a Oncofiles ich spracuje.',
+          'No documents yet. Add them with “Add documents” or put files into the patient folder on Google Drive and Oncofiles will process them.');
+        return;
+      }
+      if (filtered.length === 0) {
+        tableMessage(query ? 'Hľadaniu nezodpovedá žiadny dokument.' : 'V tomto stave nie je žiadny dokument.',
+          query ? 'No document matches the search.' : 'No document is in this state.');
+        return;
+      }
+
+      if (docView === 'grid') { renderGrid(view.sorted); return; }
 
       clearEl(tbody);
       var reopen = null;
-      sorted.forEach(function(d) {
+      view.sorted.forEach(function(d) {
         var tr = buildDocRow(d);
         tbody.appendChild(tr);
         if (openDoc.id !== null && d.id === openDoc.id) reopen = { doc: d, tr: tr };
@@ -2726,6 +3485,22 @@
       tr.setAttribute('role', 'button');
       tr.setAttribute('aria-expanded', 'false');
 
+      // #948: the preview opens the quick look; the rest of the row opens the detail
+      var tdThumb = document.createElement('td');
+      tdThumb.className = 'col-thumb';
+      var thumbBtn = document.createElement('button');
+      thumbBtn.type = 'button';
+      thumbBtn.className = 'thumb-btn';
+      thumbBtn.setAttribute('data-doc-id', String(d.id));
+      thumbBtn.setAttribute('aria-haspopup', 'dialog');
+      thumbBtn.appendChild(buildThumb(d));
+      var thumbLabel = document.createElement('span');
+      thumbLabel.className = 'sr-only';
+      thumbBtn.appendChild(setI18n(thumbLabel, 'Zväčšený náhľad', 'Large preview'));
+      thumbBtn.addEventListener('click', function(e) { e.stopPropagation(); openQuickLook(d.id, thumbBtn); });
+      tdThumb.appendChild(thumbBtn);
+      tr.appendChild(tdThumb);
+
       var tdToggle = document.createElement('td');
       tdToggle.className = 'col-toggle';
       var chev = document.createElement('span');
@@ -2737,23 +3512,13 @@
       var name = loc(d, 'filename');
       var tdFn = document.createElement('td');
       tdFn.className = 'filename';
-      var nameSpan = document.createElement('span');
-      nameSpan.className = 'filename-text';
-      // standard names have no spaces: let them break after _ and -
-      String(name).split(/(?<=[_-])/).forEach(function(part, i) {
-        if (i) nameSpan.appendChild(document.createElement('wbr'));
-        nameSpan.appendChild(document.createTextNode(part));
-      });
-      tdFn.appendChild(nameSpan);
+      tdFn.appendChild(filenameText(name, 'filename-text'));
       tdFn.title = name;
       tr.appendChild(tdFn);
 
       var tdCat = document.createElement('td');
-      var badge = document.createElement('span');
-      badge.className = 'category-badge';
-      var cat = CATEGORY_TEXT[d.category] || [d.category || '', d.category || ''];
-      setI18n(badge, cat[0], cat[1]);
-      tdCat.appendChild(badge);
+      if (d.category) tdCat.appendChild(categoryBadge(d.category));
+      else tdCat.textContent = '–';  // an inbox file is not classified yet
       tr.appendChild(tdCat);
 
       var tdInst = document.createElement('td');
@@ -2774,15 +3539,9 @@
 
       var tdStage = document.createElement('td');
       tdStage.className = 'cell-stage';
-      var kind = stageKind(d);
-      var chip = document.createElement('span');
-      chip.className = 'stage-chip ' + kind;
-      chip.appendChild(stateMark(kind));
-      var label = stageLabel(d);
-      chip.appendChild(setI18n(document.createElement('span'), label[0], label[1]));
       var stageBox = document.createElement('div');
       stageBox.className = 'stage-box';
-      stageBox.appendChild(chip);
+      stageBox.appendChild(stageChip(d));
       stageBox.appendChild(buildStepTrack(d));
       tdStage.appendChild(stageBox);
       tr.appendChild(tdStage);
@@ -2793,6 +3552,56 @@
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleDocDetail(d, tr); }
       });
       return tr;
+    }
+
+    /** A file name that may break after _ and - (standard names have no spaces). */
+    function filenameText(name, cls) {
+      var span = document.createElement('span');
+      span.className = cls;
+      String(name).split(/(?<=[_-])/).forEach(function(part, i) {
+        if (i) span.appendChild(document.createElement('wbr'));
+        span.appendChild(document.createTextNode(part));
+      });
+      return span;
+    }
+
+    function categoryBadge(category) {
+      var badge = document.createElement('span');
+      badge.className = 'category-badge';
+      var cat = CATEGORY_TEXT[category] || [category || '', category || ''];
+      return setI18n(badge, cat[0], cat[1]);
+    }
+
+    /** In place of a category badge: an inbox file is not classified yet. */
+    function noCategoryMark() {
+      var dash = document.createElement('span');
+      dash.className = 'category-none';
+      dash.textContent = '–';
+      return dash;
+    }
+
+    /** An inbox row (`inbox:<drive id>`) has no document behind it, so no preview to ask for. */
+    function hasPreview(d) { return !!d && !d.inbox && /^\d+$/.test(String(d.id)); }
+
+    /** The tile or card of one document; ids are compared as text, never put into a selector. */
+    function findById(selector, attr, id) {
+      var want = String(id);
+      var found = null;
+      document.querySelectorAll(selector).forEach(function (el) {
+        if (!found && el.getAttribute(attr) === want) found = el;
+      });
+      return found;
+    }
+
+    /** The status as a shape plus a label (never colour alone); `short` for the grid cards. */
+    function stageChip(d, short) {
+      var kind = stageKind(d);
+      var chip = document.createElement('span');
+      chip.className = 'stage-chip ' + kind;
+      chip.appendChild(stateMark(kind));
+      var label = short && d.stage === 'ready' ? ['Pripravený', 'Ready'] : stageLabel(d);
+      chip.appendChild(setI18n(document.createElement('span'), label[0], label[1]));
+      return chip;
     }
 
     /** Three small marks, one per step: filled = done, hollow = waiting. */
@@ -2838,10 +3647,11 @@
       var detailRow = document.createElement('tr');
       detailRow.className = 'doc-detail-row';
       var detailTd = document.createElement('td');
-      detailTd.setAttribute('colspan', '7');
+      detailTd.setAttribute('colspan', '8');
       detailRow.appendChild(detailTd);
       tr.parentNode.insertBefore(detailRow, tr.nextSibling);
 
+      if (doc.inbox) { renderInboxDetail(doc, detailTd); return; }  // no document row: nothing to fetch
       if (cached) { renderDocDetail(doc, cached, detailTd); return; }
 
       var loadingDiv = document.createElement('div');
@@ -2904,8 +3714,9 @@
         steps.filed ? ['– je v priečinku pacienta na Google Drive.', '– it sits in the patient folder on Google Drive.']
                     : ['– ešte nie je zaradený v priečinku na Google Drive.', '– it is not filed in the Google Drive folder yet.']);
       if (doc.stage === 'attention') {
+        var help = attentionHelp(doc);
         add(false, ATTENTION_TEXT[doc.attention_reason] || STAGE_TEXT.attention,
-          ATTENTION_HELP[doc.attention_reason] ? ['– ' + ATTENTION_HELP[doc.attention_reason][0], '– ' + ATTENTION_HELP[doc.attention_reason][1]] : ['', ''], 'final attention');
+          help ? ['– ' + help[0], '– ' + help[1]] : ['', ''], 'final attention');
       } else {
         add(doc.stage === 'ready', STAGE_TEXT.ready,
           doc.stage === 'ready' ? ['– dokument je spracovaný, pre vás aj pre AI asistenta.', '– the document is processed, for you and for the AI assistant.']
@@ -2915,27 +3726,90 @@
       return box;
     }
 
-    function renderDocDetail(doc, data, detailTd) {
+    /** A file still in the patient's inbox on Drive: a short explanation, no detail fetch. */
+    function renderInboxDetail(doc, detailTd, opts) {
+      opts = opts || {};
+      clearEl(detailTd);
+      var panel = document.createElement('div');
+      panel.className = 'doc-detail-panel inbox-detail' + (opts.overlay ? ' is-overlay' : '');
+      if (!opts.overlay) {  // the quick look has its own close button
+        var closeBtn = document.createElement('button');
+        closeBtn.className = 'detail-close';
+        closeBtn.textContent = '×';
+        closeBtn.title = dashLang === 'sk' ? 'Zavrieť' : 'Close';
+        closeBtn.setAttribute('aria-label', closeBtn.title);
+        closeBtn.onclick = function(e) { e.stopPropagation(); closeDocDetail(); };
+        panel.appendChild(closeBtn);
+      }
+      var label = stageLabel(doc);
+      panel.appendChild(setI18n(document.createElement('h4'), label[0], label[1]));
+      var p = document.createElement('p');
+      if (doc.stage === 'attention') {
+        setI18n(p, 'Súbor je v priečinku pre nové súbory na Google Drive. Pri čítaní si systém nebol istý (napríklad rukopis alebo otočená strana), preto súbor čaká na kontrolu a zatiaľ sa nezaradí. Kým ho niekto neskontroluje, zostáva v tomto priečinku nezmenený.',
+          'The file is in the inbox folder on Google Drive. The system was not sure when reading it (for example handwriting or a rotated page), so it waits for a review and is not filed yet. Until someone reviews it, it stays unchanged in that folder.');
+      } else {
+        setI18n(p, 'Súbor je v priečinku pre nové súbory na Google Drive. Model na našom serveri ho o niekoľko minút prečíta, pomenuje a zaradí; potom sa tu zobrazí ako bežný dokument s textom a údajmi.',
+          'The file is in the inbox folder on Google Drive. Within a few minutes the model on our server reads, names and files it; it then shows here as an ordinary document with its text and data.');
+      }
+      panel.appendChild(p);
+      var meta = [];
+      if (doc.size) meta.push(fmtSize(doc.size));
+      if (doc.uploaded_at) meta.push(fmtDateTime(doc.uploaded_at));
+      if (meta.length) {
+        var small = document.createElement('p');
+        small.className = 'inbox-detail-meta';
+        small.textContent = meta.join(' · ');
+        panel.appendChild(small);
+      }
+      detailTd.appendChild(panel);
+    }
+
+    /** The document detail. In the quick look (`opts.overlay`) the overlay has its
+        own close button and shows the first page itself, so the detail brings no
+        close button and no Drive preview frame; the Drive link goes to
+        `opts.linkHost` under the large preview. */
+    function renderDocDetail(doc, data, detailTd, opts) {
+      opts = opts || {};
+      var overlay = !!opts.overlay;
       clearEl(detailTd);
 
       var panel = document.createElement('div');
-      panel.className = 'doc-detail-panel';
+      panel.className = 'doc-detail-panel' + (overlay ? ' is-overlay' : '');
 
-      // Close button
+      function driveLink() {
+        if (!data.gdrive_url || !/^https:\/\//.test(data.gdrive_url)) return null;
+        var gdriveLink = document.createElement('a');
+        gdriveLink.href = data.gdrive_url;
+        gdriveLink.target = '_blank';
+        gdriveLink.rel = 'noopener';
+        gdriveLink.className = 'detail-drive-link';
+        var gdriveLinkSpan = document.createElement('span');
+        gdriveLinkSpan.setAttribute('data-sk', 'Otvoriť v Google Drive');
+        gdriveLinkSpan.setAttribute('data-en', 'Open in Google Drive');
+        gdriveLinkSpan.textContent = 'Open in Google Drive';
+        gdriveLink.appendChild(gdriveLinkSpan);
+        return gdriveLink;
+      }
+
+      // Close button (the quick look has its own)
       var closeBtn = document.createElement('button');
       closeBtn.className = 'detail-close';
       closeBtn.textContent = '\u00d7';
       closeBtn.title = dashLang === 'sk' ? 'Zavrieť' : 'Close';
       closeBtn.setAttribute('aria-label', closeBtn.title);
       closeBtn.onclick = function(e) { e.stopPropagation(); closeDocDetail(); };
-      panel.appendChild(closeBtn);
+      if (!overlay) panel.appendChild(closeBtn);
       panel.appendChild(buildStepList(doc, data));
       var cols = document.createElement('div');
       cols.className = 'doc-detail-cols';
       panel.appendChild(cols);
 
-      // ── Left column: preview (skip if no preview available) ──
-      if (data.preview_url || data.gdrive_url) {
+      if (overlay) {
+        var qlLink = driveLink();
+        if (qlLink && opts.linkHost) opts.linkHost.appendChild(qlLink);
+        cols.classList.add('single');
+      } else if (data.preview_url || data.gdrive_url) {
+        // ── Left column: preview (skip if no preview available) ──
         var left = document.createElement('div');
         left.className = 'doc-detail-left';
 
@@ -2957,19 +3831,8 @@
           left.appendChild(noPreview);
         }
 
-        if (data.gdrive_url && /^https:\/\//.test(data.gdrive_url)) {
-          var gdriveLink = document.createElement('a');
-          gdriveLink.href = data.gdrive_url;
-          gdriveLink.target = '_blank';
-          gdriveLink.rel = 'noopener';
-          gdriveLink.className = 'detail-drive-link';
-          var gdriveLinkSpan = document.createElement('span');
-          gdriveLinkSpan.setAttribute('data-sk', 'Otvori\u0165 v Google Drive');
-          gdriveLinkSpan.setAttribute('data-en', 'Open in Google Drive');
-          gdriveLinkSpan.textContent = 'Open in Google Drive';
-          gdriveLink.appendChild(gdriveLinkSpan);
-          left.appendChild(gdriveLink);
-        }
+        var leftLink = driveLink();
+        if (leftLink) left.appendChild(leftLink);
 
         cols.appendChild(left);
       } else {
@@ -3150,6 +4013,480 @@
       applyDashLang();
     }
 
+    // ── Previews, grid and quick look (#948) ─────────────────────────────
+    /* Previews come from GET /api/doc-thumbnails?ids=…&size=s|l (the demo answers
+       from its own data): only for tiles near the viewport, up to 24 ids per call,
+       ONE request at a time (the server holds one DB connection), kept for the
+       page's lifetime and dropped when the patient changes. A document without a
+       preview (null) keeps its flat file-type mark: never an emoji, never a
+       broken image. */
+    var THUMB_BATCH = 24;
+    var DOC_VIEW_KEY = 'oncofiles_doc_view';
+    var SVG_NS = 'http://www.w3.org/2000/svg';
+    var docView = readDocView();       // list | grid, remembered per browser
+    var thumbCache = new Map();        // 'id:s' | 'id:l' -> {src, src_en?} | null (no preview)
+    var thumbWanted = [];              // small previews to ask for, in order
+    var thumbInFlight = [];            // cache keys ('id:size') of the one request under way
+    var thumbLargeWanted = null;       // the one large preview the quick look waits for
+    var thumbBusy = false;
+    var thumbGen = 0;                  // bumped when the patient changes: late answers are dropped
+    var thumbsOff = false;             // the route is not there (404): marks only
+    var thumbPumpTimer = null;
+    var thumbObserver = null;
+    var quickLook = { id: null, opener: null, details: {} };
+    var IMAGE_EXT = { jpg: 1, jpeg: 1, png: 1, gif: 1, webp: 1, heic: 1, heif: 1, tif: 1, tiff: 1, bmp: 1 };
+    var TEXT_DOC_EXT = { doc: 1, docx: 1, odt: 1, rtf: 1, txt: 1, md: 1, pages: 1 };
+    var SORT_DIR_TEXT = {
+      date: [['od najstarších', 'oldest first'], ['od najnovších', 'newest first']],
+      text: [['A–Z', 'A–Z'], ['Z–A', 'Z–A']],
+      stage: [['najprv vyžadujúce pozornosť', 'needs attention first'], ['najprv pripravené', 'ready first']]
+    };
+
+    function readDocView() {
+      try { return localStorage.getItem(DOC_VIEW_KEY) === 'grid' ? 'grid' : 'list'; }
+      catch (e) { return 'list'; }
+    }
+
+    function findDoc(id) {
+      for (var i = 0; i < docsData.length; i++) if (String(docsData[i].id) === String(id)) return docsData[i];
+      return null;
+    }
+
+    function indexOfDoc(list, id) {
+      for (var i = 0; i < list.length; i++) if (String(list[i].id) === String(id)) return i;
+      return -1;
+    }
+
+    function thumbKey(id, size) { return String(id) + ':' + size; }
+
+    /** pdf | image | doc | other, from the file name's extension (rows carry no mime type). */
+    function fileKind(d) {
+      var m = /\.([a-z0-9]{1,5})$/i.exec(String(d.filename || ''));
+      var ext = m ? m[1].toLowerCase() : '';
+      if (ext === 'pdf') return { kind: 'pdf', label: 'PDF' };
+      if (IMAGE_EXT[ext]) return { kind: 'image', label: ext === 'jpeg' ? 'JPG' : ext.toUpperCase().slice(0, 4) };
+      if (TEXT_DOC_EXT[ext]) return { kind: 'doc', label: ext === 'docx' ? 'DOC' : ext.toUpperCase().slice(0, 4) };
+      return { kind: 'other', label: ext ? ext.toUpperCase().slice(0, 4) : '' };
+    }
+
+    function svgEl(tag, attrs) {
+      var el = document.createElementNS(SVG_NS, tag);
+      Object.keys(attrs).forEach(function (k) { el.setAttribute(k, attrs[k]); });
+      return el;
+    }
+
+    /** The flat file-type mark: shown while a preview loads, and for good when there is none. */
+    function typeMark(d) {
+      var info = fileKind(d);
+      var svg = svgEl('svg', { viewBox: '0 0 40 52', 'class': 'type-mark type-' + info.kind, 'aria-hidden': 'true', focusable: 'false' });
+      if (info.kind === 'image') {
+        svg.appendChild(svgEl('rect', { x: 7, y: 9, width: 26, height: 20, rx: 2, 'class': 'tm-frame' }));
+        svg.appendChild(svgEl('circle', { cx: 26, cy: 15, r: 2.6, 'class': 'tm-sun' }));
+        svg.appendChild(svgEl('path', { d: 'M8.5 27.5l7-8.5 5 6 3-3.5 8 6z', 'class': 'tm-hill' }));
+      } else {
+        [[9, 24], [14, 18], [19, 22], [24, 14]].forEach(function (l) {
+          svg.appendChild(svgEl('rect', { x: 8, y: l[0], width: l[1], height: 2.2, rx: 1.1, 'class': 'tm-line' }));
+        });
+      }
+      if (info.label) {
+        svg.appendChild(svgEl('rect', { x: 8, y: 34, width: 24, height: 11, rx: 2.5, 'class': 'tm-badge' }));
+        var label = svgEl('text', { x: 20, y: 42.1, 'text-anchor': 'middle', 'class': 'tm-label' });
+        label.textContent = info.label;
+        svg.appendChild(label);
+      }
+      return svg;
+    }
+
+    /** The picture of a preview; if it cannot be drawn, the file-type mark takes its place. */
+    function thumbImg(entry, d) {
+      var img = document.createElement('img');
+      img.alt = '';
+      img.decoding = 'async';
+      img.addEventListener('error', function () {
+        var box = img.parentNode;
+        if (box) { box.replaceChild(typeMark(d), img); box.classList.remove('has-img'); }
+      });
+      img.src = loc(entry, 'src');
+      return img;
+    }
+
+    /** A preview tile: the cached picture, else the file-type mark (asked for when it scrolls near). */
+    function buildThumb(d) {
+      var box = document.createElement('span');
+      box.className = 'doc-thumb';
+      box.setAttribute('data-thumb-id', String(d.id));
+      var entry = hasPreview(d) ? thumbCache.get(thumbKey(d.id, 's')) : null;  // inbox: the mark for good
+      if (entry) {
+        box.appendChild(thumbImg(entry, d));
+        box.classList.add('has-img');
+      } else {
+        box.appendChild(typeMark(d));
+        if (entry === undefined && !thumbsOff) observeThumb(box);
+      }
+      return box;
+    }
+
+    function observeThumb(box) {
+      if (typeof IntersectionObserver === 'undefined') { wantThumb(box.getAttribute('data-thumb-id')); return; }
+      if (!thumbObserver) {
+        thumbObserver = new IntersectionObserver(function (entries, observer) {
+          entries.forEach(function (en) {
+            if (!en.isIntersecting) return;
+            observer.unobserve(en.target);
+            wantThumb(en.target.getAttribute('data-thumb-id'));
+          });
+        }, { rootMargin: '320px 0px' });
+      }
+      thumbObserver.observe(box);
+    }
+
+    function resetThumbObserver() {
+      if (thumbObserver) { thumbObserver.disconnect(); thumbObserver = null; }
+    }
+
+    function wantThumb(id) {
+      id = String(id);
+      if (!/^\d+$/.test(id)) return;  // only integer document ids go to /api/doc-thumbnails
+      if (thumbsOff || thumbCache.has(thumbKey(id, 's'))) return;
+      if (thumbWanted.indexOf(id) !== -1 || thumbInFlight.indexOf(thumbKey(id, 's')) !== -1) return;
+      thumbWanted.push(id);
+      scheduleThumbPump();
+    }
+
+    function scheduleThumbPump() {
+      if (thumbPumpTimer) return;
+      // a short pause collects the tiles of one scroll into one request
+      thumbPumpTimer = setTimeout(function () { thumbPumpTimer = null; pumpThumbs(); }, 40);
+    }
+
+    function isPreview(entry) {
+      function ok(src) { return typeof src === 'string' && src.indexOf('data:image/') === 0; }
+      return !!entry && ok(entry.src) && (entry.src_en == null || ok(entry.src_en));
+    }
+
+    /** One request at a time: the quick look's large preview first, else the next small batch. */
+    async function pumpThumbs() {
+      if (thumbBusy || thumbsOff) return;
+      var size, ids;
+      if (thumbLargeWanted !== null) { size = 'l'; ids = [thumbLargeWanted]; thumbLargeWanted = null; }
+      else if (thumbWanted.length) { size = 's'; ids = thumbWanted.splice(0, THUMB_BATCH); }
+      else return;
+      thumbBusy = true;
+      thumbInFlight = ids.map(function (id) { return thumbKey(id, size); });
+      var gen = thumbGen;
+      var answer = {};
+      try {
+        var data = await apiFetch('/api/doc-thumbnails?ids=' + ids.map(encodeURIComponent).join(',') + '&size=' + size);
+        answer = (data && data.thumbnails) || {};
+      } catch (e) {
+        if (e && e.status === 404) thumbsOff = true;  // marks stay; nothing is asked again
+      }
+      thumbBusy = false;
+      thumbInFlight = [];
+      if (gen === thumbGen) {
+        ids.forEach(function (id) {
+          var entry = answer[id];
+          thumbCache.set(thumbKey(id, size), isPreview(entry) ? entry : null);
+          if (size === 's') applyThumb(id);
+          else if (quickLook.id !== null && String(quickLook.id) === id) showLargePreview();
+        });
+      }
+      pumpThumbs();
+    }
+
+    /** A preview arrived: swap it into every tile of that document once it is decoded. */
+    function applyThumb(id) {
+      var entry = thumbCache.get(thumbKey(id, 's'));
+      var d = findDoc(id);
+      if (!entry || !d) return;  // null: the file-type mark stays
+      document.querySelectorAll('.doc-thumb[data-thumb-id]').forEach(function (box) {
+        if (box.getAttribute('data-thumb-id') !== String(id) || box.querySelector('img')) return;
+        var img = thumbImg(entry, d);
+        var swap = function () { clearEl(box); box.appendChild(img); box.classList.add('has-img'); };
+        if (img.decode) img.decode().then(swap, function () { thumbCache.set(thumbKey(id, 's'), null); });
+        else swap();
+      });
+      if (quickLook.id !== null && String(quickLook.id) === String(id)) showLargePreview();
+    }
+
+    function resetThumbs() {
+      thumbGen += 1;
+      thumbCache.clear();
+      thumbWanted = [];
+      thumbLargeWanted = null;
+      thumbsOff = false;
+      resetThumbObserver();
+    }
+
+    // ── Grid view ──
+
+    function setDocView(view) {
+      docView = view === 'grid' ? 'grid' : 'list';
+      try { localStorage.setItem(DOC_VIEW_KEY, docView); } catch (e) { /* no storage: the choice lasts this page */ }
+      updateDocViewControls();
+      renderTable();
+    }
+
+    function updateDocViewControls() {
+      var grid = docView === 'grid';
+      [['view-btn-list', !grid], ['view-btn-grid', grid]].forEach(function (pair) {
+        var btn = document.getElementById(pair[0]);
+        if (!btn) return;
+        btn.classList.toggle('is-active', pair[1]);
+        btn.setAttribute('aria-pressed', pair[1] ? 'true' : 'false');
+      });
+      var tableWrap = document.getElementById('doc-table-wrap');
+      var gridWrap = document.getElementById('doc-grid-wrap');
+      var legend = document.querySelector('.steps-legend');  // explains the list's step marks
+      if (tableWrap) tableWrap.hidden = grid;
+      if (gridWrap) gridWrap.hidden = !grid;
+      if (legend) legend.hidden = grid;
+      syncGridSort();
+    }
+
+    /** The grid's "sorted by" line follows the table's sort column and direction. */
+    function syncGridSort() {
+      var select = document.getElementById('grid-sort-col');
+      if (select) select.value = sortCol;
+      var arrow = document.getElementById('grid-sort-arrow');
+      if (arrow) arrow.textContent = sortAsc ? '▲' : '▼';
+      var label = document.getElementById('grid-sort-dir-label');
+      if (label) {
+        var kind = (sortCol === 'date' || sortCol === 'uploaded_at') ? 'date' : sortCol === 'stage_rank' ? 'stage' : 'text';
+        var text = SORT_DIR_TEXT[kind][sortAsc ? 0 : 1];
+        setI18n(label, text[0], text[1]);
+      }
+    }
+
+    function defaultSortAsc(col) { return !(col === 'uploaded_at' || col === 'date'); }
+
+    /** One sort for the table and the grid: header arrows, the grid line, the list. */
+    function setSort(col, asc) {
+      sortCol = col;
+      sortAsc = asc;
+      document.querySelectorAll('th[data-sort]').forEach(function (th) {
+        var on = th.dataset.sort === col;
+        if (on) th.setAttribute('aria-sort', asc ? 'ascending' : 'descending');
+        else th.removeAttribute('aria-sort');
+        th.querySelector('.sort-arrow').textContent = on ? (asc ? '▲' : '▼') : '';
+      });
+      syncGridSort();
+      renderTable();
+    }
+
+    function setGridSort(col) { setSort(col, defaultSortAsc(col)); }
+    function toggleSortDir() { setSort(sortCol, !sortAsc); }
+
+    function renderGrid(sorted) {
+      var grid = document.getElementById('doc-grid');
+      clearEl(grid);
+      sorted.forEach(function (d) { grid.appendChild(buildDocCard(d)); });
+    }
+
+    /** A card: preview, name (two lines), category and date, status shape and label. */
+    function buildDocCard(d) {
+      var li = document.createElement('li');
+      li.className = 'doc-card-item';
+      var card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'doc-card is-' + stageKind(d);
+      card.setAttribute('data-doc-id', String(d.id));
+      card.setAttribute('aria-haspopup', 'dialog');
+      var name = loc(d, 'filename');
+      card.title = name;
+
+      var shot = document.createElement('span');
+      shot.className = 'doc-card-shot';
+      shot.appendChild(buildThumb(d));
+      card.appendChild(shot);
+
+      var body = document.createElement('span');
+      body.className = 'doc-card-body';
+      body.appendChild(filenameText(name, 'doc-card-name'));
+      var meta = document.createElement('span');
+      meta.className = 'doc-card-meta';
+      meta.appendChild(d.category ? categoryBadge(d.category) : noCategoryMark());
+      var date = document.createElement('span');
+      date.className = 'doc-card-date';
+      date.textContent = fmtDate(d.date);
+      meta.appendChild(date);
+      body.appendChild(meta);
+      var foot = document.createElement('span');
+      foot.className = 'doc-card-stage';
+      foot.appendChild(stageChip(d, true));  // the steps are in the quick look's detail
+      body.appendChild(foot);
+      card.appendChild(body);
+
+      card.addEventListener('click', function () { openQuickLook(d.id, card); });
+      li.appendChild(card);
+      return li;
+    }
+
+    // ── Quick look: the first page large, the document detail beside it ──
+
+    function openQuickLook(id, opener) {
+      var d = findDoc(id);
+      var overlay = document.getElementById('quicklook');
+      if (!d || !overlay) return;
+      var wasOpen = quickLook.id !== null;
+      quickLook.id = d.id;
+      if (!wasOpen) {
+        quickLook.opener = opener || document.activeElement;
+        overlay.hidden = false;
+        lockPageScroll(true);
+      }
+      renderQuickLook();
+      if (!wasOpen) document.getElementById('ql-panel').focus();
+    }
+
+    function renderQuickLook() {
+      var d = findDoc(quickLook.id);
+      if (!d) return;
+      renderQuickLookNav();
+      showLargePreview();
+      renderQuickLookDetail(d);
+    }
+
+    /** Title, category and date, position in the list, previous / next. */
+    function renderQuickLookNav() {
+      var d = findDoc(quickLook.id);
+      if (!d) return;
+      document.getElementById('ql-title').textContent = loc(d, 'filename');
+      var meta = document.getElementById('ql-meta');
+      clearEl(meta);
+      meta.appendChild(d.category ? categoryBadge(d.category) : noCategoryMark());
+      var date = document.createElement('span');
+      date.className = 'ql-date';
+      date.textContent = fmtDate(d.date);
+      meta.appendChild(date);
+      meta.appendChild(stageChip(d));
+      var list = docListView().sorted;
+      var idx = indexOfDoc(list, d.id);
+      document.getElementById('ql-pos').textContent = idx >= 0 ? (idx + 1) + ' / ' + list.length : '';
+      var prev = document.getElementById('ql-prev');
+      var next = document.getElementById('ql-next');
+      prev.disabled = idx <= 0;
+      next.disabled = idx < 0 || idx >= list.length - 1;
+      // a button that just became disabled must not keep (and lose) the focus
+      if (document.activeElement === prev || document.activeElement === next) {
+        if (document.activeElement.disabled) document.getElementById('ql-panel').focus();
+      }
+    }
+
+    /** The large first page; until it arrives, the small preview or the file-type mark. */
+    function showLargePreview() {
+      var d = findDoc(quickLook.id);
+      var page = document.getElementById('ql-page');
+      if (!d || !page) return;
+      var preview = hasPreview(d);  // an inbox row shows its file-type mark as the page
+      var large = preview ? thumbCache.get(thumbKey(d.id, 'l')) : null;
+      var entry = large || (preview ? thumbCache.get(thumbKey(d.id, 's')) : null);
+      clearEl(page);
+      if (entry) {
+        var img = thumbImg(entry, d);
+        img.alt = (dashLang === 'sk' ? 'Prvá strana: ' : 'First page: ') + loc(d, 'filename');
+        page.appendChild(img);
+      } else {
+        page.appendChild(typeMark(d));
+      }
+      page.classList.toggle('has-img', !!entry);
+      var waiting = large === undefined && !thumbsOff;
+      page.classList.toggle('is-loading', waiting);
+      if (waiting && thumbInFlight.indexOf(thumbKey(d.id, 'l')) === -1) {
+        thumbLargeWanted = String(d.id);  // only the latest: arrows held down ask for one page
+        scheduleThumbPump();
+      }
+    }
+
+    function renderQuickLookDetail(d) {
+      var host = document.getElementById('ql-detail');
+      var links = document.getElementById('ql-links');
+      clearEl(links);
+      if (d.inbox) { renderInboxDetail(d, host, { overlay: true }); return; }  // nothing to fetch
+      var cached = quickLook.details[d.id];
+      if (cached) { renderDocDetail(d, cached, host, { overlay: true, linkHost: links }); return; }
+      clearEl(host);
+      var loading = document.createElement('div');
+      loading.className = 'doc-detail-loading';
+      loading.appendChild(setI18n(document.createElement('span'), 'Načítavam detail…', 'Loading detail…'));
+      host.appendChild(loading);
+      var id = d.id;
+      function failed() {
+        if (quickLook.id !== id) return;
+        clearEl(loading);
+        loading.appendChild(setI18n(document.createElement('span'), 'Detail sa nepodarilo načítať.', 'The detail could not be loaded.'));
+      }
+      apiFetch('/api/doc-detail/' + id).then(function (data) {
+        if (!data || data.error) { failed(); return; }
+        quickLook.details[id] = data;
+        if (quickLook.id === id) renderDocDetail(findDoc(id) || d, data, host, { overlay: true, linkHost: links });
+      }).catch(failed);
+    }
+
+    /** Left / Right: the previous or next document of the list as it is filtered and sorted now. */
+    function quickLookStep(delta) {
+      if (quickLook.id === null) return;
+      var list = docListView().sorted;
+      var idx = indexOfDoc(list, quickLook.id);
+      var next = idx < 0 ? null : list[idx + Number(delta)];
+      if (next) openQuickLook(next.id);
+    }
+
+    function closeQuickLook() {
+      var overlay = document.getElementById('quicklook');
+      if (!overlay || quickLook.id === null) return;
+      var lastId = quickLook.id;
+      var opener = quickLook.opener;
+      quickLook = { id: null, opener: null, details: {} };
+      thumbLargeWanted = null;
+      overlay.hidden = true;
+      ['ql-page', 'ql-detail', 'ql-links'].forEach(function (elId) { clearEl(document.getElementById(elId)); });
+      lockPageScroll(false);
+      // Focus goes back where the person was: the tile or card of the document
+      // shown last (the opener itself unless they moved on with the arrows).
+      var sel = docView === 'grid' ? '#doc-grid .doc-card' : '#doc-tbody .thumb-btn';
+      var target = findById(sel, 'data-doc-id', lastId);
+      if (!target && opener && opener.isConnected) target = opener;
+      if (target) target.focus();
+    }
+
+    function lockPageScroll(on) {
+      var root = document.documentElement;
+      if (on) {
+        var gap = window.innerWidth - root.clientWidth;  // keep the page from shifting
+        root.classList.add('ql-lock');
+        if (gap > 0) document.body.style.paddingRight = gap + 'px';
+      } else {
+        root.classList.remove('ql-lock');
+        document.body.style.paddingRight = '';
+      }
+    }
+
+    /** Tab stays inside the open quick look. */
+    function trapQuickLookFocus(e) {
+      var panel = document.getElementById('ql-panel');
+      var items = Array.prototype.filter.call(
+        panel.querySelectorAll('button, a[href], [tabindex]:not([tabindex="-1"])'),
+        function (el) { return !el.disabled && el.offsetParent !== null; });
+      if (!items.length) { e.preventDefault(); panel.focus(); return; }
+      var first = items[0];
+      var last = items[items.length - 1];
+      var active = document.activeElement;
+      if (e.shiftKey && (active === first || active === panel || !panel.contains(active))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (active === last || !panel.contains(active))) { e.preventDefault(); first.focus(); }
+    }
+
+    document.addEventListener('keydown', function (e) {
+      if (quickLook.id === null) return;
+      if (e.key === 'Tab') { trapQuickLookFocus(e); return; }
+      if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+        e.preventDefault();
+        quickLookStep(e.key === 'ArrowLeft' ? -1 : 1);
+      }
+    });
+
+    updateDocViewControls();
+
     // ── One event log ────────────────────────────────────────────────────
 
     var activityData = null;
@@ -3287,6 +4624,16 @@
       try {
         if (key === 'curated') { await loadCuratedOps(); return; }
         if (key === 'reread') { await loadRereadConsole(); return; }
+        if (key === 'inbound') {
+          var unmatched = await apiFetch('/api/inbound-unmatched');
+          if (unmatched) renderInboundUnmatched(unmatched);
+          return;
+        }
+        if (key === 'oauth') {
+          var oauthUsers = await apiFetch('/api/admin/oauth-users');
+          if (oauthUsers) renderOauthUsers(oauthUsers);
+          return;
+        }
         if (key === 'schedules') {
           var sched = await apiFetch('/api/schedules');
           if (sched) renderSchedules(sched);
@@ -3319,69 +4666,213 @@
       if (schedData) renderSchedules(schedData);
     });
 
+    // Why a job (or the whole scheduler / the curated loop) is not active here.
+    var SCHED_REASONS = {
+      sync_disabled: ['Plánovač je na tomto serveri vypnutý', 'The scheduler is off on this server'],
+      scheduler_not_running: ['Plánovač nebeží', 'The scheduler is not running'],
+      ai_nightly_only: ['AI beží len v noci; úloha patrí do starého režimu', 'AI runs nightly only; this job belongs to the legacy mode'],
+      legacy_mode: ['Starý režim (AI nie je len nočné)', 'Legacy mode (AI is not nightly-only)'],
+      run_on_startup_off: ['Jednorazový beh po štarte je vypnutý', 'The one-off run after start is off'],
+      gmail_calendar_disabled: ['Gmail a kalendár sú vypnuté', 'Gmail and Calendar are off'],
+      integrity_check_off: ['Kontrola integrity je vypnutá', 'The integrity check is off'],
+      not_registered: ['Na tomto serveri nie je zaregistrovaná', 'Not registered on this server'],
+      curated_disabled: ['Kurátorská slučka je vypnutá', 'The curated loop is off'],
+      google_disabled: ['Google integrácia je vypnutá', 'Google integration is off'],
+      not_running: ['Nebeží', 'Not running']
+    };
+
+    /** A server timestamp in the viewer's local time, as [sk, en]. */
+    function schedTimeBoth(value) {
+      var d = parseTs(value);
+      if (!d) return ['–', '–'];
+      var opts = { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
+      return [d.toLocaleString('sk-SK', opts), d.toLocaleString('en-GB', opts)];
+    }
+
+    function schedReasonText(code, sw) {
+      var r = SCHED_REASONS[code] || [code || '', code || ''];
+      var suffix = sw ? ' (' + sw + ')' : '';
+      return [r[0] + suffix, r[1] + suffix];
+    }
+
+    /** How often a job runs, as [sk, en]; daily/weekly times from next_run_at in local time. */
+    function schedCadence(j) {
+      var t = j.trigger;
+      if (!t) return ['jednorazovo, už prebehla', 'once, already ran'];
+      if (t.kind === 'interval' && t.seconds) {
+        if (t.seconds % 3600 === 0) {
+          var h = t.seconds / 3600;
+          return h === 1 ? ['každú hodinu', 'every hour'] : ['každých ' + h + ' h', 'every ' + h + ' h'];
+        }
+        var m = Math.round(t.seconds / 60);
+        return ['každých ' + m + ' min', 'every ' + m + ' min'];
+      }
+      if (t.kind === 'date') return ['jednorazovo', 'once'];
+      var next = parseTs(j.next_run_at);
+      if (t.kind === 'cron' && next && (t.cadence === 'daily' || t.cadence === 'weekly')) {
+        var tOpts = { hour: '2-digit', minute: '2-digit' };
+        var skT = next.toLocaleTimeString('sk-SK', tOpts), enT = next.toLocaleTimeString('en-GB', tOpts);
+        if (t.cadence === 'daily') return ['denne o ' + skT, 'daily at ' + enT];
+        return [next.toLocaleDateString('sk-SK', { weekday: 'long' }) + ' o ' + skT,
+                next.toLocaleDateString('en-GB', { weekday: 'long' }) + ' at ' + enT];
+      }
+      return [t.text || '', t.text || ''];
+    }
+
+    function schedLine(parent, sk, en, cls) {
+      var el = document.createElement('div');
+      if (cls) el.className = cls;
+      el.style.cssText = 'font-size:0.7rem;color:var(--text-muted);margin-top:0.125rem';
+      setI18n(el, sk, en);
+      parent.appendChild(el);
+      return el;
+    }
+
+    function renderSchedHeader(container, data) {
+      var s = data.scheduler || {};
+      var head = document.createElement('div');
+      head.style.cssText = 'display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem';
+      head.appendChild(stateMark(s.running ? 'ready' : 'attention'));
+      var txt = document.createElement('span');
+      if (s.running) {
+        var since = schedTimeBoth(s.started_at);
+        setI18n(txt, 'Plánovač beží od ' + since[0] + ' · úloh: ' + (s.job_count || 0),
+                'Scheduler running since ' + since[1] + ' · jobs: ' + (s.job_count || 0));
+      } else {
+        var off = s.off_reason || {};
+        var r = schedReasonText(off.reason || 'scheduler_not_running', off.switch);
+        setI18n(txt, r[0], r[1]);
+      }
+      head.appendChild(txt);
+      container.appendChild(head);
+    }
+
+    function renderCuratedLoop(container, c) {
+      if (!c) return;
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:flex-start;gap:0.75rem;padding:0.5rem 0;border-bottom:1px solid var(--border)';
+      var mark = stateMark(c.running ? 'ready' : 'attention');
+      mark.style.marginTop = '0.25rem';
+      row.appendChild(mark);
+      var info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0';
+      var nameEl = document.createElement('div');
+      nameEl.style.cssText = 'font-weight:600;color:var(--text);font-size:0.8125rem';
+      setI18n(nameEl, (c.name || {}).sk || 'Kurátorská slučka', (c.name || {}).en || 'Curated loop');
+      info.appendChild(nameEl);
+      schedLine(info, (c.desc || {}).sk || '', (c.desc || {}).en || '');
+      if (!c.running) {
+        var r = schedReasonText(c.reason, c.switch);
+        schedLine(info, r[0], r[1]);
+      } else {
+        var mode = c.continuous
+          ? ['priebežne: kontrola každých ' + c.poll_s + ' s, ' + c.chunk_docs + ' dok./beh',
+             'continuous: probe every ' + c.poll_s + ' s, ' + c.chunk_docs + ' docs/run']
+          : ['priebežný režim vypnutý', 'continuous mode off'];
+        var sweep = c.nightly_hour == null
+          ? ['súhrnný beh každú hodinu', 'sweep every hour']
+          : ['nočný súhrnný beh o ' + c.nightly_hour + ':00 (Bratislava)', 'nightly sweep at ' + c.nightly_hour + ':00 (Bratislava)'];
+        schedLine(info, mode[0] + ' · ' + sweep[0], mode[1] + ' · ' + sweep[1]);
+        var probe = schedTimeBoth(c.last_probe_at);
+        var auto = schedTimeBoth(c.last_auto_run_at);
+        schedLine(info,
+          'posledná kontrola: ' + probe[0] + ' · kontrol: ' + c.probes_total + ' · pacientov: ' + c.patients_probed,
+          'last probe: ' + probe[1] + ' · probes: ' + c.probes_total + ' · patients: ' + c.patients_probed);
+        schedLine(info,
+          'automatických behov: ' + c.auto_runs_total + ' (posledný ' + auto[0] + ') · čaká v inboxe: ' + c.pending_inbox_total + ' · zablokovaných: ' + c.runs_blocked_total,
+          'auto runs: ' + c.auto_runs_total + ' (last ' + auto[1] + ') · pending in inbox: ' + c.pending_inbox_total + ' · blocked: ' + c.runs_blocked_total);
+      }
+      row.appendChild(info);
+      container.appendChild(row);
+    }
+
+    function renderSchedJob(container, j) {
+      var row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:flex-start;gap:0.75rem;padding:0.5rem 0;border-bottom:1px solid var(--border)';
+      var kind = j.running ? 'progress' : ((j.last_error && (!j.last_ok || j.last_error > j.last_ok)) ? 'attention' : (j.last_ok ? 'ready' : 'progress'));
+      var mark = stateMark(kind);
+      mark.style.marginTop = '0.25rem';
+      row.appendChild(mark);
+
+      var info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0';
+      var nameEl = document.createElement('div');
+      nameEl.style.cssText = 'font-weight:600;color:var(--text);font-size:0.8125rem';
+      setI18n(nameEl, (j.name || {}).sk || j.id, (j.name || {}).en || j.id);
+      info.appendChild(nameEl);
+      if (j.desc && (j.desc.sk || j.desc.en)) schedLine(info, j.desc.sk, j.desc.en);
+      var cad = schedCadence(j);
+      schedLine(info, cad[0], cad[1]);
+      row.appendChild(info);
+
+      var status = document.createElement('div');
+      status.style.cssText = 'text-align:right;font-size:0.7rem;color:var(--text-muted);min-width:9rem;flex-shrink:0';
+      var last = document.createElement('div');
+      if (j.running) setI18n(last, 'Beží…', 'Running…');
+      else if (j.last_ok) {
+        var ok = schedTimeBoth(j.last_ok);
+        var dur = j.last_duration_s != null ? ' (' + j.last_duration_s + ' s)' : '';
+        setI18n(last, 'naposledy OK ' + ok[0] + dur, 'last OK ' + ok[1] + dur);
+      } else setI18n(last, 'ešte nebežala', 'not run yet');
+      status.appendChild(last);
+      if (j.next_run_at) {
+        var nx = schedTimeBoth(j.next_run_at);
+        var nextEl = document.createElement('div');
+        setI18n(nextEl, 'ďalší beh ' + nx[0], 'next run ' + nx[1]);
+        status.appendChild(nextEl);
+      }
+      if (j.last_error) {
+        var er = schedTimeBoth(j.last_error);
+        var errLine = document.createElement('div');
+        errLine.style.cssText = 'color:var(--err);margin-top:0.125rem';
+        var type = j.last_error_type ? ': ' + j.last_error_type : '';
+        setI18n(errLine, 'chyba ' + er[0] + type, 'error ' + er[1] + type);
+        status.appendChild(errLine);
+      }
+      row.appendChild(status);
+      container.appendChild(row);
+    }
+
+    function renderSchedInactive(container, inactive) {
+      if (!inactive || !inactive.length) return;
+      var det = document.createElement('details');
+      det.style.cssText = 'margin-top:0.75rem';
+      var sum = document.createElement('summary');
+      sum.style.cssText = 'cursor:pointer;font-size:0.75rem;color:var(--text-muted)';
+      setI18n(sum, 'Na tomto serveri neaktívne (' + inactive.length + ')', 'Not active on this server (' + inactive.length + ')');
+      det.appendChild(sum);
+      inactive.forEach(function(j) {
+        var row = document.createElement('div');
+        row.style.cssText = 'padding:0.375rem 0;border-bottom:1px solid var(--border)';
+        var nameEl = document.createElement('div');
+        nameEl.style.cssText = 'font-size:0.75rem;color:var(--text)';
+        setI18n(nameEl, (j.name || {}).sk || j.id, (j.name || {}).en || j.id);
+        row.appendChild(nameEl);
+        var r = schedReasonText(j.reason, j.switch);
+        schedLine(row, r[0], r[1]);
+        det.appendChild(row);
+      });
+      container.appendChild(det);
+    }
+
     function renderSchedules(data) {
       schedData = data;
       var container = document.getElementById('sched-jobs');
       clearEl(container);
 
+      renderSchedHeader(container, data);
+      if (schedFilter === 'all' || schedFilter === 'curated') renderCuratedLoop(container, data.curated_loop);
+
       var jobs = (data.jobs || []).filter(function(j) {
         return schedFilter === 'all' || j.group === schedFilter;
       });
-
-      var groupColors = { sync: 'var(--accent)', pipeline: 'var(--purple)', housekeeping: '#f59e0b', infra: 'var(--text-muted)' };
-
-      jobs.forEach(function(j) {
-        var row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:0.75rem;padding:0.5rem 0;border-bottom:1px solid var(--border)';
-
-        // Status indicator
-        var dot = document.createElement('span');
-        dot.style.cssText = 'width:8px;height:8px;border-radius:50%;flex-shrink:0;';
-        if (j.running) { dot.style.background = 'var(--accent)'; dot.style.boxShadow = '0 0 6px var(--accent)'; }
-        else if (j.last_error && !j.last_ok) { dot.style.background = '#ef4444'; }
-        else if (j.last_ok) { dot.style.background = '#22c55e'; }
-        else { dot.style.background = 'var(--text-muted)'; }
-        row.appendChild(dot);
-
-        // Name + schedule
-        var info = document.createElement('div');
-        info.style.cssText = 'flex:1;min-width:0';
-        var nameEl = document.createElement('div');
-        nameEl.style.cssText = 'font-weight:600;color:var(--text);font-size:0.8125rem';
-        nameEl.textContent = j.name;
-        info.appendChild(nameEl);
-        var descEl = document.createElement('div');
-        descEl.style.cssText = 'font-size:0.7rem;color:var(--text-muted);margin-top:0.125rem';
-        descEl.textContent = j.desc;
-        info.appendChild(descEl);
-        row.appendChild(info);
-
-        // Schedule badge
-        var badge = document.createElement('span');
-        badge.style.cssText = 'font-size:0.7rem;padding:0.125rem 0.5rem;border-radius:1rem;background:' + (groupColors[j.group] || 'var(--text-muted)') + ';color:white;white-space:nowrap;flex-shrink:0';
-        badge.textContent = j.schedule;
-        row.appendChild(badge);
-
-        // Last run
-        var status = document.createElement('div');
-        status.style.cssText = 'text-align:right;font-size:0.7rem;color:var(--text-muted);min-width:100px;flex-shrink:0';
-        if (j.running) { status.textContent = 'Running...'; status.style.color = 'var(--accent)'; }
-        else if (j.last_ok) {
-          var ago = Math.round((Date.now() - new Date(j.last_ok + 'Z').getTime()) / 60000);
-          status.textContent = (ago < 1 ? '<1' : ago) + 'm ago';
-          if (j.last_duration_s) status.textContent += ' (' + j.last_duration_s + 's)';
-        }
-        else { status.textContent = 'Not run yet'; }
-        if (j.last_error) {
-          var errLine = document.createElement('div');
-          errLine.style.cssText = 'color:#ef4444;font-size:0.65rem;margin-top:0.125rem';
-          errLine.textContent = 'Error: ' + (j.last_error_msg || 'unknown').substring(0, 60);
-          status.appendChild(errLine);
-        }
-        row.appendChild(status);
-
-        container.appendChild(row);
-      });
+      jobs.forEach(function(j) { renderSchedJob(container, j); });
+      if (!jobs.length && schedFilter !== 'curated') {
+        schedLine(container, 'Žiadne naplánované úlohy v tejto skupine.', 'No scheduled jobs in this group.');
+      }
+      renderSchedInactive(container, (data.inactive || []).filter(function(j) {
+        return schedFilter === 'all' || j.group === schedFilter;
+      }));
 
       // Prompt stats by call type
       var psContainer = document.getElementById('sched-prompt-stats');
@@ -3854,27 +5345,17 @@
     document.querySelectorAll('th[data-sort]').forEach(function(th) {
       th.addEventListener('click', function() {
         var col = th.dataset.sort;
-        if (sortCol === col) {
-          sortAsc = !sortAsc;
-        } else {
-          sortCol = col;
-          // dates open newest first, text columns A to Z
-          sortAsc = !(col === 'uploaded_at' || col === 'date');
-        }
-        document.querySelectorAll('th[data-sort]').forEach(function(other) {
-          other.removeAttribute('aria-sort');
-          other.querySelector('.sort-arrow').textContent = '';
-        });
-        th.setAttribute('aria-sort', sortAsc ? 'ascending' : 'descending');
-        th.querySelector('.sort-arrow').textContent = sortAsc ? '\u25B2' : '\u25BC';
-        renderTable();
+        // the same column flips; a new one opens dates newest first, text A to Z
+        setSort(col, sortCol === col ? !sortAsc : defaultSortAsc(col));
       });
     });
 
-    // Escape or a click on the backdrop closes the Connect-AI dialog (it holds
-    // nothing a person could lose). The patient wizard stays open on purpose.
+    // Escape or a click on the backdrop closes the quick look and the Connect-AI
+    // dialog (they hold nothing a person could lose). The patient wizard stays
+    // open on purpose.
     document.addEventListener('keydown', function(e) {
       if (e.key !== 'Escape') return;
+      if (quickLook.id !== null) { closeQuickLook(); return; }
       var share = document.getElementById('share-overlay');
       if (share && share.classList.contains('active')) { hideShareModal(); return; }
       var pop = document.getElementById('integration-popover');

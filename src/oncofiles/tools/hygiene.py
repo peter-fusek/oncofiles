@@ -9,6 +9,7 @@ import logging
 from fastmcp import Context
 
 from oncofiles.config import DOC_QUERY_LIMIT
+from oncofiles.files_api import name_len
 from oncofiles.gdrive_client import DriveWriteRefusedError
 from oncofiles.gdrive_folders import CATEGORY_MERGES, bilingual_name, en_key_from_folder_name
 from oncofiles.models import DocumentCategory
@@ -210,7 +211,12 @@ async def reconcile_gdrive(
                         f"Moved root file '{rf['name']}' to '{bilingual_name('other')}'"
                     )
                 except Exception:
-                    logger.warning("Failed to move root file '%s'", rf["name"], exc_info=True)
+                    logger.warning(
+                        "Failed to move root file %s (%s)",
+                        rf["id"],
+                        name_len(rf["name"]),
+                        exc_info=True,
+                    )
 
         # Soft-delete backup folders
         for bf in report["backup_folders"]:
@@ -266,7 +272,9 @@ async def validate_categories(
             meta = json.loads(doc.structured_metadata)
         except (json.JSONDecodeError, TypeError):
             logger.info(
-                "validate_categories: unparseable metadata for doc %d (%s)", doc.id, doc.filename
+                "validate_categories: unparseable metadata for doc %d (%s)",
+                doc.id,
+                name_len(doc.filename),
             )
             continue
 
@@ -282,10 +290,15 @@ async def validate_categories(
                 "suggested_category": target,
                 "reason": "legacy_category_merge",
             }
-            mismatches.append(entry)
-            if not dry_run:
+            # `corrected` is a list of entries (#930: it was `+= 1`, a TypeError
+            # on every real run); same shape as the document_type branch below.
+            if dry_run:
+                entry["action"] = "would_correct"
+                mismatches.append(entry)
+            else:
                 await db.update_document_category(doc.id, target)
-                corrected += 1
+                entry["action"] = "corrected"
+                corrected.append(entry)
             continue
 
         # Advocate keyword sweep (#180): detect advocate files in other categories
@@ -301,10 +314,13 @@ async def validate_categories(
                     "suggested_category": "advocate",
                     "reason": "advocate_keyword_in_filename",
                 }
-                mismatches.append(entry)
-                if not dry_run:
+                if dry_run:
+                    entry["action"] = "would_correct"
+                    mismatches.append(entry)
+                else:
                     await db.update_document_category(doc.id, "advocate")
-                    corrected += 1
+                    entry["action"] = "corrected"
+                    corrected.append(entry)
                 continue
 
         # Filename token rescue for "other" category (#176)
@@ -322,10 +338,13 @@ async def validate_categories(
                     "suggested_category": suggested,
                     "reason": "filename_token_detected",
                 }
-                mismatches.append(entry)
-                if not dry_run:
+                if dry_run:
+                    entry["action"] = "would_correct"
+                    mismatches.append(entry)
+                else:
                     await db.update_document_category(doc.id, suggested)
-                    corrected += 1
+                    entry["action"] = "corrected"
+                    corrected.append(entry)
                 continue
 
         doc_type = meta.get("document_type")
@@ -378,8 +397,9 @@ async def validate_categories(
                             )
                     except Exception:
                         logger.warning(
-                            "Failed to move %s in GDrive after category change",
-                            doc.filename,
+                            "Failed to move doc %d %s in GDrive after category change",
+                            doc.id,
+                            name_len(doc.filename),
                             exc_info=True,
                         )
 
@@ -437,7 +457,12 @@ async def validate_categories(
                                 patient_id=pid,
                             )
                     except Exception:
-                        logger.warning("Failed to move %s in GDrive", doc.filename, exc_info=True)
+                        logger.warning(
+                            "Failed to move doc %d %s in GDrive",
+                            doc.id,
+                            name_len(doc.filename),
+                            exc_info=True,
+                        )
                 entry["action"] = "corrected"
                 corrected.append(entry)
             else:
@@ -473,7 +498,12 @@ async def validate_categories(
                                 patient_id=pid,
                             )
                     except Exception:
-                        logger.warning("Failed to move %s in GDrive", doc.filename, exc_info=True)
+                        logger.warning(
+                            "Failed to move doc %d %s in GDrive",
+                            doc.id,
+                            name_len(doc.filename),
+                            exc_info=True,
+                        )
                 entry["action"] = "corrected"
                 corrected.append(entry)
             else:
@@ -603,8 +633,9 @@ async def _move_doc_to_correct_folder(
 
     await asyncio.to_thread(gdrive.move_file, doc.gdrive_id, target_folder)
     logger.info(
-        "Moved %s from %s to %s/%s",
-        doc.filename,
+        "Moved doc %d %s from %s to %s/%s",
+        doc.id,
+        name_len(doc.filename),
         doc.category.value,
         cat_name,
         year_month or "",
@@ -841,6 +872,7 @@ async def _build_document_matrix(
     patient_id: str | None = None,
     *,
     truncate_names: bool = True,
+    inbox_items: list[dict] | None = None,
 ) -> dict:
     """Build document status matrix — shared by MCP tool and HTTP API.
 
@@ -867,8 +899,16 @@ async def _build_document_matrix(
 
     ``truncate_names``: the MCP tool keeps filenames cut to 60 characters; the
     dashboard route passes ``False`` and gets them whole.
+
+    ``inbox_items``: the dashboard route passes the curated probe's in-memory
+    inbox snapshot of this patient (``tools.curated.inbox_snapshot``); each
+    file not yet backing a document row becomes an ``inbox: true`` row
+    (``dashboard_inbox``) in ``all`` / ``in_progress`` / ``attention`` and is
+    counted in ``total`` / ``in_progress`` / ``attention`` (and in
+    ``summary.inbox``), so ready + in_progress + attention == total still
+    holds. The MCP tool passes nothing.
     """
-    from oncofiles import document_stage
+    from oncofiles import dashboard_inbox, document_stage
     from oncofiles.dashboard_activity import iso_utc
 
     limit = min(max(1, limit), 2000)
@@ -884,7 +924,13 @@ async def _build_document_matrix(
     doc_statuses = []
     for doc in docs:
         has_ocr = doc.id in ocr_ids
-        has_date = doc.document_date is not None
+        # #919: a curated document dated by month only has document_date NULL
+        month = (
+            None
+            if doc.document_date is not None
+            else document_stage.document_month(doc.file_id, doc.structured_metadata, doc.filename)
+        )
+        has_date = doc.document_date is not None or month is not None
         stage = document_stage.describe(
             filename=doc.filename,
             file_id=doc.file_id,
@@ -896,9 +942,11 @@ async def _build_document_matrix(
             sync_state=doc.sync_state,
             outside_folder=bool(doc.gdrive_parent_outside_root),
             has_date=has_date,
+            mime_type=doc.mime_type,
         )
         status = {
             "doc": doc,
+            "month": month,
             "has_ocr": has_ocr,
             "has_ai": doc.ai_summary is not None,
             "has_metadata": bool(doc.structured_metadata),
@@ -911,6 +959,7 @@ async def _build_document_matrix(
             "ready": stage["ready"],
             "stage": stage["stage"],
             "attention_reason": stage["attention_reason"],
+            "review_reasons": stage["review_reasons"],
             "needs_attention": stage["attention_reason"] is not None,
         }
         status["in_progress"] = not status["ready"] and not status["needs_attention"]
@@ -953,7 +1002,9 @@ async def _build_document_matrix(
                 "id": doc.id,
                 "filename": doc.filename[:60] if truncate_names else doc.filename,
                 "category": doc.category.value,
-                "date": str(doc.document_date) if doc.document_date else None,
+                # #919: a month-precision date is "YYYY-MM" (the dashboard shows
+                # 03/2027); the shape itself says the precision, no extra key
+                "date": str(doc.document_date) if doc.document_date else s["month"],
                 "institution": doc.institution,
                 "gdrive_id": doc.gdrive_id,
                 "has_ocr": s["has_ocr"],
@@ -971,14 +1022,39 @@ async def _build_document_matrix(
                 "ready": s["ready"],
                 "stage": s["stage"],
                 "attention_reason": s["attention_reason"],
+                # #919: review reason codes (never text) for the per-row help
+                "review_reasons": list(s["review_reasons"]),
             }
         )
+
+    # Inbox files (#921 follow-up): no document row yet; shown from the probe's
+    # snapshot. A Drive id that already backs a row (filed meanwhile) is dropped.
+    known_drive_ids = {d.gdrive_id for d in docs if d.gdrive_id}
+    known_drive_ids |= {
+        d.file_id.split(":", 1)[1] for d in docs if (d.file_id or "").startswith("gdrive:")
+    }
+    # #950 phase 3: a held file copied into the inbox is already shown by its
+    # holding row (with its text); its inbox entry would be the same document.
+    from oncofiles.holding_store import is_holding_file_id, moved_drive_id
+
+    known_drive_ids |= {
+        m
+        for d in docs
+        if is_holding_file_id(d.file_id) and (m := moved_drive_id(d.structured_metadata))
+    }
+    inbox_rows = dashboard_inbox.rows(inbox_items, known_drive_ids)
+    if filter_param in ("all", "in_progress", "attention"):
+        for r in inbox_rows:
+            attention = r["attention_reason"] is not None
+            if filter_param == "all" or (filter_param == "attention") == attention:
+                all_filtered.append(r)
 
     total_matched = len(all_filtered)
     rows = all_filtered[offset : offset + limit]
 
     # Summary counts (reuse pre-computed flags)
-    total = len(doc_statuses)
+    inbox_attention = sum(1 for r in inbox_rows if r["attention_reason"] is not None)
+    total = len(doc_statuses) + len(inbox_rows)
     summary = {
         "total": total,
         "with_ocr": sum(1 for s in doc_statuses if s["has_ocr"]),
@@ -991,8 +1067,11 @@ async def _build_document_matrix(
         "fully_complete": sum(1 for s in doc_statuses if s["fully_complete"]),
         # the user-facing lifecycle: ready + in_progress + attention == total
         "ready": sum(1 for s in doc_statuses if s["ready"]),
-        "in_progress": sum(1 for s in doc_statuses if s["in_progress"]),
-        "attention": sum(1 for s in doc_statuses if s["needs_attention"]),
+        "in_progress": sum(1 for s in doc_statuses if s["in_progress"])
+        + len(inbox_rows)
+        - inbox_attention,
+        "attention": sum(1 for s in doc_statuses if s["needs_attention"]) + inbox_attention,
+        "inbox": len(inbox_rows),
         "extracted": sum(1 for s in doc_statuses if s["steps"]["extracted"]),
         "named": sum(1 for s in doc_statuses if s["steps"]["named"]),
         "filed": sum(1 for s in doc_statuses if s["steps"]["filed"]),
@@ -1045,8 +1124,9 @@ async def get_document_status_matrix(
 async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> str:
     """Get pipeline operations status: scheduled jobs, stage counts, and sync history.
 
-    Shows which automated processes run, their schedule, last results,
-    and how many documents are at each pipeline stage (OCR → AI → metadata → sync → rename).
+    Shows the jobs the running scheduler really has (trigger, next run, last
+    outcome; null when no scheduler runs in this process) and how many
+    documents are at each pipeline stage (OCR → AI → metadata → sync → rename).
 
     Args:
         patient_slug: Optional — explicit patient slug (#429). Stage counts are
@@ -1055,7 +1135,8 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
     import resource
     import sys
 
-    from oncofiles.config import SYNC_INTERVAL_MINUTES, VERSION
+    from oncofiles import scheduler_singleton
+    from oncofiles.config import VERSION
     from oncofiles.document_stage import is_named
     from oncofiles.sync import get_sync_status
 
@@ -1066,6 +1147,7 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
             file_id=d.file_id,
             structured_metadata=d.structured_metadata,
             patient_id=pid,
+            mime_type=d.mime_type,
         )
 
     db = _get_db(ctx)
@@ -1115,46 +1197,10 @@ async def get_pipeline_status(ctx: Context, patient_slug: str | None = None) -> 
                 and _named(d)
             ),
         },
-        "scheduled_jobs": [
-            {
-                "name": "startup_catchup",
-                "trigger": "60s after boot",
-                "description": "Import-only sync + category validation",
-            },
-            {
-                "name": "gdrive_sync",
-                "trigger": f"every {SYNC_INTERVAL_MINUTES} min",
-                "description": "Full bidirectional sync (incremental export if no changes)",
-            },
-            {
-                "name": "metadata_extraction",
-                "trigger": "daily 3:30 AM",
-                "description": "Backfill structured metadata (max 5 docs)",
-            },
-            {
-                "name": "category_validation",
-                "trigger": "daily 3:45 AM",
-                "description": "Auto-correct categories from AI document_type",
-            },
-            {
-                "name": "document_groups_backfill",
-                "trigger": "daily 3:55 AM",
-                "description": (
-                    "Sweep backlog for multi-doc PDFs + multi-file logical docs "
-                    "(split + consolidate)"
-                ),
-            },
-            {
-                "name": "oauth_cleanup",
-                "trigger": "daily 4:00 AM",
-                "description": "Remove expired MCP OAuth tokens",
-            },
-            {
-                "name": "rss_monitor",
-                "trigger": "every 6h",
-                "description": "Log RSS memory usage",
-            },
-        ],
+        # The jobs the process's scheduler really has (#704): a hand-written
+        # catalogue here went stale and listed jobs that no longer exist.
+        # None = no scheduler runs in this process (stdio, SYNC_ENABLED=false).
+        "scheduled_jobs": scheduler_singleton.job_snapshot(),
         "sync_current": current_sync,
         "sync_7d": {
             "total": sync_stats.get("total_syncs", 0),
@@ -1263,6 +1309,7 @@ async def audit_document_pipeline(ctx: Context, patient_slug: str | None = None)
             file_id=doc.file_id,
             structured_metadata=doc.structured_metadata,
             patient_id=pid,
+            mime_type=doc.mime_type,
         )
 
         # Extraction gaps only apply when the pipeline can actually extract.

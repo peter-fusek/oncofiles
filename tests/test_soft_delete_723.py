@@ -24,7 +24,7 @@ from oncofiles.models import (
 )
 from oncofiles.tools import conversations as conv_tools
 from oncofiles.tools import treatment as tx_tools
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 
 _YEAR = 2027  # synthetic dates only (CLAUDE.md fixture rule)
 
@@ -41,7 +41,7 @@ class _StubCtx:
 async def _event(db: Database, title: str = "Invented cycle") -> TreatmentEvent:
     return await db.insert_treatment_event(
         TreatmentEvent(event_date=date(_YEAR, 5, 1), event_type="chemo", title=title),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
 
@@ -55,13 +55,13 @@ async def _entry(db: Database, title: str = "Invented note") -> ConversationEntr
             participant="claude.ai",
             tags=["softdel"],
         ),
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
 
 async def _activity(db: Database, tool_name: str) -> list:
     return await db.search_activity_log(
-        ActivityLogQuery(patient_id=ERIKA_UUID, tool_name=tool_name, limit=50)
+        ActivityLogQuery(patient_id=PRIMARY_TEST_UUID, tool_name=tool_name, limit=50)
     )
 
 
@@ -80,7 +80,7 @@ async def test_migration_adds_soft_delete_columns(db: Database):
 
 async def test_delete_treatment_event_is_soft(db: Database):
     ev = await _event(db)
-    assert await db.delete_treatment_event(ev.id, patient_id=ERIKA_UUID, deleted_by="tester")
+    assert await db.delete_treatment_event(ev.id, patient_id=PRIMARY_TEST_UUID, deleted_by="tester")
 
     # The row is still there, marked deleted.
     async with db.db.execute(
@@ -90,10 +90,10 @@ async def test_delete_treatment_event_is_soft(db: Database):
     assert row is not None and row["deleted_at"] and row["deleted_by"] == "tester"
 
     # Hidden from every reader.
-    assert await db.get_treatment_event(ev.id, patient_id=ERIKA_UUID) is None
-    listed = await db.list_treatment_events(TreatmentEventQuery(), patient_id=ERIKA_UUID)
+    assert await db.get_treatment_event(ev.id, patient_id=PRIMARY_TEST_UUID) is None
+    listed = await db.list_treatment_events(TreatmentEventQuery(), patient_id=PRIMARY_TEST_UUID)
     assert ev.id not in {e.id for e in listed}
-    timeline = await db.get_treatment_events_timeline(patient_id=ERIKA_UUID)
+    timeline = await db.get_treatment_events_timeline(patient_id=PRIMARY_TEST_UUID)
     assert ev.id not in {e.id for e in timeline}
     async with db.db.execute(
         "SELECT COUNT(*) AS c FROM timeline_v WHERE entity = 'treatment_event' AND entity_id = ?",
@@ -102,36 +102,43 @@ async def test_delete_treatment_event_is_soft(db: Database):
         assert (await cur.fetchone())["c"] == 0
 
     # Still reachable explicitly, for review.
-    trashed = await db.get_treatment_event(ev.id, patient_id=ERIKA_UUID, include_deleted=True)
+    trashed = await db.get_treatment_event(
+        ev.id, patient_id=PRIMARY_TEST_UUID, include_deleted=True
+    )
     assert trashed is not None and trashed.deleted_at
 
 
 async def test_delete_treatment_event_twice_returns_false(db: Database):
     ev = await _event(db)
-    assert await db.delete_treatment_event(ev.id, patient_id=ERIKA_UUID)
-    assert await db.delete_treatment_event(ev.id, patient_id=ERIKA_UUID) is False
+    assert await db.delete_treatment_event(ev.id, patient_id=PRIMARY_TEST_UUID)
+    assert await db.delete_treatment_event(ev.id, patient_id=PRIMARY_TEST_UUID) is False
 
 
 async def test_update_does_not_touch_deleted_treatment_event(db: Database):
     ev = await _event(db)
-    await db.delete_treatment_event(ev.id, patient_id=ERIKA_UUID)
-    assert await db.update_treatment_event(ev.id, patient_id=ERIKA_UUID, title="changed") is None
+    await db.delete_treatment_event(ev.id, patient_id=PRIMARY_TEST_UUID)
+    assert (
+        await db.update_treatment_event(ev.id, patient_id=PRIMARY_TEST_UUID, title="changed")
+        is None
+    )
 
 
 async def test_restore_treatment_event(db: Database):
     ev = await _event(db)
-    await db.delete_treatment_event(ev.id, patient_id=ERIKA_UUID, deleted_by="tester")
-    restored = await db.restore_treatment_event(ev.id, patient_id=ERIKA_UUID, restored_by="tester")
+    await db.delete_treatment_event(ev.id, patient_id=PRIMARY_TEST_UUID, deleted_by="tester")
+    restored = await db.restore_treatment_event(
+        ev.id, patient_id=PRIMARY_TEST_UUID, restored_by="tester"
+    )
     assert restored is not None and restored.deleted_at is None
-    assert await db.get_treatment_event(ev.id, patient_id=ERIKA_UUID) is not None
+    assert await db.get_treatment_event(ev.id, patient_id=PRIMARY_TEST_UUID) is not None
     # Not in the trash any more → second restore is a no-op.
-    assert await db.restore_treatment_event(ev.id, patient_id=ERIKA_UUID) is None
+    assert await db.restore_treatment_event(ev.id, patient_id=PRIMARY_TEST_UUID) is None
 
 
 async def test_treatment_event_soft_delete_and_restore_are_audited(db: Database):
     ev = await _event(db, title="Secret title stays out of the log")
-    await db.delete_treatment_event(ev.id, patient_id=ERIKA_UUID, deleted_by="tester")
-    await db.restore_treatment_event(ev.id, patient_id=ERIKA_UUID, restored_by="tester")
+    await db.delete_treatment_event(ev.id, patient_id=PRIMARY_TEST_UUID, deleted_by="tester")
+    await db.restore_treatment_event(ev.id, patient_id=PRIMARY_TEST_UUID, restored_by="tester")
 
     deletes = await _activity(db, "soft_delete:treatment_events")
     restores = await _activity(db, "restore:treatment_events")
@@ -164,7 +171,9 @@ async def test_treatment_tools_soft_delete_and_restore(db: Database):
 
 async def test_delete_conversation_entry_is_soft(db: Database):
     entry = await _entry(db)
-    assert await db.delete_conversation_entry(entry.id, patient_id=ERIKA_UUID, deleted_by="tester")
+    assert await db.delete_conversation_entry(
+        entry.id, patient_id=PRIMARY_TEST_UUID, deleted_by="tester"
+    )
 
     async with db.db.execute(
         "SELECT deleted_at, deleted_by FROM conversation_entries WHERE id = ?", (entry.id,)
@@ -172,24 +181,26 @@ async def test_delete_conversation_entry_is_soft(db: Database):
         row = await cur.fetchone()
     assert row is not None and row["deleted_at"] and row["deleted_by"] == "tester"
 
-    assert await db.get_conversation_entry(entry.id, patient_id=ERIKA_UUID) is None
+    assert await db.get_conversation_entry(entry.id, patient_id=PRIMARY_TEST_UUID) is None
     found = await db.search_conversation_entries(
-        ConversationQuery(text="zebrafish"), patient_id=ERIKA_UUID
+        ConversationQuery(text="zebrafish"), patient_id=PRIMARY_TEST_UUID
     )
     assert found == []
-    assert await db.get_conversation_timeline(patient_id=ERIKA_UUID) == []
+    assert await db.get_conversation_timeline(patient_id=PRIMARY_TEST_UUID) == []
     # Re-import dedupe still sees it, so a deleted entry is not resurrected.
-    trashed = await db.get_conversation_entry(entry.id, patient_id=ERIKA_UUID, include_deleted=True)
+    trashed = await db.get_conversation_entry(
+        entry.id, patient_id=PRIMARY_TEST_UUID, include_deleted=True
+    )
     assert trashed is not None and trashed.deleted_by == "tester"
 
 
 async def test_restore_conversation_entry_and_audit(db: Database):
     entry = await _entry(db)
-    await db.delete_conversation_entry(entry.id, patient_id=ERIKA_UUID)
-    assert await db.delete_conversation_entry(entry.id, patient_id=ERIKA_UUID) is False
-    restored = await db.restore_conversation_entry(entry.id, patient_id=ERIKA_UUID)
+    await db.delete_conversation_entry(entry.id, patient_id=PRIMARY_TEST_UUID)
+    assert await db.delete_conversation_entry(entry.id, patient_id=PRIMARY_TEST_UUID) is False
+    restored = await db.restore_conversation_entry(entry.id, patient_id=PRIMARY_TEST_UUID)
     assert restored is not None and restored.title == "Invented note"
-    assert await db.restore_conversation_entry(entry.id, patient_id=ERIKA_UUID) is None
+    assert await db.restore_conversation_entry(entry.id, patient_id=PRIMARY_TEST_UUID) is None
     assert len(await _activity(db, "soft_delete:conversation_entries")) == 1
     assert len(await _activity(db, "restore:conversation_entries")) == 1
 
@@ -197,7 +208,7 @@ async def test_restore_conversation_entry_and_audit(db: Database):
 async def test_conversation_tools_hide_deleted(db: Database):
     keep = await _entry(db, title="Kept note")
     gone = await _entry(db, title="Gone note")
-    await db.delete_conversation_entry(gone.id, patient_id=ERIKA_UUID)
+    await db.delete_conversation_entry(gone.id, patient_id=PRIMARY_TEST_UUID)
     ctx = _StubCtx(db)
 
     assert "error" in json.loads(await conv_tools.get_conversation(ctx, gone.id))
@@ -216,14 +227,14 @@ async def test_journey_timeline_and_manifest_hide_deleted(db: Database):
     ev_keep = await _event(db, title="Kept cycle")
     ev_gone = await _event(db, title="Gone cycle")
     en_gone = await _entry(db, title="Gone note")
-    await db.delete_treatment_event(ev_gone.id, patient_id=ERIKA_UUID)
-    await db.delete_conversation_entry(en_gone.id, patient_id=ERIKA_UUID)
+    await db.delete_treatment_event(ev_gone.id, patient_id=PRIMARY_TEST_UUID)
+    await db.delete_conversation_entry(en_gone.id, patient_id=PRIMARY_TEST_UUID)
 
     journey = json.loads(await conv_tools.get_journey_timeline(_StubCtx(db)))
     te_ids = {i["id"] for i in journey["items"] if i["source_table"] == "treatment_events"}
     assert te_ids == {ev_keep.id}
 
-    manifest = await export_manifest(db, patient_id=ERIKA_UUID)
+    manifest = await export_manifest(db, patient_id=PRIMARY_TEST_UUID)
     assert [e["title"] for e in manifest["treatment_events"]] == ["Kept cycle"]
     assert manifest["conversation_entries"] == []
 

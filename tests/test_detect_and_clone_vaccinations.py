@@ -17,7 +17,7 @@ import pytest
 from oncofiles.models import Document, DocumentCategory
 from oncofiles.tools.enhance_tools import detect_and_clone_vaccinations
 
-ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+PRIMARY_TEST_UUID = "00000000-0000-4000-8000-000000000001"
 
 
 class _StubCtx:
@@ -37,7 +37,7 @@ async def _insert_vaccine_doc(db, *, filename, doc_id_hint="v"):
         size_bytes=500,
         gdrive_id=f"gdrive_{doc_id_hint}",
     )
-    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    inserted = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
     # The tool reads OCR text — seed some pages so .has_ocr_text() is true.
     await db.db.execute(
         "INSERT INTO document_pages (document_id, page_number, extracted_text) VALUES (?, 1, ?)",
@@ -57,7 +57,7 @@ async def _call_tool(db, *, dry_run, vaccine_events):
     orig_gdrive = mod._get_gdrive
 
     async def fake_resolve(_slug, _ctx):
-        return ERIKA_UUID
+        return PRIMARY_TEST_UUID
 
     async def fake_gdrive(_ctx, **_kwargs):
         return None  # dry_run code path skips gdrive; live path falls through
@@ -180,7 +180,7 @@ async def test_skips_non_vaccination_docs(db):
         mime_type="application/pdf",
         size_bytes=100,
     )
-    await db.insert_document(lab, patient_id=ERIKA_UUID)
+    await db.insert_document(lab, patient_id=PRIMARY_TEST_UUID)
 
     result = await _call_tool(db, dry_run=True, vaccine_events=EXAMPLE_EVENTS)
     assert result["scanned"] == 0

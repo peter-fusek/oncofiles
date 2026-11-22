@@ -17,7 +17,7 @@ from oncofiles.cloud_guard import local_only
 from oncofiles.curated import llm, llm_extract
 from oncofiles.curated import scorecard as sc
 from oncofiles.curated.facts_rules import Vocabulary
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 VOCAB = Vocabulary.from_rows(
     [
@@ -142,7 +142,7 @@ async def _seed(db):
         "INSERT INTO documents (id, file_id, filename, original_filename, category, mime_type, "
         "size_bytes, patient_id, gdrive_id, structured_metadata, document_date) "
         "VALUES (?, ?, ?, ?, 'labs', 'application/pdf', 1, ?, ?, ?, '2027-03-17')",
-        (DOC, f"gdrive:g{DOC}", f"d{DOC}.pdf", f"d{DOC}.pdf", ERIKA_UUID, f"g{DOC}",
+        (DOC, f"gdrive:g{DOC}", f"d{DOC}.pdf", f"d{DOC}.pdf", PRIMARY_TEST_UUID, f"g{DOC}",
          json.dumps(meta)),
     )  # fmt: skip
     await db.save_ocr_page(DOC, 1, PAGE, "curated-sidecar")
@@ -177,7 +177,7 @@ async def test_the_preview_reports_labels_in_memory_only(db, monkeypatch, caplog
     monkeypatch.setattr(llm, "chat", answer)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
     monkeypatch.setattr(tool, "_stopping", threading.Event())  # an earlier test may leave it set
-    monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: {"2027-01-02"}})
+    monkeypatch.setattr(tool, "_readme_births", {PRIMARY_TEST_UUID: {"2027-01-02"}})
     rows = [{"code": "QALT", "category": "lab", "unit_canonical": "µkat/L",
              "aliases": ["QALT"], "unit_conversions": {}},
             {"code": "ZORBITAN", "category": "lab", "unit_canonical": "mmol/L",
@@ -185,7 +185,7 @@ async def test_the_preview_reports_labels_in_memory_only(db, monkeypatch, caplog
     monkeypatch.setattr(db, "fact_code_vocabulary", lambda: _async(rows))
     caplog.set_level(logging.DEBUG)
     await tool.curated_llm_extract_preview(_ctx(db), document_ids=[DOC])
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     job = json.loads(await tool.curated_reocr_status(_ctx(db)))
     assert job["state"] == "done", job
     doc = job["report"]["documents"][0]

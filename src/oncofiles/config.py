@@ -76,6 +76,10 @@ LOCAL_LLM_BASE_URL: str = os.environ.get("LOCAL_LLM_BASE_URL", "").rstrip("/")
 LOCAL_LLM_API_KEY: str = os.environ.get("LOCAL_LLM_API_KEY", "")
 LOCAL_LLM_MODEL: str = os.environ.get("LOCAL_LLM_MODEL", "")
 LOCAL_LLM_TIMEOUT_S: float = float(os.environ.get("LOCAL_LLM_TIMEOUT_S", "900"))
+# #925: extra hosts LOCAL_LLM_BASE_URL may point at (comma list, case-insensitive),
+# beyond loopback / RFC1918 / ULA / host.lima.internal / .local .internal .lan.
+# Runtime-only env; checked by curated/llm.base_url_refusal before every request.
+LOCAL_LLM_ALLOWED_HOSTS: str = os.environ.get("LOCAL_LLM_ALLOWED_HOSTS", "")
 # Re-OCR self-limit (#667): no new document is started while RSS is above this,
 # well under HARD_RSS_CEILING_MB, which makes /health exit the process.
 REOCR_RSS_LIMIT_MB: float = float(os.environ.get("REOCR_RSS_LIMIT_MB", "450"))
@@ -253,7 +257,7 @@ MAX_DOCUMENTS_PER_PATIENT: int = int(os.environ.get("MAX_DOCUMENTS_PER_PATIENT",
 # Query ceiling for "every document for this patient" reads (#548).
 #
 # Deliberately NOT equal to the FUP cap. The cap governs *future inserts*; it
-# does not bound rows that already exist — q1b sits at ~296 documents under a
+# does not bound rows that already exist — one patient sits at ~296 documents under a
 # cap of 200 today. So if a read limit tracked the cap exactly, LOWERING the cap
 # would silently truncate reads over existing data. In `_cleanup_orphan_ocr`
 # (removed in #734) that meant trashing OCR sidecars for the documents that fell

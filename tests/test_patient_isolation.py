@@ -10,7 +10,7 @@ import pytest
 from oncofiles.database import Database
 from oncofiles.models import LabTrendQuery
 from tests.helpers import (
-    ERIKA_UUID,
+    PRIMARY_TEST_UUID,
     TEST_PATIENT_UUID,
     make_doc,
     make_lab_value,
@@ -27,10 +27,10 @@ PETER_UUID = "00000000-0000-4000-8000-000000000003"
 @pytest.mark.asyncio
 async def test_documents_isolated_by_patient(db: Database):
     """Documents inserted for patient A are invisible to patient B."""
-    doc_a = await db.insert_document(make_doc(file_id="f_a1"), patient_id=ERIKA_UUID)
+    doc_a = await db.insert_document(make_doc(file_id="f_a1"), patient_id=PRIMARY_TEST_UUID)
     doc_b = await db.insert_document(make_doc(file_id="f_b1"), patient_id=TEST_PATIENT_UUID)
 
-    docs_a = await db.list_documents(patient_id=ERIKA_UUID)
+    docs_a = await db.list_documents(patient_id=PRIMARY_TEST_UUID)
     docs_b = await db.list_documents(patient_id=TEST_PATIENT_UUID)
 
     assert len(docs_a) == 1
@@ -42,20 +42,20 @@ async def test_documents_isolated_by_patient(db: Database):
 @pytest.mark.asyncio
 async def test_document_count_isolated(db: Database):
     """count_documents returns only the patient's own documents."""
-    await db.insert_document(make_doc(file_id="f1"), patient_id=ERIKA_UUID)
-    await db.insert_document(make_doc(file_id="f2"), patient_id=ERIKA_UUID)
+    await db.insert_document(make_doc(file_id="f1"), patient_id=PRIMARY_TEST_UUID)
+    await db.insert_document(make_doc(file_id="f2"), patient_id=PRIMARY_TEST_UUID)
     await db.insert_document(make_doc(file_id="f3"), patient_id=TEST_PATIENT_UUID)
 
-    assert await db.count_documents(patient_id=ERIKA_UUID) == 2
+    assert await db.count_documents(patient_id=PRIMARY_TEST_UUID) == 2
     assert await db.count_documents(patient_id=TEST_PATIENT_UUID) == 1
 
 
 @pytest.mark.asyncio
 async def test_document_by_file_id_isolated(db: Database):
     """get_document_by_file_id returns None for another patient's file_id."""
-    await db.insert_document(make_doc(file_id="shared_name"), patient_id=ERIKA_UUID)
+    await db.insert_document(make_doc(file_id="shared_name"), patient_id=PRIMARY_TEST_UUID)
 
-    found = await db.get_document_by_file_id("shared_name", patient_id=ERIKA_UUID)
+    found = await db.get_document_by_file_id("shared_name", patient_id=PRIMARY_TEST_UUID)
     assert found is not None
 
     not_found = await db.get_document_by_file_id("shared_name", patient_id=TEST_PATIENT_UUID)
@@ -65,10 +65,10 @@ async def test_document_by_file_id_isolated(db: Database):
 @pytest.mark.asyncio
 async def test_trash_isolated(db: Database):
     """Soft-deleted documents only appear in the owning patient's trash."""
-    doc = await db.insert_document(make_doc(file_id="trash_me"), patient_id=ERIKA_UUID)
+    doc = await db.insert_document(make_doc(file_id="trash_me"), patient_id=PRIMARY_TEST_UUID)
     await db.delete_document(doc.id)
 
-    jana_trash = await db.list_trash(patient_id=ERIKA_UUID)
+    jana_trash = await db.list_trash(patient_id=PRIMARY_TEST_UUID)
     other_trash = await db.list_trash(patient_id=TEST_PATIENT_UUID)
 
     assert len(jana_trash) == 1
@@ -83,12 +83,16 @@ async def test_treatment_events_isolated(db: Database):
     """Treatment events for patient A are invisible to patient B."""
     from oncofiles.models import TreatmentEventQuery
 
-    await db.insert_treatment_event(make_treatment_event(title="Jana chemo"), patient_id=ERIKA_UUID)
+    await db.insert_treatment_event(
+        make_treatment_event(title="Jana chemo"), patient_id=PRIMARY_TEST_UUID
+    )
     await db.insert_treatment_event(
         make_treatment_event(title="Test chemo"), patient_id=TEST_PATIENT_UUID
     )
 
-    events_a = await db.list_treatment_events(TreatmentEventQuery(limit=50), patient_id=ERIKA_UUID)
+    events_a = await db.list_treatment_events(
+        TreatmentEventQuery(limit=50), patient_id=PRIMARY_TEST_UUID
+    )
     events_b = await db.list_treatment_events(
         TreatmentEventQuery(limit=50), patient_id=TEST_PATIENT_UUID
     )
@@ -106,14 +110,14 @@ async def test_treatment_events_isolated(db: Database):
 async def test_research_entries_isolated(db: Database):
     """Research entries for patient A are invisible to patient B."""
     await db.insert_research_entry(
-        make_research_entry(title="Jana research"), patient_id=ERIKA_UUID
+        make_research_entry(title="Jana research"), patient_id=PRIMARY_TEST_UUID
     )
     await db.insert_research_entry(
         make_research_entry(title="Test research", external_id="PMID99999"),
         patient_id=TEST_PATIENT_UUID,
     )
 
-    results_a = await db.list_research_entries(patient_id=ERIKA_UUID)
+    results_a = await db.list_research_entries(patient_id=PRIMARY_TEST_UUID)
     results_b = await db.list_research_entries(patient_id=TEST_PATIENT_UUID)
 
     assert len(results_a) == 1
@@ -128,14 +132,14 @@ async def test_research_entries_isolated(db: Database):
 @pytest.mark.asyncio
 async def test_lab_values_isolated_via_document(db: Database):
     """Lab values are isolated by patient through the documents table join."""
-    doc_a = await db.insert_document(make_doc(file_id="lab_a"), patient_id=ERIKA_UUID)
+    doc_a = await db.insert_document(make_doc(file_id="lab_a"), patient_id=PRIMARY_TEST_UUID)
     doc_b = await db.insert_document(make_doc(file_id="lab_b"), patient_id=TEST_PATIENT_UUID)
 
     await db.insert_lab_values([make_lab_value(document_id=doc_a.id, parameter="WBC", value=6.0)])
     await db.insert_lab_values([make_lab_value(document_id=doc_b.id, parameter="WBC", value=9.0)])
 
     # get_latest_lab_value with patient_id
-    latest_a = await db.get_latest_lab_value("WBC", patient_id=ERIKA_UUID)
+    latest_a = await db.get_latest_lab_value("WBC", patient_id=PRIMARY_TEST_UUID)
     latest_b = await db.get_latest_lab_value("WBC", patient_id=TEST_PATIENT_UUID)
 
     assert latest_a is not None
@@ -147,13 +151,13 @@ async def test_lab_values_isolated_via_document(db: Database):
 @pytest.mark.asyncio
 async def test_lab_snapshot_isolated(db: Database):
     """get_lab_snapshot with patient_id only returns values for that patient's documents."""
-    doc_a = await db.insert_document(make_doc(file_id="snap_a"), patient_id=ERIKA_UUID)
+    doc_a = await db.insert_document(make_doc(file_id="snap_a"), patient_id=PRIMARY_TEST_UUID)
     doc_b = await db.insert_document(make_doc(file_id="snap_b"), patient_id=TEST_PATIENT_UUID)
 
     await db.insert_lab_values([make_lab_value(document_id=doc_a.id, parameter="PLT", value=200)])
     await db.insert_lab_values([make_lab_value(document_id=doc_b.id, parameter="PLT", value=150)])
 
-    snap_a = await db.get_lab_snapshot(doc_a.id, patient_id=ERIKA_UUID)
+    snap_a = await db.get_lab_snapshot(doc_a.id, patient_id=PRIMARY_TEST_UUID)
     snap_b_wrong = await db.get_lab_snapshot(doc_a.id, patient_id=TEST_PATIENT_UUID)
 
     assert len(snap_a) == 1
@@ -164,13 +168,13 @@ async def test_lab_snapshot_isolated(db: Database):
 @pytest.mark.asyncio
 async def test_lab_trends_isolated(db: Database):
     """get_lab_trends filters by patient_id in query."""
-    doc_a = await db.insert_document(make_doc(file_id="trend_a"), patient_id=ERIKA_UUID)
+    doc_a = await db.insert_document(make_doc(file_id="trend_a"), patient_id=PRIMARY_TEST_UUID)
     doc_b = await db.insert_document(make_doc(file_id="trend_b"), patient_id=TEST_PATIENT_UUID)
 
     await db.insert_lab_values([make_lab_value(document_id=doc_a.id, parameter="CEA", value=3.5)])
     await db.insert_lab_values([make_lab_value(document_id=doc_b.id, parameter="CEA", value=8.0)])
 
-    trends_a = await db.get_lab_trends(LabTrendQuery(parameter="CEA", patient_id=ERIKA_UUID))
+    trends_a = await db.get_lab_trends(LabTrendQuery(parameter="CEA", patient_id=PRIMARY_TEST_UUID))
     trends_b = await db.get_lab_trends(LabTrendQuery(parameter="CEA", patient_id=TEST_PATIENT_UUID))
 
     assert len(trends_a) == 1
@@ -182,13 +186,13 @@ async def test_lab_trends_isolated(db: Database):
 @pytest.mark.asyncio
 async def test_all_latest_lab_values_isolated(db: Database):
     """get_all_latest_lab_values only returns the requesting patient's values."""
-    doc_a = await db.insert_document(make_doc(file_id="all_a"), patient_id=ERIKA_UUID)
+    doc_a = await db.insert_document(make_doc(file_id="all_a"), patient_id=PRIMARY_TEST_UUID)
     doc_b = await db.insert_document(make_doc(file_id="all_b"), patient_id=TEST_PATIENT_UUID)
 
     await db.insert_lab_values([make_lab_value(document_id=doc_a.id, parameter="HGB", value=120)])
     await db.insert_lab_values([make_lab_value(document_id=doc_b.id, parameter="ALT", value=45)])
 
-    latest_a = await db.get_all_latest_lab_values(patient_id=ERIKA_UUID)
+    latest_a = await db.get_all_latest_lab_values(patient_id=PRIMARY_TEST_UUID)
     latest_b = await db.get_all_latest_lab_values(patient_id=TEST_PATIENT_UUID)
 
     params_a = {v.parameter for v in latest_a}
@@ -205,13 +209,13 @@ async def test_distinct_lab_dates_isolated(db: Database):
     """get_distinct_lab_dates only returns dates from the requesting patient's labs."""
     from datetime import date
 
-    doc_a = await db.insert_document(make_doc(file_id="date_a"), patient_id=ERIKA_UUID)
+    doc_a = await db.insert_document(make_doc(file_id="date_a"), patient_id=PRIMARY_TEST_UUID)
     doc_b = await db.insert_document(make_doc(file_id="date_b"), patient_id=TEST_PATIENT_UUID)
 
     await db.insert_lab_values([make_lab_value(document_id=doc_a.id, lab_date=date(2026, 1, 10))])
     await db.insert_lab_values([make_lab_value(document_id=doc_b.id, lab_date=date(2026, 2, 20))])
 
-    dates_a = await db.get_distinct_lab_dates(patient_id=ERIKA_UUID)
+    dates_a = await db.get_distinct_lab_dates(patient_id=PRIMARY_TEST_UUID)
     dates_b = await db.get_distinct_lab_dates(patient_id=TEST_PATIENT_UUID)
 
     assert "2026-01-10" in dates_a
@@ -225,7 +229,7 @@ async def test_lab_values_by_date_isolated(db: Database):
     """get_lab_values_by_date only returns the requesting patient's values."""
     from datetime import date as d
 
-    doc_a = await db.insert_document(make_doc(file_id="bydate_a"), patient_id=ERIKA_UUID)
+    doc_a = await db.insert_document(make_doc(file_id="bydate_a"), patient_id=PRIMARY_TEST_UUID)
     doc_b = await db.insert_document(make_doc(file_id="bydate_b"), patient_id=TEST_PATIENT_UUID)
 
     shared_date = d(2026, 3, 15)
@@ -236,7 +240,7 @@ async def test_lab_values_by_date_isolated(db: Database):
         [make_lab_value(document_id=doc_b.id, lab_date=shared_date, parameter="WBC", value=12.0)]
     )
 
-    vals_a = await db.get_lab_values_by_date("2026-03-15", patient_id=ERIKA_UUID)
+    vals_a = await db.get_lab_values_by_date("2026-03-15", patient_id=PRIMARY_TEST_UUID)
     vals_b = await db.get_lab_values_by_date("2026-03-15", patient_id=TEST_PATIENT_UUID)
 
     assert len(vals_a) == 1 and vals_a[0].value == 5.0
@@ -252,14 +256,14 @@ async def test_agent_state_per_patient_stored(db: Database):
     from oncofiles.models import AgentState
 
     await db.set_agent_state(
-        AgentState(agent_id="oncoteam", key="memo", value="jana data", patient_id=ERIKA_UUID)
+        AgentState(agent_id="oncoteam", key="memo", value="jana data", patient_id=PRIMARY_TEST_UUID)
     )
     await db.set_agent_state(
         AgentState(agent_id="oncoteam", key="memo", value="test data", patient_id=TEST_PATIENT_UUID)
     )
 
     # Per-patient queries return only that patient's state
-    state_a = await db.get_agent_state("memo", patient_id=ERIKA_UUID)
+    state_a = await db.get_agent_state("memo", patient_id=PRIMARY_TEST_UUID)
     state_b = await db.get_agent_state("memo", patient_id=TEST_PATIENT_UUID)
     assert state_a is not None and state_a.value == "jana data"
     assert state_b is not None and state_b.value == "test data"
@@ -276,10 +280,10 @@ async def test_patient_context_isolated(db: Database):
     ctx_a = {"name": "Jana", "diagnosis": "CRC stage IV"}
     ctx_b = {"name": "Test Patient", "diagnosis": "Lung cancer"}
 
-    await patient_context.save_to_db(db.db, ctx_a, patient_id=ERIKA_UUID)
+    await patient_context.save_to_db(db.db, ctx_a, patient_id=PRIMARY_TEST_UUID)
     await patient_context.save_to_db(db.db, ctx_b, patient_id=TEST_PATIENT_UUID)
 
-    loaded_a = await patient_context.load_from_db(db.db, patient_id=ERIKA_UUID)
+    loaded_a = await patient_context.load_from_db(db.db, patient_id=PRIMARY_TEST_UUID)
     loaded_b = await patient_context.load_from_db(db.db, patient_id=TEST_PATIENT_UUID)
 
     assert loaded_a["name"] == "Jana"
@@ -294,20 +298,20 @@ async def test_patient_context_update_doesnt_leak(db: Database):
     from oncofiles import patient_context
 
     await patient_context.save_to_db(
-        db.db, {"name": "Jana", "note": "original"}, patient_id=ERIKA_UUID
+        db.db, {"name": "Jana", "note": "original"}, patient_id=PRIMARY_TEST_UUID
     )
     await patient_context.save_to_db(
         db.db, {"name": "Test", "note": "original"}, patient_id=TEST_PATIENT_UUID
     )
 
     # Update only jana's context
-    patient_context.update_context({"note": "updated"}, patient_id=ERIKA_UUID)
+    patient_context.update_context({"note": "updated"}, patient_id=PRIMARY_TEST_UUID)
     await patient_context.save_to_db(
-        db.db, patient_context.get_context(ERIKA_UUID), patient_id=ERIKA_UUID
+        db.db, patient_context.get_context(PRIMARY_TEST_UUID), patient_id=PRIMARY_TEST_UUID
     )
 
     # Reload both
-    loaded_a = await patient_context.load_from_db(db.db, patient_id=ERIKA_UUID)
+    loaded_a = await patient_context.load_from_db(db.db, patient_id=PRIMARY_TEST_UUID)
     loaded_b = await patient_context.load_from_db(db.db, patient_id=TEST_PATIENT_UUID)
 
     assert loaded_a["note"] == "updated"
@@ -320,7 +324,7 @@ async def test_patient_context_update_doesnt_leak(db: Database):
 @pytest.mark.asyncio
 async def test_three_patients_fully_isolated(db: Database):
     """Full isolation test across 3 patients with overlapping data types."""
-    patients = [ERIKA_UUID, TEST_PATIENT_UUID, PETER_UUID]
+    patients = [PRIMARY_TEST_UUID, TEST_PATIENT_UUID, PETER_UUID]
 
     # Insert documents for each patient
     docs = {}

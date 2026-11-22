@@ -1,8 +1,8 @@
 """Regression tests for three small old defects.
 
 #551  the two legacy backfill scripts called ``list_documents`` without the
-      required ``patient_id`` (TypeError before doing anything). They now take
-      an explicit patient and read only that patient's documents.
+      required ``patient_id``. The scripts were removed in #930; the AST sweep
+      below keeps every ``list_documents`` call in src/ patient-scoped.
 #542  the weekly analytics job read four attributes that never existed and
       swallowed the AttributeError, so it never wrote its summary.
 #545  the ``repair_gdrive_folder_hygiene`` docstring said the smallest
@@ -22,193 +22,14 @@ from pathlib import Path
 import pytest
 
 from oncofiles.constants import SYSTEM_NO_PATIENT
-from oncofiles.database import Database
 from oncofiles.database._analytics import PipelineStats, PromptStats, ToolUsageStats
 from oncofiles.models import ActivityLogEntry
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "oncofiles"
 
-SECOND_UUID = "00000000-0000-4000-8000-0000000000b2"
-SECOND_SLUG = "bob-test"
-FIRST_SLUG = "jana-test"
-MODIFIED = "2029-11-23T17:41:00Z"
 
-
-async def _seed_two_patients(db: Database) -> None:
-    """Two patients; two documents for the first, one for the second."""
-    await db.db.execute(
-        "UPDATE patients SET slug = ? WHERE patient_id = ?", (FIRST_SLUG, ERIKA_UUID)
-    )
-    await db.db.execute(
-        "INSERT INTO patients (patient_id, slug, display_name) VALUES (?, ?, ?)",
-        (SECOND_UUID, SECOND_SLUG, "Bob Test"),
-    )
-    await db.db.commit()
-    for file_id, name, pid in (
-        ("first_a", "20270301_JanaTest_Clinic_Labs_BloodCount.pdf", ERIKA_UUID),
-        ("first_b", "20270302_JanaTest_Clinic_Report_Visit.pdf", ERIKA_UUID),
-        ("second_a", "20270303_BobTest_Clinic_Labs_BloodCount.pdf", SECOND_UUID),
-    ):
-        await db.insert_document(
-            make_doc(file_id=file_id, filename=name, original_filename=name),
-            patient_id=pid,
-        )
-
-
-# ── #551: legacy scripts are patient-scoped ──────────────────────────────
-
-
-class _FakeDrive:
-    """Lists one Drive file per seeded document (all three patients' names)."""
-
-    def __init__(self) -> None:
-        self.listed: list[str] = []
-
-    def list_folder(self, folder_id: str) -> list[dict]:
-        self.listed.append(folder_id)
-        return [
-            {
-                "id": "drv-1",
-                "name": "20270301_JanaTest_Clinic_Labs_BloodCount.pdf",
-                "modifiedTime": MODIFIED,
-            },
-            {
-                "id": "drv-2",
-                "name": "20270303_BobTest_Clinic_Labs_BloodCount.pdf",
-                "modifiedTime": MODIFIED,
-            },
-        ]
-
-
-async def _gdrive_ids(db: Database) -> dict[str, str | None]:
-    async with db.db.execute("SELECT file_id, gdrive_id FROM documents") as cur:
-        return {r["file_id"]: r["gdrive_id"] for r in await cur.fetchall()}
-
-
-async def test_backfill_gdrive_ids_touches_only_the_named_patient(db, monkeypatch):
-    from oncofiles import backfill_gdrive_ids as script
-
-    await _seed_two_patients(db)
-    drive = _FakeDrive()
-    monkeypatch.setattr(script, "create_gdrive_client", lambda: drive)
-
-    stats = await script.backfill(patient=SECOND_SLUG, folder_id="folder-x", db=db)
-
-    # Only Bob's one document was considered: the first patient's file with a
-    # matching name in the same Drive listing is not matched.
-    assert stats == {
-        "total_gdrive": 2,
-        "matched": 1,
-        "already_set": 0,
-        "not_found": 0,
-    }
-    assert await _gdrive_ids(db) == {"first_a": None, "first_b": None, "second_a": "drv-2"}
-
-
-async def test_backfill_gdrive_ids_dry_run_writes_nothing(db, monkeypatch):
-    from oncofiles import backfill_gdrive_ids as script
-
-    await _seed_two_patients(db)
-    monkeypatch.setattr(script, "create_gdrive_client", lambda: _FakeDrive())
-
-    stats = await script.backfill(patient=ERIKA_UUID, dry_run=True, folder_id="folder-x", db=db)
-
-    assert (stats["matched"], stats["not_found"]) == (1, 1)
-    assert set((await _gdrive_ids(db)).values()) == {None}
-
-
-async def test_backfill_gdrive_ids_unknown_patient_stops_before_drive(db, monkeypatch):
-    from oncofiles import backfill_gdrive_ids as script
-
-    await _seed_two_patients(db)
-    drive = _FakeDrive()
-    monkeypatch.setattr(script, "create_gdrive_client", lambda: drive)
-
-    for bad in ("no-such-patient", "   ", ""):
-        with pytest.raises(SystemExit):
-            await script.backfill(patient=bad, folder_id="folder-x", db=db)
-    assert drive.listed == []
-    assert set((await _gdrive_ids(db)).values()) == {None}
-
-
-class _NoCloudFiles:
-    """Stands in for FilesClient; a dry run must never download."""
-
-    def download(self, file_id: str):  # pragma: no cover - must not be reached
-        raise AssertionError("dry run downloaded a file")
-
-
-async def test_backfill_ocr_reads_only_the_named_patient(db, monkeypatch):
-    from oncofiles import backfill_ocr as script
-
-    await _seed_two_patients(db)
-    # A curated / Drive-only row of the same patient: local model only.
-    name = "20270304_BobTest_Clinic_Report_Visit.pdf"
-    await db.insert_document(
-        make_doc(file_id="gdrive:drv-9", filename=name, original_filename=name),
-        patient_id=SECOND_UUID,
-    )
-    monkeypatch.setattr(script, "files_api_refusal_reason", lambda: None)
-    monkeypatch.setattr(script, "FilesClient", _NoCloudFiles)
-    monkeypatch.setattr(script, "GOOGLE_DRIVE_FOLDER_ID", "")
-
-    stats = await script.backfill(patient=SECOND_SLUG, dry_run=True, db=db)
-    assert stats == {
-        "total": 2,
-        "skipped": 0,
-        "local_only": 1,
-        "processed": 1,
-        "errors": 0,
-    }
-
-    stats = await script.backfill(patient=FIRST_SLUG, dry_run=True, db=db)
-    assert stats == {
-        "total": 2,
-        "skipped": 0,
-        "local_only": 0,
-        "processed": 2,
-        "errors": 0,
-    }
-
-
-async def test_backfill_ocr_refuses_without_patient_or_with_cloud_off(db, monkeypatch):
-    from oncofiles import backfill_ocr as script
-
-    await _seed_two_patients(db)
-
-    def _never(*a, **k):  # pragma: no cover - must not be reached
-        raise AssertionError("a client was built after a refusal")
-
-    monkeypatch.setattr(script, "FilesClient", _never)
-
-    monkeypatch.setattr(script, "files_api_refusal_reason", lambda: None)
-    for bad in ("no-such-patient", ""):
-        with pytest.raises(SystemExit):
-            await script.backfill(patient=bad, dry_run=True, db=db)
-
-    # Cloud AI off (the production default): refuse even for a real patient.
-    monkeypatch.setattr(script, "files_api_refusal_reason", lambda: "cloud AI is off")
-    with pytest.raises(SystemExit):
-        await script.backfill(patient=SECOND_SLUG, dry_run=True, db=db)
-
-
-@pytest.mark.parametrize("module", ["backfill_gdrive_ids", "backfill_ocr"])
-def test_backfill_scripts_require_a_patient(module, monkeypatch):
-    import importlib
-
-    script = importlib.import_module(f"oncofiles.{module}")
-
-    # The function cannot be called without naming a patient ...
-    param = inspect.signature(script.backfill).parameters["patient"]
-    assert param.kind is inspect.Parameter.KEYWORD_ONLY
-    assert param.default is inspect.Parameter.empty
-
-    # ... and neither can the command line.
-    monkeypatch.setattr("sys.argv", [module, "--dry-run"])
-    with pytest.raises(SystemExit) as exc:
-        script.main()
-    assert exc.value.code == 2
+# ── #551: every list_documents call names a patient ─────────────────────
 
 
 def test_every_list_documents_call_names_a_patient():
@@ -247,13 +68,13 @@ async def test_weekly_analytics_runs_on_a_real_db_and_persists(db):
         for i in range(n):
             await db.insert_activity_log(
                 ActivityLogEntry(
-                    patient_id=ERIKA_UUID,
+                    patient_id=PRIMARY_TEST_UUID,
                     session_id=f"s-{tool}-{i}",
                     agent_id="test",
                     tool_name=tool,
                 )
             )
-    sync_id = await db.insert_sync_history(patient_id=ERIKA_UUID)
+    sync_id = await db.insert_sync_history(patient_id=PRIMARY_TEST_UUID)
     await db.db.execute(
         "UPDATE sync_history SET status = 'completed', from_gdrive_new = 4 WHERE id = ?",
         (sync_id,),
@@ -277,7 +98,7 @@ async def test_weekly_analytics_runs_on_a_real_db_and_persists(db):
     assert stored is not None
     assert json.loads(stored.value) == summary
     # A system aggregate is never stored under a patient.
-    assert await db.get_agent_state(STATE_KEY, AGENT_ID, patient_id=ERIKA_UUID) is None
+    assert await db.get_agent_state(STATE_KEY, AGENT_ID, patient_id=PRIMARY_TEST_UUID) is None
 
 
 async def test_weekly_analytics_on_an_empty_db(db):

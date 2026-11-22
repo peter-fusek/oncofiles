@@ -6,7 +6,7 @@ import time
 from unittest.mock import patch
 
 from oncofiles.oauth import _make_state_token, verify_state_token
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 
 # ── OAuth state token (V3) ───────────────────────────────────────────
 
@@ -16,10 +16,10 @@ _TEST_TOKEN = "test-bearer-token-for-hmac"
 def test_state_token_roundtrip():
     """Valid state token passes verification."""
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
-        token = _make_state_token(patient_id=ERIKA_UUID)
+        token = _make_state_token(patient_id=PRIMARY_TEST_UUID)
         valid, patient_id = verify_state_token(token)
         assert valid is True
-        assert patient_id == ERIKA_UUID
+        assert patient_id == PRIMARY_TEST_UUID
 
 
 def test_state_token_roundtrip_with_patient_id():
@@ -39,7 +39,7 @@ def test_state_token_requires_bearer_token():
         patch("oncofiles.oauth.MCP_BEARER_TOKEN", ""),
         pytest.raises(RuntimeError, match="MCP_BEARER_TOKEN must be set"),
     ):
-        _make_state_token(patient_id=ERIKA_UUID)
+        _make_state_token(patient_id=PRIMARY_TEST_UUID)
 
 
 def test_state_token_rejects_empty():
@@ -58,7 +58,7 @@ def test_state_token_rejects_garbage():
 
 def test_state_token_rejects_tampered():
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
-        token = _make_state_token(patient_id=ERIKA_UUID)
+        token = _make_state_token(patient_id=PRIMARY_TEST_UUID)
         # Replace signature with garbage
         dot_idx = token.rfind(".")
         tampered = f"{token[:dot_idx]}.{'a' * 32}"
@@ -69,7 +69,7 @@ def test_state_token_rejects_tampered():
 def test_state_token_rejects_expired(monkeypatch):
     """Tokens older than 30 minutes are rejected."""
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
-        token = _make_state_token(patient_id=ERIKA_UUID)
+        token = _make_state_token(patient_id=PRIMARY_TEST_UUID)
         # Fast-forward time by 31 minutes
         real_time = time.time()
         import oncofiles.oauth as oauth_mod
@@ -95,11 +95,11 @@ def test_state_token_replay_rejected():
 
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
         oauth_mod._consumed_state_tokens.clear()
-        token = _make_state_token(patient_id=ERIKA_UUID)
+        token = _make_state_token(patient_id=PRIMARY_TEST_UUID)
 
         valid_first, pid_first = verify_state_token(token)
         assert valid_first is True
-        assert pid_first == ERIKA_UUID
+        assert pid_first == PRIMARY_TEST_UUID
 
         # Replay within the window must fail.
         valid_second, pid_second = verify_state_token(token)
@@ -107,7 +107,7 @@ def test_state_token_replay_rejected():
         # The patient_id is still surfaced so the callback handler can log
         # which flow tried to replay — but valid=False makes the callback
         # take its standard error path.
-        assert pid_second == ERIKA_UUID
+        assert pid_second == PRIMARY_TEST_UUID
 
 
 def test_state_token_failed_verify_does_not_consume():
@@ -119,7 +119,7 @@ def test_state_token_failed_verify_does_not_consume():
 
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
         oauth_mod._consumed_state_tokens.clear()
-        token = _make_state_token(patient_id=ERIKA_UUID)
+        token = _make_state_token(patient_id=PRIMARY_TEST_UUID)
         # Tamper signature → verify fails.
         dot_idx = token.rfind(".")
         tampered = f"{token[:dot_idx]}.{'a' * 32}"
@@ -139,7 +139,7 @@ def test_state_token_consumed_set_pruned_on_expiry(monkeypatch):
 
     with patch("oncofiles.oauth.MCP_BEARER_TOKEN", _TEST_TOKEN):
         oauth_mod._consumed_state_tokens.clear()
-        token = _make_state_token(patient_id=ERIKA_UUID)
+        token = _make_state_token(patient_id=PRIMARY_TEST_UUID)
         valid, _ = verify_state_token(token)
         assert valid is True
         assert len(oauth_mod._consumed_state_tokens) == 1
@@ -149,7 +149,7 @@ def test_state_token_consumed_set_pruned_on_expiry(monkeypatch):
         real_time = time.time()
         monkeypatch.setattr(oauth_mod.time, "time", lambda: real_time + 1900)
         # Need a token that's still "fresh" relative to the patched clock.
-        new_token = oauth_mod._make_state_token(patient_id=ERIKA_UUID)
+        new_token = oauth_mod._make_state_token(patient_id=PRIMARY_TEST_UUID)
         valid_new, _ = verify_state_token(new_token)
         assert valid_new is True
         # The old token's hash should be gone after the prune sweep.

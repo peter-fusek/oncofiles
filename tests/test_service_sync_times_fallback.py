@@ -10,7 +10,7 @@ import pytest
 from oncofiles.models import ConversationEntry, Document, DocumentCategory
 from oncofiles.server import _get_service_sync_times_async, _last_service_sync
 
-ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+PRIMARY_TEST_UUID = "00000000-0000-4000-8000-000000000001"
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +24,7 @@ def _reset_sync_cache():
 @pytest.mark.asyncio
 async def test_returns_all_none_when_no_data(db):
     """Empty DB, empty in-memory — every service reports None."""
-    result = await _get_service_sync_times_async(db, ERIKA_UUID)
+    result = await _get_service_sync_times_async(db, PRIMARY_TEST_UUID)
     assert result == {"gdrive": None, "gmail": None, "calendar": None}
 
 
@@ -42,10 +42,10 @@ async def test_falls_back_to_documents_max_created_at(db):
         mime_type="application/pdf",
         size_bytes=100,
     )
-    inserted = await db.insert_document(doc, patient_id=ERIKA_UUID)
+    inserted = await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
     assert inserted.id is not None
 
-    result = await _get_service_sync_times_async(db, ERIKA_UUID)
+    result = await _get_service_sync_times_async(db, PRIMARY_TEST_UUID)
     # gdrive should be populated from the document's created_at; others still None.
     assert result["gdrive"] is not None
     # Gmail / calendar tables are empty so their values stay None.
@@ -56,7 +56,7 @@ async def test_falls_back_to_documents_max_created_at(db):
 @pytest.mark.asyncio
 async def test_in_memory_values_win_over_db_fallback(db):
     """If the in-memory dict has ALL services set, skip DB entirely."""
-    _last_service_sync[ERIKA_UUID] = {
+    _last_service_sync[PRIMARY_TEST_UUID] = {
         "gdrive": "2026-04-21T19:00:00",
         "gmail": "2026-04-21T19:01:00",
         "calendar": "2026-04-21T19:02:00",
@@ -73,9 +73,9 @@ async def test_in_memory_values_win_over_db_fallback(db):
         mime_type="application/pdf",
         size_bytes=100,
     )
-    await db.insert_document(doc, patient_id=ERIKA_UUID)
+    await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
-    result = await _get_service_sync_times_async(db, ERIKA_UUID)
+    result = await _get_service_sync_times_async(db, PRIMARY_TEST_UUID)
     assert result["gdrive"] == "2026-04-21T19:00:00"
     assert result["gmail"] == "2026-04-21T19:01:00"
     assert result["calendar"] == "2026-04-21T19:02:00"
@@ -84,7 +84,7 @@ async def test_in_memory_values_win_over_db_fallback(db):
 @pytest.mark.asyncio
 async def test_partial_memory_fills_missing_from_db(db):
     """gdrive cached, gmail+calendar missing → DB fills only the missing ones."""
-    _last_service_sync[ERIKA_UUID] = {
+    _last_service_sync[PRIMARY_TEST_UUID] = {
         "gdrive": "2026-04-21T19:00:00",
         "gmail": None,
         "calendar": None,
@@ -98,9 +98,9 @@ async def test_partial_memory_fills_missing_from_db(db):
         participant="claude-code",
         source="live",
     )
-    await db.insert_conversation_entry(entry, patient_id=ERIKA_UUID)
+    await db.insert_conversation_entry(entry, patient_id=PRIMARY_TEST_UUID)
 
-    result = await _get_service_sync_times_async(db, ERIKA_UUID)
+    result = await _get_service_sync_times_async(db, PRIMARY_TEST_UUID)
     # In-memory gdrive is preserved.
     assert result["gdrive"] == "2026-04-21T19:00:00"
     # Gmail and calendar tables are empty in the test DB, so they stay None.

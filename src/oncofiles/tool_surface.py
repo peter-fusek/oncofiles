@@ -4,14 +4,15 @@ The maintainer (2026-11-17): operator tools do not belong in Claude.ai.
 Every registered tool is classified here, exactly once:
 
 * ``USER_TOOLS`` — what a patient or caregiver uses in a chat: documents,
-  search, view, timeline, facts and fact review, labs, patient overview,
+  search, view, timeline, facts and fact review, patient overview,
   session diary, export / FHIR, clinical records, treatment events and the
   Google connect flows. Served on the public ``/mcp`` endpoint.
 * ``OPERATOR_TOOLS`` — maintenance: curated runs, re-OCR, compare, promote,
   re-read, extraction previews and writes, scorecards, backfills, audits,
   repairs, legacy Drive sync/setup, token admin, reassign, system internals,
-  raw SQL, plus every deprecated tool (Oncoteam sunset #721, legacy lab
-  readers). Served only on ``/ops/mcp``.
+  raw SQL, tools that compute clinical interpretation in code or read legacy
+  tables curated patients do not have (#928), plus every deprecated tool
+  (Oncoteam sunset #721, legacy lab readers). Served only on ``/ops/mcp``.
 
 How it is enforced (native FastMCP ``Transform``, the same mechanism as
 ``tool_annotations``): ``ToolSurfaceTransform`` drops operator tools from
@@ -66,11 +67,7 @@ USER_TOOLS: frozenset[str] = frozenset(
         "update_document_category",
         "upload_document",
         "view_document",
-        # labs / analysis
-        "analyze_labs",
-        "compare_labs",
-        "get_lab_safety_check",
-        "get_precycle_checklist",
+        # preventive care: records next to labelled guideline intervals (#928)
         "get_preventive_care_status",
         # facts model (#603, #726) and fact review (#742)
         "correct_fact",
@@ -85,7 +82,6 @@ USER_TOOLS: frozenset[str] = frozenset(
         "unverify_fact",
         "verify_fact",
         # clinical records
-        "add_clinical_analysis",
         "add_clinical_record",
         "add_clinical_record_note",
         "delete_clinical_record",
@@ -125,8 +121,6 @@ USER_TOOLS: frozenset[str] = frozenset(
         "fhir_read",
         "fhir_search",
         "patient_everything",
-        # research
-        "fetch_clinical_trials",
         # curated folder: read-only state of the patient's own folder
         "curated_folder_status",
         # Google connect flows and stored mail/calendar
@@ -218,6 +212,15 @@ OPERATOR_TOOLS: frozenset[str] = frozenset(
         "search_activity_log",
         "search_research",
         "set_agent_state",
+        # clinical interpretation in code / legacy tables curated patients lack
+        # (#928, design #711 §4.4): hardcoded protocol thresholds and checklists,
+        # lab analysis prompts, Oncoteam-era trial search and analysis store
+        "add_clinical_analysis",
+        "analyze_labs",
+        "compare_labs",
+        "fetch_clinical_trials",
+        "get_lab_safety_check",
+        "get_precycle_checklist",
         # deprecated: legacy lab readers / treatment list (removed after 2027-01-10)
         "compare_lab_panels",
         "get_lab_summary",

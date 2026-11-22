@@ -23,10 +23,10 @@ from oncofiles.persistent_oauth import (
     _verified_patient_id,
 )
 from oncofiles.tools.patient import whoami
-from tests.conftest import ERIKA_UUID
+from tests.conftest import PRIMARY_TEST_UUID
 from tests.test_persistent_oauth import _mint_oauth_token_with_email
 
-OWN_UUID = ERIKA_UUID
+OWN_UUID = PRIMARY_TEST_UUID
 OWN_SLUG = "alpha-test"
 OWN_NAME = "Alpha Example"
 OWN_EMAIL = "alpha.caregiver@example.com"

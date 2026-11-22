@@ -22,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, Response
 
 from oncofiles import mailer, scheduler_singleton, session_revocation
+from oncofiles.cloud_guard import local_only_task
 from oncofiles.config import (
     AI_NIGHT_WINDOW_START_UTC,
     AI_NIGHTLY_ONLY,
@@ -417,7 +418,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         # #784: one curated loop per process; a second lifespan gets the same task.
         curated_nightly_task, loop_started = scheduler_singleton.ensure_curated_loop(
-            lambda: asyncio.create_task(curated_nightly_loop(db))
+            # #925: the loop (continuous turns + nightly sweep) is a local-only zone.
+            lambda: asyncio.create_task(local_only_task("curated loop", curated_nightly_loop)(db))
         )
         if loop_started:
             cont, poll_s, settle_s, chunk = continuous_settings()
@@ -975,22 +977,6 @@ def _start_sync_scheduler(
             from oncofiles.memory import reclaim_memory
 
             reclaim_memory("enhancement_sweep")
-
-    async def _run_institution_backfill():
-        """Re-run institution inference for docs with metadata but null institution."""
-        try:
-            from oncofiles.enhance import backfill_missing_institutions
-
-            stats = await asyncio.wait_for(
-                backfill_missing_institutions(db.db),
-                timeout=60,
-            )
-            if stats["updated"] > 0:
-                logger.info("Institution backfill: %s", stats)
-        except TimeoutError:
-            logger.error("Institution backfill timed out")
-        except Exception:
-            logger.exception("Institution backfill failed")
 
     async def _run_pipeline_integrity_check():
         """Scheduled check: find and fix any docs stuck in incomplete pipeline state."""
@@ -1625,7 +1611,7 @@ def _start_sync_scheduler(
         #   a restart at 23:10 doesn't silently skip the 23:00 run (#440).
         # coalesce=True: if multiple misses accumulate, run once — never double-bill.
         scheduler.add_job(
-            _run_nightly_ai_pipeline,
+            local_only_task("nightly_ai_pipeline", _run_nightly_ai_pipeline),
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=0),
             id="nightly_ai_pipeline",
             max_instances=1,
@@ -1638,7 +1624,7 @@ def _start_sync_scheduler(
         # offset from the nightly slot keeps the budget gate reading the
         # latest spend from the just-finished nightly run.
         scheduler.add_job(
-            _run_weekly_discovery_pipeline,
+            local_only_task("weekly_discovery_pipeline", _run_weekly_discovery_pipeline),
             CronTrigger(day_of_week="sun", hour=AI_NIGHT_WINDOW_START_UTC, minute=30),
             id="weekly_discovery_pipeline",
             max_instances=1,
@@ -1657,7 +1643,7 @@ def _start_sync_scheduler(
         if AI_RUN_ON_STARTUP:
             _oneoff_at = datetime.now() + timedelta(minutes=2)
             scheduler.add_job(
-                _run_nightly_ai_pipeline,
+                local_only_task("nightly_ai_oneoff", _run_nightly_ai_pipeline),
                 DateTrigger(run_date=_oneoff_at),
                 id="nightly_ai_oneoff",
                 max_instances=1,
@@ -1668,25 +1654,25 @@ def _start_sync_scheduler(
             )
     else:
         scheduler.add_job(
-            _run_sync,
+            local_only_task("gdrive_sync", _run_sync),
             IntervalTrigger(minutes=SYNC_INTERVAL_MINUTES),
             id="gdrive_sync",
             max_instances=1,
         )
         scheduler.add_job(
-            _run_enhancement_sweep,
+            local_only_task("enhancement_sweep", _run_enhancement_sweep),
             CronTrigger(hour=3, minute=20),
             id="enhancement_sweep",
             max_instances=1,
         )
         scheduler.add_job(
-            _run_metadata_extraction,
+            local_only_task("metadata_extraction", _run_metadata_extraction),
             CronTrigger(hour=3, minute=30),
             id="metadata_extraction",
             max_instances=1,
         )
         scheduler.add_job(
-            _run_document_groups_backfill,
+            local_only_task("document_groups_backfill", _run_document_groups_backfill),
             CronTrigger(hour=3, minute=55),
             id="document_groups_backfill",
             max_instances=1,
@@ -1721,7 +1707,7 @@ def _start_sync_scheduler(
             logger.exception("tier_transition job failed")
 
     scheduler.add_job(
-        _run_tier_transition,
+        local_only_task("tier_transition", _run_tier_transition),
         CronTrigger(hour=0, minute=5),
         id="tier_transition",
         max_instances=1,
@@ -1730,13 +1716,13 @@ def _start_sync_scheduler(
     )
 
     scheduler.add_job(
-        _run_oauth_token_cleanup,
+        local_only_task("oauth_token_cleanup", _run_oauth_token_cleanup),
         CronTrigger(hour=4, minute=0),
         id="oauth_token_cleanup",
         max_instances=1,
     )
     scheduler.add_job(
-        _run_prompt_log_cleanup,
+        local_only_task("prompt_log_cleanup", _run_prompt_log_cleanup),
         CronTrigger(hour=4, minute=15),
         id="prompt_log_cleanup",
         max_instances=1,
@@ -1744,7 +1730,7 @@ def _start_sync_scheduler(
     # #868: 04:25 UTC = 05:25 / 06:25 Europe/Bratislava, outside the 00:30-02:30
     # local night window (curated nightly runs, AI pipeline).
     scheduler.add_job(
-        _run_dashboard_access_log_retention,
+        local_only_task("dashboard_access_log_retention", _run_dashboard_access_log_retention),
         CronTrigger(hour=4, minute=25, timezone="UTC"),
         id="dashboard_access_log_retention",
         max_instances=1,
@@ -1755,7 +1741,7 @@ def _start_sync_scheduler(
     # Pipeline integrity check: opt-in only (AI-touching; gated by ENABLE_INTEGRITY_CHECK)
     if ENABLE_INTEGRITY_CHECK:
         scheduler.add_job(
-            _run_pipeline_integrity_check,
+            local_only_task("pipeline_integrity", _run_pipeline_integrity_check),
             CronTrigger(hour="*/6", minute=30),
             id="pipeline_integrity",
             max_instances=1,
@@ -1853,7 +1839,7 @@ def _start_sync_scheduler(
             logger.exception("sync_watchdog failed")
 
     scheduler.add_job(
-        _run_sync_watchdog,
+        local_only_task("sync_watchdog", _run_sync_watchdog),
         IntervalTrigger(hours=1, start_date=datetime.now() + timedelta(minutes=5)),
         id="sync_watchdog",
         max_instances=1,
@@ -1925,7 +1911,7 @@ def _start_sync_scheduler(
     # handles category upgrades inline during phase 2/3 via structured_metadata. #433
     if not AI_NIGHTLY_ONLY:
         scheduler.add_job(
-            _run_category_validation,
+            local_only_task("category_validation", _run_category_validation),
             CronTrigger(hour=3, minute=45),
             id="category_validation",
             max_instances=1,
@@ -1945,7 +1931,7 @@ def _start_sync_scheduler(
         await run_weekly_analytics(db)
 
     scheduler.add_job(
-        _run_weekly_analytics,
+        local_only_task("weekly_analytics", _run_weekly_analytics),
         CronTrigger(day_of_week="sun", hour=5, minute=0),  # Sunday 5:00 AM
         id="weekly_analytics",
         max_instances=1,
@@ -2047,7 +2033,7 @@ def _start_sync_scheduler(
 
     startup_time = datetime.now() + timedelta(seconds=90)
     scheduler.add_job(
-        _startup_catchup,
+        local_only_task("startup_catchup", _startup_catchup),
         DateTrigger(run_date=startup_time),
         id="startup_catchup",
         max_instances=1,
@@ -2092,7 +2078,7 @@ def _start_sync_scheduler(
         logger.info("Gmail sync not scheduled — GMAIL_CALENDAR_ENABLED=false (#618/#699)")
     elif AI_NIGHTLY_ONLY:
         scheduler.add_job(
-            _run_gmail_sync,
+            local_only_task("gmail_sync", _run_gmail_sync),
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=15),
             id="gmail_sync",
             max_instances=1,
@@ -2102,7 +2088,7 @@ def _start_sync_scheduler(
         logger.info("Gmail sync scheduled — nightly at %02d:15 UTC", AI_NIGHT_WINDOW_START_UTC)
     else:
         scheduler.add_job(
-            _run_gmail_sync,
+            local_only_task("gmail_sync", _run_gmail_sync),
             IntervalTrigger(
                 minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=2)
             ),
@@ -2111,7 +2097,7 @@ def _start_sync_scheduler(
         )
         gmail_startup_time = datetime.now() + timedelta(seconds=150)
         scheduler.add_job(
-            lambda: _run_gmail_sync("startup", initial=True),
+            local_only_task("gmail_startup_sync", lambda: _run_gmail_sync("startup", initial=True)),
             DateTrigger(run_date=gmail_startup_time),
             id="gmail_startup_sync",
             max_instances=1,
@@ -2176,7 +2162,7 @@ def _start_sync_scheduler(
         logger.info("Calendar sync not scheduled — GMAIL_CALENDAR_ENABLED=false (#618/#699)")
     elif AI_NIGHTLY_ONLY:
         scheduler.add_job(
-            _run_calendar_sync,
+            local_only_task("calendar_sync", _run_calendar_sync),
             CronTrigger(hour=AI_NIGHT_WINDOW_START_UTC, minute=20),
             id="calendar_sync",
             max_instances=1,
@@ -2186,7 +2172,7 @@ def _start_sync_scheduler(
         logger.info("Calendar sync scheduled — nightly at %02d:20 UTC", AI_NIGHT_WINDOW_START_UTC)
     else:
         scheduler.add_job(
-            _run_calendar_sync,
+            local_only_task("calendar_sync", _run_calendar_sync),
             IntervalTrigger(
                 minutes=SYNC_INTERVAL_MINUTES, start_date=datetime.now() + timedelta(minutes=3)
             ),
@@ -2195,7 +2181,9 @@ def _start_sync_scheduler(
         )
         calendar_startup_time = datetime.now() + timedelta(seconds=210)
         scheduler.add_job(
-            lambda: _run_calendar_sync("startup", initial=True),
+            local_only_task(
+                "calendar_startup_sync", lambda: _run_calendar_sync("startup", initial=True)
+            ),
             DateTrigger(run_date=calendar_startup_time),
             id="calendar_startup_sync",
             max_instances=1,
@@ -2236,6 +2224,7 @@ def _start_sync_scheduler(
         entry.update(
             last_error=datetime.now(UTC).isoformat(),
             last_error_msg=str(event.exception)[:200],
+            last_error_type=type(event.exception).__name__,
             running=False,
         )
         job_tracker[event.job_id] = entry
@@ -2274,10 +2263,84 @@ def _start_sync_scheduler(
     scheduler.add_listener(_job_error, EVENT_JOB_ERROR)
     scheduler.add_listener(_job_missed, EVENT_JOB_MISSED)
 
+    # #952: durable inbound mail queue. First run at the startup grace end
+    # (_defer_jobs_past_startup_grace moves next_run_time=now there), then
+    # every WORKER_INTERVAL_MIN; the Brevo route also kicks the worker right
+    # after an enqueue. Claims are conditional updates, so the old container
+    # of a rolling deploy and this one never take the same job.
+    async def _run_inbound_queue():
+        from oncofiles import inbound_queue
+
+        try:
+            async with _sync_semaphore:
+                await inbound_queue.run_pending(db)
+        except Exception:
+            logger.exception("inbound queue run failed")
+            raise
+
+    from oncofiles.inbound_queue import WORKER_INTERVAL_MIN
+
+    scheduler.add_job(
+        local_only_task("inbound_queue", _run_inbound_queue),
+        IntervalTrigger(minutes=WORKER_INTERVAL_MIN),
+        id="inbound_queue",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+        next_run_time=datetime.now(),
+    )
+
+    # #950 phase 2: local reading of welcome@ holding-store documents. The job
+    # only starts the background drain (``holding_extract.kick``), which reads
+    # one document at a time on the local model and never holds
+    # _sync_semaphore while the model works (minutes per scan).
+    async def _run_holding_extract():
+        from oncofiles import holding_extract
+
+        holding_extract.kick(db)
+
+    from oncofiles.holding_extract import WORKER_INTERVAL_MIN as HOLDING_INTERVAL_MIN
+
+    scheduler.add_job(
+        local_only_task("holding_extract", _run_holding_extract),
+        IntervalTrigger(minutes=HOLDING_INTERVAL_MIN),
+        id="holding_extract",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+        next_run_time=datetime.now(),
+    )
+
+    # #950 phase 3: copy a trial's held files into its curated inbox once it
+    # connected Drive (one file at a time, create-only, read back), flag held
+    # rows whose curated mirror exists, send due "ready" e-mails. Also kicked
+    # by connect_folder right after a trial connects. Never deletes anything.
+    async def _run_holding_move():
+        from oncofiles import holding_move
+
+        try:
+            async with _sync_semaphore:
+                await holding_move.run_pending(db)
+        except Exception:
+            logger.exception("holding move run failed")
+            raise
+
+    from oncofiles.holding_move import WORKER_INTERVAL_MIN as HOLDING_MOVE_INTERVAL_MIN
+
+    scheduler.add_job(
+        local_only_task("holding_move", _run_holding_move),
+        IntervalTrigger(minutes=HOLDING_MOVE_INTERVAL_MIN),
+        id="holding_move",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+        next_run_time=datetime.now(),
+    )
+
     # OF-1/OF-2: Periodic memory check — reclaim memory + graceful restart.
     # Start after 7 min to avoid false positives from startup sync spike (#366).
     scheduler.add_job(
-        periodic_memory_check,
+        local_only_task("memory_check", periodic_memory_check),
         IntervalTrigger(
             minutes=5,
             start_date=datetime.now() + timedelta(minutes=7),
@@ -2352,26 +2415,30 @@ link to the user so they can view, verify, or share the original document.
 Always display these when citing research findings.
 3. When making clinical observations, cite the specific source document(s) by filename \
 and `gdrive_url`. Never state medical facts without a traceable source.
-4. Use `get_related_documents` to discover cross-referenced documents (same visit, \
-shared diagnoses, follow-ups) for comprehensive context.
+4. `get_related_documents` returns cross-referenced documents when links are available. \
+Links are not created automatically today, so an empty result with a `note` is normal; \
+never present documents as linked unless the tool returns them.
 5. For lab trend analysis, reference the source `document_id` for each data point.
 
-CROSS-REFERENCES — documents are automatically linked:
+CROSS-REFERENCES — links appear when available:
 - `same_visit`: same date + institution (e.g., labs and imaging from one appointment)
 - `related`: nearby dates or shared diagnoses/medications
+- When `get_related_documents` returns none, use `timeline` or `encounter_detail` for \
+documents of the same day or visit instead.
 
 RECOMMENDED WORKFLOW for chat clients:
 - Show GDrive links as clickable "View original" buttons alongside document summaries.
 - Show PubMed/ClinicalTrials.gov links alongside research citations.
-- Use `get_related_documents` for drill-down into connected records.
+- Use `get_related_documents` for drill-down into connected records when links exist.
 - In export packages, all entries include `gdrive_url` for offline verification.
 
 PATIENT TYPES — the system supports two patient profiles:
-- `oncology`: cancer patients with chemo protocols, biomarker tracking, pre-cycle checklists. \
+- `oncology`: cancer patients with chemo protocols, biomarker tracking. \
 Categories include pathology, genetics, chemo_sheet.
 - `general`: healthy patients with preventive care screening, general health lab ranges. \
-Categories include vaccination, dental, preventive. Use `get_preventive_care_status` to check \
-which EU-recommended screenings are due/overdue.
+Categories include vaccination, dental, preventive. `get_preventive_care_status` lists the \
+screenings and vaccinations found in the records (with source documents) next to EU guideline \
+intervals; the intervals are a general reference, not advice for the patient.
 
 Available categories: labs, report, imaging, pathology, genetics, \
 surgery, surgical_report, prescription, referral, discharge, discharge_summary, chemo_sheet, \
@@ -2486,8 +2553,8 @@ async def privacy_policy(request: Request) -> HTMLResponse:
         _PRIVACY_HTML = _legal_page(
             "Privacy Policy",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 17, 2026 ·
-Consent version 2026-11-17</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 21, 2026 ·
+Consent version 2026-11-21b</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2549,6 +2616,25 @@ Oncofiles for your question (document text, values, summaries) as part of your c
 This happens only when you ask, and it is governed by your own agreement with that
 assistant's provider, including their retention and training settings.</li>
 </ul>
+<h3 id="by-email">Documents sent by e-mail</h3>
+<p>Each patient can have a private document e-mail address. Whoever sends documents to that
+address agrees to the <a href="/terms">terms of service</a> and to the processing of these
+documents as described in this policy; the sender receives an e-mail saying so, with the link to
+the terms. Only attachments sent from the patient's caregiver address (with the sender
+confirmed by the mail system) are added to the patient's folder, where they are processed like
+any other document. The text of the e-mail is not stored and is not read by any AI model. Mail
+from other senders is not added; we only count it, with a keyed hash of the sender, never the
+sender's address itself. Documents removed after an unclaimed trial can still be restored from
+encrypted backups for up to 6 months.</p>
+<p lang="sk"><strong>Dokumenty poslané e-mailom.</strong> Každý pacient môže mať súkromnú
+e-mailovú adresu pre dokumenty. Kto pošle dokumenty na túto adresu, súhlasí s
+<a href="/terms">podmienkami používania</a> a so spracovaním týchto dokumentov podľa týchto
+zásad; odosielateľ dostane e-mail, ktorý to uvádza, s odkazom na podmienky. Do priečinka
+pacienta sa pridajú len prílohy poslané z adresy opatrovateľa pacienta (s odosielateľom
+potvrdeným poštovým systémom) a spracujú sa ako každý iný dokument. Text e-mailu sa neukladá a
+nečíta ho žiadny AI model. Pošta od iných odosielateľov sa nepridáva; iba ju započítame, s
+kľúčovaným odtlačkom odosielateľa, nikdy nie so samotnou adresou. Dokumenty odstránené po
+nevyužitej skúšobnej dobe sa ešte najviac 6 mesiacov dajú obnoviť zo šifrovaných záloh.</p>
 <p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
 unrelated to managing your medical documents.</p>
 
@@ -2649,8 +2735,8 @@ async def terms_of_service(request: Request) -> HTMLResponse:
         _TERMS_HTML = _legal_page(
             "Terms of Service",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 17, 2026 ·
-Consent version 2026-11-17</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 21, 2026 ·
+Consent version 2026-11-21b</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
@@ -2676,6 +2762,22 @@ See our <a href="/privacy">Privacy Policy</a> for details.</p>
 <p>When you create a patient, you confirm that you are this person, or that you have their
 consent or another right (for example as a parent or legal guardian) to manage their health
 data in Oncofiles. Do not create a patient for someone without that consent or right.</p>
+
+<h3 id="by-email">Documents sent by e-mail</h3>
+<p>Whoever sends documents to a patient's document e-mail address agrees to these terms and to
+the processing of these documents as described in the <a href="/privacy">Privacy Policy</a>.
+The documents are read right away, without a separate consent screen; the sender receives an
+e-mail saying so, with the link to these terms. Only attachments from the patient's caregiver
+address are added to the patient's folder. The address lets anyone who knows it send documents
+to the patient, never read them: keep it private, and create a new one on the dashboard if it
+gets into the wrong hands.</p>
+<p lang="sk"><strong>Dokumenty poslané e-mailom.</strong> Kto pošle dokumenty na e-mailovú
+adresu pacienta pre dokumenty, súhlasí s týmito podmienkami a so spracovaním týchto dokumentov
+podľa <a href="/privacy">zásad ochrany súkromia</a>. Dokumenty sa čítajú hneď, bez osobitnej
+obrazovky so súhlasom; odosielateľ dostane e-mail, ktorý to uvádza, s odkazom na tieto
+podmienky. Do priečinka pacienta sa pridajú len prílohy z adresy opatrovateľa pacienta. Adresa
+umožňuje každému, kto ju pozná, dokumenty pacientovi poslať, nikdy nie čítať: nezverejňujte ju,
+a ak sa dostane do nesprávnych rúk, vytvorte si na prehľade novú.</p>
 
 <h2 id="account">4. Account and Access</h2>
 <ul>
@@ -3031,8 +3133,12 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"- Several patients per account; a caregiver sees only the patients assigned\n"
         f"  to them.\n"
         f"- Free up to 500 documents per patient.\n"
-        f"- Connecting your own Google Drive opens to new users in November 2026\n"
-        f"  (waitlist: https://oncofiles.com/#join).\n"
+        f"- Live since November 2026. To try it, sign in with Google at\n"
+        f"  https://oncofiles.com/dashboard and pick the Google Drive folder that\n"
+        f"  already holds your documents; if signing in does not work or you have\n"
+        f"  questions, write to us.\n"
+        f"  The demo with an invented patient needs no sign-in:\n"
+        f"  https://oncofiles.com/demo (how to start: https://oncofiles.com/#join).\n"
         f"\n"
         f"## Not only oncology\n"
         f"Oncofiles also has a general (non-oncology) patient profile. Use case: from four\n"
@@ -3114,8 +3220,12 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
         f"- Viac pacientov pod jedným účtom; opatrovateľ vidí len pacientov, ku ktorým\n"
         f"  má prístup.\n"
         f"- Zadarmo do 500 dokumentov na pacienta.\n"
-        f"- Pripájanie vlastného Google Drive otvárame pre nových používateľov\n"
-        f"  v novembri 2026 (zoznam záujemcov: https://oncofiles.com/#join).\n"
+        f"- V prevádzke od novembra 2026. Na vyskúšanie sa prihláste cez Google na\n"
+        f"  https://oncofiles.com/dashboard a vyberte priečinok na Google Drive, v ktorom\n"
+        f"  už dokumentáciu máte; ak sa vám nedarí prihlásiť alebo máte otázky,\n"
+        f"  napíšte nám.\n"
+        f"  Ukážka s vymyslenou pacientkou je bez prihlásenia:\n"
+        f"  https://oncofiles.com/demo (ako začať: https://oncofiles.com/#join).\n"
         f"\n"
         f"## Ako sa líši od štátnych systémov (eZdravie / OnkoAsist / NCZI)\n"
         f"- Oncofiles je pacientsky nástroj: originály dokumentov zostávajú vo vašom\n"
@@ -3297,11 +3407,13 @@ viac pacientov a údaje sa medzi nimi nemiešajú.</li>
 <li>Ľudia, ktorí chcú mať poriadok aj v bežných nálezoch.</li>
 </ul>
 
-<p>Oncofiles je zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného
-Google Drive spúšťame v novembri 2026. Oncofiles nenahrádza lekára, nediagnostikuje
-a nenavrhuje liečbu.</p>
+<p>Oncofiles je zadarmo do 500 dokumentov na pacienta. Vyskúšať ho môžete hneď:
+pozrite si ukážku s vymyslenou pacientkou, alebo sa prihláste cez Google a vyberte
+priečinok na Google Drive, v ktorom už dokumentáciu máte (ak sa vám nedarí
+prihlásiť alebo máte otázky, napíšte nám). Oncofiles nenahrádza lekára, nediagnostikuje a nenavrhuje
+liečbu.</p>
 
-<a class="cta" href="/#join">Pridať sa na zoznam &rarr;</a>
+<a class="cta" href="/#join">Vyskúšať &rarr;</a>
 <p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">Pozrieť ukážku s
 vymyslenou pacientkou</a> &middot; <a href="/pouzitie/pohybovy-atlas">Nielen
 onkológia: pohybový atlas z vlastných správ</a></p>
@@ -3369,11 +3481,13 @@ patients and their data is never mixed.</li>
 <li>People who want their everyday findings in order too.</li>
 </ul>
 
-<p>Oncofiles is free up to 500 documents per patient. Connecting your own
-Google Drive opens in November 2026. Oncofiles does not replace your doctor, does
-not diagnose and does not propose treatment.</p>
+<p>Oncofiles is free up to 500 documents per patient. You can try it right away:
+see the demo with an invented patient, or sign in with Google and pick the Google
+Drive folder that already holds your documents (if signing in does not work or
+you have questions, write to us). Oncofiles does not replace your doctor, does not diagnose and does
+not propose treatment.</p>
 
-<a class="cta" href="/#join">Join the waitlist &rarr;</a>
+<a class="cta" href="/#join">Try it &rarr;</a>
 <p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">See the demo with
 an invented patient</a> &middot; <a href="/use-cases/movement-atlas">Not only
 oncology: a movement atlas from your own reports</a></p>
@@ -3640,11 +3754,13 @@ disk.</li>
 <li>Open-source: inspect what the code does with your data at any time.</li>
 </ul>
 
-<p>Oncofiles is free up to 500 documents per patient. Connecting your own
-Google Drive opens in November 2026. Oncofiles does not replace your doctor, does
-not diagnose and does not propose treatment.</p>
+<p>Oncofiles is free up to 500 documents per patient. You can try it right away:
+see the demo with an invented patient, or sign in with Google and pick the Google
+Drive folder that already holds your documents (if signing in does not work or
+you have questions, write to us). Oncofiles does not replace your doctor, does not diagnose and does
+not propose treatment.</p>
 
-<a class="cta" href="/#join">Join the waitlist &rarr;</a>
+<a class="cta" href="/#join">Try it &rarr;</a>
 <p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">See the demo with
 an invented patient</a> &middot; <a href="/use-cases/movement-atlas">Not only
 oncology: a movement atlas from your own reports</a></p>
@@ -3748,11 +3864,13 @@ peter.fusek@instarea.sk.</p>
 <p><strong>K dispozícii:</strong> rozhovor s autorom a technická ukážka.</p>
 </div>
 
-<p>Oncofiles je zadarmo do 500 dokumentov na pacienta. Pripájanie vlastného
-Google Drive spúšťame v novembri 2026. Oncofiles nenahrádza lekára, nediagnostikuje
-a nenavrhuje liečbu.</p>
+<p>Oncofiles je zadarmo do 500 dokumentov na pacienta. Vyskúšať ho môžete hneď:
+pozrite si ukážku s vymyslenou pacientkou, alebo sa prihláste cez Google a vyberte
+priečinok na Google Drive, v ktorom už dokumentáciu máte (ak sa vám nedarí
+prihlásiť alebo máte otázky, napíšte nám). Oncofiles nenahrádza lekára, nediagnostikuje a nenavrhuje
+liečbu.</p>
 
-<a class="cta" href="/#join">Pridať sa na zoznam &rarr;</a>
+<a class="cta" href="/#join">Vyskúšať &rarr;</a>
 <p style="margin-top:1rem; font-size:0.875rem;"><a href="/demo">Pozrieť ukážku s
 vymyslenou pacientkou</a> &middot; <a href="/pouzitie/pohybovy-atlas">Nielen
 onkológia: pohybový atlas z vlastných správ</a></p>
@@ -4007,6 +4125,17 @@ async def readiness(request: Request) -> JSONResponse:
         except Exception:
             # Never let cost telemetry block readiness response.
             pass
+        # #952: inbound mail queue backlog, codes and counts only. One bounded
+        # query: pending / processing / failed rows through the state index;
+        # the ever-growing done rows are not read.
+        try:
+            result["inbound_jobs"] = await db.inbound_job_counts(include_done=False)
+        except Exception:
+            result["inbound_jobs"] = None
+        # #950: inbound alert codes (in memory, counts only; never on /health)
+        from oncofiles import inbound_email as _inbound_email
+
+        result["inbound_alerts"] = _inbound_email.alerts_overview()
         return JSONResponse(result)
     except Exception:
         logger.exception("Readiness check failed")
@@ -4109,7 +4238,7 @@ async def status(request: Request) -> JSONResponse:
             from oncofiles import document_stage
 
             async with db.db.execute(
-                "SELECT filename, file_id, "
+                "SELECT filename, file_id, mime_type, "
                 "CASE WHEN file_id LIKE 'gdrive:%' THEN structured_metadata END "
                 "AS structured_metadata "
                 "FROM documents WHERE deleted_at IS NULL AND patient_id = ?",
@@ -4124,6 +4253,7 @@ async def status(request: Request) -> JSONResponse:
                     file_id=r["file_id"],
                     structured_metadata=r["structured_metadata"],
                     patient_id=patient_id,
+                    mime_type=r["mime_type"],
                 )
             )
 
@@ -4624,6 +4754,36 @@ async def _dashboard_body_patient(
     return patient_id, None
 
 
+async def _dashboard_write_refusal(
+    request: Request, db: Database, patient_id: str
+) -> JSONResponse | None:
+    """403 ``read_only`` unless the caller is this patient's own caregiver (#921).
+
+    Runs AFTER ``_dashboard_body_patient`` on a route that writes documents for
+    a patient. An admin passes that helper for every patient, but the dashboard
+    shows other people's patients to an admin read-only (the "Admin
+    (read-only)" group), so an admin who is not the caregiver is refused here;
+    so is the operator bearer, which is not a dashboard session. Stricter only,
+    never a second way in.
+    """
+    email = _get_dashboard_email(request)
+    patient = await db.get_patient(patient_id) if email else None
+    if email and patient and _email_matches_caregiver(email, patient.caregiver_email):
+        return None
+    return JSONResponse(
+        {
+            "error": "read_only",
+            "message_sk": (
+                "Tento pacient je pre vás len na čítanie; dokumenty pridáva jeho opatrovateľ."
+            ),
+            "message_en": (
+                "This patient is read-only for you; documents are added by the caregiver."
+            ),
+        },
+        status_code=403,
+    )
+
+
 async def _audit_body_refusal(
     request: Request, db: Database, email: str | None, is_admin: bool, patient_id: str | None
 ) -> None:
@@ -4761,7 +4921,7 @@ async def _get_dashboard_patient_id(request: Request, *, fallback_to_own: bool =
     patient gets exactly what a FOREIGN one gets (own first patient, else the
     sentinel), both recorded as ``acl_refused`` (#867, #590).
 
-    Accepts either a UUID or a slug (e.g. 'q1b').  Always returns
+    Accepts either a UUID or a slug (e.g. 'jana-testova').  Always returns
     the UUID patient_id suitable for DB queries, OR a non-empty sentinel
     that matches no real patient when the caller has no access.
 
@@ -5376,6 +5536,10 @@ async def dashboard_verify(request: Request) -> JSONResponse:
             patient_id=None,
             route=dashboard_audit.route_name(request),
         )
+        # #950 phase 3: first sign-in of a welcome@ trial (funnel; never raises)
+        from oncofiles import trial_funnel
+
+        await trial_funnel.note_sign_in(audit_db, email)
     resp = JSONResponse(
         {
             "session_token": session_token,
@@ -5482,12 +5646,18 @@ async def api_documents(request: Request) -> JSONResponse:
     (``steps``, ``ready``, ``stage``, ``attention_reason``, ``curated``,
     ``uploaded_at``) and its full filename; ``?filter=`` also takes ``ready``,
     ``in_progress`` and ``attention``.
+
+    Files still waiting in a curated inbox are rows too (``inbox: true``,
+    ``id = "inbox:<drive id>"``, stage ``in_inbox`` or ``attention`` /
+    ``review_needed``), read from the curated probe's in-memory snapshot of
+    this patient: no Drive call and no DB write in this request.
     """
     err = _check_dashboard_auth(request)
     if err:
         return err
 
     try:
+        from oncofiles.tools.curated import inbox_snapshot
         from oncofiles.tools.hygiene import _build_document_matrix
 
         db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
@@ -5511,6 +5681,9 @@ async def api_documents(request: Request) -> JSONResponse:
             offset=offset,
             patient_id=patient_id,
             truncate_names=False,  # the dashboard shows whole filenames
+            # files waiting in a curated inbox, from the probe's in-memory
+            # snapshot of THIS patient (no Drive call here; #921 follow-up)
+            inbox_items=inbox_snapshot(patient_id),
         )
         return JSONResponse(result)
     except Exception:
@@ -5609,6 +5782,8 @@ async def api_doc_detail(request: Request) -> JSONResponse:
             except Exception:
                 ai_tags = []
 
+        from oncofiles import document_stage
+
         # Parse structured_metadata (JSON string)
         structured_metadata: dict = {}
         if doc.structured_metadata:
@@ -5641,7 +5816,15 @@ async def api_doc_detail(request: Request) -> JSONResponse:
                 "gdrive_url": gdrive_url,
                 "preview_url": preview_url,
                 "category": doc.category.value if doc.category else "other",
-                "document_date": doc.document_date.isoformat() if doc.document_date else "",
+                # #919: a curated document dated by month only → "YYYY-MM"
+                "document_date": (
+                    doc.document_date.isoformat()
+                    if doc.document_date
+                    else document_stage.document_month(
+                        doc.file_id, structured_metadata, doc.filename
+                    )
+                    or ""
+                ),
                 "institution": doc.institution or "",
                 "ai_summary": doc.ai_summary or "",
                 "ai_tags": ai_tags,
@@ -5652,6 +5835,52 @@ async def api_doc_detail(request: Request) -> JSONResponse:
     except Exception:
         logger.exception("API doc-detail endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/doc-thumbnails", methods=["GET"])
+async def api_doc_thumbnails(request: Request) -> JSONResponse:
+    """Previews of the patient's documents (#948, rules in ``doc_thumbnails``).
+
+    ``?ids=12,15&size=s|l[&patient_id=<slug|uuid>]``: at most 24 ids, ``l``
+    one id. 200 ``{"thumbnails": {"<id>": {"src": "data:image/..."} | null}}``
+    in request order. Unknown, foreign, deleted, excluded and preview-less
+    documents are all ``null`` (#590); so is everything while
+    ``GOOGLE_INTEGRATION_ENABLED`` is off or the caller has no patient.
+    400 ``{"error": <code>}`` for a malformed query. ``Cache-Control:
+    private, no-store``. Drive is only read; no DB write.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+
+    from oncofiles import doc_thumbnails
+
+    no_store = {"Cache-Control": "private, no-store"}
+    try:
+        ids, size = doc_thumbnails.parse_query(
+            request.query_params.get("ids"), request.query_params.get("size")
+        )
+    except doc_thumbnails.BadRequestError as bad:
+        return JSONResponse({"error": bad.code}, status_code=400, headers=no_store)
+
+    try:
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        # #867: no own-patient fallback for a named patient; a sentinel makes
+        # every id null, the same answer as unknown ids (#590).
+        patient_id = await _get_dashboard_patient_id(request, fallback_to_own=False)
+        thumbnails = await doc_thumbnails.thumbnails_for(
+            db,
+            patient_id,
+            ids,
+            size,
+            google_enabled=GOOGLE_INTEGRATION_ENABLED,
+            make_clients=_create_patient_clients,
+        )
+        return JSONResponse({"thumbnails": thumbnails}, headers=no_store)
+    except Exception as exc:
+        # The type only: a message could carry a URL or a name.
+        logger.error("API doc-thumbnails error: %s", type(exc).__name__)
+        return JSONResponse({"error": "internal error"}, status_code=500, headers=no_store)
 
 
 @mcp.custom_route("/api/reconciliation", methods=["GET"])
@@ -5769,108 +5998,60 @@ async def api_manifest(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
-# Static schedule definitions — APScheduler doesn't expose trigger config
-_SCHEDULE_DEFS = [
-    {
-        "id": "gdrive_sync",
-        "name": "GDrive Sync",
-        "schedule": "every 5 min",
-        "group": "sync",
-        "desc": "Bidirectional sync: import new files, export to category/YYYY-MM folders, rename",
-    },
-    {
-        "id": "gmail_sync",
-        "name": "Gmail Sync",
-        "schedule": "every 5 min (+2 min offset)",
-        "group": "sync",
-        "desc": "Import medical emails, classify relevance, extract metadata",
-    },
-    {
-        "id": "calendar_sync",
-        "name": "Calendar Sync",
-        "schedule": "every 5 min (+3 min offset)",
-        "group": "sync",
-        "desc": "Import calendar events, tag medical appointments",
-    },
-    {
-        "id": "memory_check",
-        "name": "Memory Monitor",
-        "schedule": "every 5 min",
-        "group": "infra",
-        "desc": "Check RSS memory, trigger GC or graceful restart at threshold",
-    },
-    {
-        "id": "enhancement_sweep",
-        "name": "Enhancement Sweep",
-        "schedule": "daily 3:20 AM",
-        "group": "pipeline",
-        "desc": "Retry stuck unprocessed docs — OCR + AI summary + tags (max 5)",
-    },
-    {
-        "id": "metadata_extraction",
-        "name": "Metadata Extraction",
-        "schedule": "daily 3:30 AM",
-        "group": "pipeline",
-        "desc": "Backfill missing structured metadata — diagnoses, medications, providers (max 5)",
-    },
-    {
-        "id": "category_validation",
-        "name": "Category Validation",
-        "schedule": "daily 3:45 AM",
-        "group": "housekeeping",
-        "desc": "Auto-correct document categories based on AI-extracted metadata",
-    },
-    {
-        "id": "oauth_token_cleanup",
-        "name": "OAuth Cleanup",
-        "schedule": "daily 4:00 AM",
-        "group": "infra",
-        "desc": "Remove expired or revoked OAuth tokens",
-    },
-    {
-        "id": "prompt_log_cleanup",
-        "name": "Prompt Log Cleanup",
-        "schedule": "daily 4:15 AM",
-        "group": "infra",
-        "desc": "Delete prompt log entries (AI call telemetry) older than 90 days",
-    },
-    {
-        "id": "dashboard_access_log_retention",
-        "name": "Access Log Retention",
-        "schedule": "daily 4:25 AM UTC",
-        "group": "infra",
-        "desc": "Delete dashboard access log rows (sign-ins, ACL refusals) older than 90 days",
-    },
-    {
-        "id": "pipeline_integrity",
-        "name": "Pipeline Integrity",
-        "schedule": "every 6 hours at :30",
-        "group": "pipeline",
-        "desc": "Detect docs stuck in incomplete pipeline state, trigger re-processing",
-    },
-    {
-        "id": "weekly_analytics",
-        "name": "Weekly Analytics",
-        "schedule": "Sunday 5:00 AM",
-        "group": "infra",
-        "desc": "Aggregate weekly usage statistics",
-    },
-    {
-        "id": "startup_catchup",
-        "name": "Startup Catchup",
-        "schedule": "90s after boot (once)",
-        "group": "sync",
-        "desc": "Run initial sync for all patients after server start",
-    },
-]
+def _schedules_payload(lifespan_tracker: dict | None) -> dict:
+    """Jobs of the RUNNING scheduler + the curated loop (in-memory, no DB).
+
+    Built by ``scheduled_jobs`` from ``scheduler_singleton`` (job id, trigger,
+    next run) and the job tracker; known jobs this server does not run are
+    listed under ``inactive`` with the switch that keeps them off.
+    """
+    from oncofiles import scheduled_jobs
+    from oncofiles.tools.curated import continuous_settings, nightly_settings, probe_stats
+
+    current = scheduler_singleton.current_scheduler()
+    scheduler, tracker = current if current else (None, None)
+    if tracker is None:
+        tracker = lifespan_tracker or {}
+    flags = {
+        "scheduler_running": scheduler is not None,
+        "sync_enabled": SYNC_ENABLED,
+        "ai_nightly_only": AI_NIGHTLY_ONLY,
+        "gmail_calendar_enabled": gmail_calendar_enabled(),
+        "integrity_check": ENABLE_INTEGRITY_CHECK,
+    }
+    built = scheduled_jobs.build_jobs(scheduler, tracker, flags)
+    nightly_enabled, nightly_hour, _ = nightly_settings()
+    curated = scheduled_jobs.curated_loop_entry(
+        running=scheduler_singleton.curated_loop_running(),
+        nightly_enabled=nightly_enabled,
+        nightly_hour=nightly_hour,
+        google_enabled=GOOGLE_INTEGRATION_ENABLED,
+        continuous=continuous_settings(),
+        stats=probe_stats(),
+    )
+    return {
+        "scheduler": {
+            "running": scheduler is not None,
+            "started_at": scheduler_singleton.status().get("started_at"),
+            "job_count": sum(1 for j in built["jobs"] if j["registered"]),
+            "off_reason": None
+            if scheduler is not None
+            else scheduled_jobs.inactive_reason("", flags),
+        },
+        "curated_loop": curated,
+        "jobs": built["jobs"],
+        "inactive": built["inactive"],
+    }
 
 
 @mcp.custom_route("/api/schedules", methods=["GET"])
 async def api_schedules(request: Request) -> JSONResponse:
-    """Processing schedules: all jobs with live status and prompt stats by call type.
+    """Jobs of the running scheduler, the curated loop and prompt stats by call type.
 
+    The job list comes from the live APScheduler (``_schedules_payload``), not
+    a static catalogue; error details are the time and exception class only.
     Admin only (static bearer or a ``DASHBOARD_ADMIN_EMAILS`` session): the job
-    internals (last error texts) and the prompt statistics are system-wide,
+    internals and the prompt statistics are system-wide,
     not one patient's. Any other signed-in user gets 403; the patient-facing
     view of what happened is ``/api/activity``.
     """
@@ -5880,22 +6061,7 @@ async def api_schedules(request: Request) -> JSONResponse:
 
     try:
         lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
-        tracker = lifespan_ctx.get("job_tracker", {})
-
-        jobs = []
-        for defn in _SCHEDULE_DEFS:
-            live = tracker.get(defn["id"], {})
-            jobs.append(
-                {
-                    **defn,
-                    "running": live.get("running", False),
-                    "last_ok": live.get("last_ok"),
-                    "last_error": live.get("last_error"),
-                    "last_error_msg": live.get("last_error_msg"),
-                    "last_duration_s": live.get("last_duration_s"),
-                    "last_missed": live.get("last_missed"),
-                }
-            )
+        payload = _schedules_payload(lifespan_ctx.get("job_tracker"))
 
         # Prompt stats by call type (last 30 days)
         db_inst: Database = lifespan_ctx["db"]
@@ -5904,12 +6070,7 @@ async def api_schedules(request: Request) -> JSONResponse:
 
         prompts = asdict(prompt_stats)
 
-        return JSONResponse(
-            {
-                "jobs": jobs,
-                "prompt_stats": prompts,
-            }
-        )
+        return JSONResponse({**payload, "prompt_stats": prompts})
     except Exception:
         logger.exception("API schedules endpoint error")
         return JSONResponse({"error": "internal error"}, status_code=500)
@@ -6381,7 +6542,7 @@ async def api_newsletter_subscribe(request: Request) -> JSONResponse:
 async def api_onboarding_status(request: Request) -> JSONResponse:
     """Onboarding gate state for THIS caller (#852): mode + booleans only.
 
-    The dashboard uses it to show a waitlist notice instead of the new-patient
+    The dashboard uses it to show an invitation notice instead of the new-patient
     wizard / Drive connection. Never returns the invite list; no DB call.
     """
     err = _check_dashboard_auth(request)
@@ -6391,6 +6552,19 @@ async def api_onboarding_status(request: Request) -> JSONResponse:
 
     email, is_admin = _dashboard_caller(request)
     return JSONResponse(onboarding_gate.status_for(email, is_admin=is_admin))
+
+
+@mcp.custom_route("/api/public-config", methods=["GET"])
+async def api_public_config(request: Request) -> JSONResponse:
+    """Public landing flags: onboarding mode, whether the inbound welcome
+    address is live, the address itself. No auth, no DB, env only (like
+    /health); rate-limit class ``public``; cached briefly."""
+    from oncofiles import public_config
+
+    return JSONResponse(
+        public_config.public_config(),
+        headers={"Cache-Control": f"public, max-age={public_config.CACHE_SECONDS}"},
+    )
 
 
 @mcp.custom_route("/api/patients", methods=["GET"])
@@ -7119,6 +7293,426 @@ async def api_gdrive_set_folder(request: Request) -> JSONResponse:
         return JSONResponse({"error": "internal error"}, status_code=500)
 
 
+@mcp.custom_route("/api/upload", methods=["POST"])
+async def api_upload(request: Request) -> JSONResponse:
+    """Add documents from the dashboard (#921). Multipart field ``files``.
+
+    ``?patient_id=`` (slug or UUID) is checked BEFORE the body is read: the
+    single body ACL (``_dashboard_body_patient``: unknown and foreign are the
+    same 404), then ``_dashboard_write_refusal`` (an admin's read-only view of
+    someone else's patient, and the operator bearer, get 403 ``read_only``).
+    The rate limiter refuses a body over ``RATE_LIMIT_UPLOAD_MAX_BODY_BYTES``
+    with 413 before it is read. Everything else (types, sizes, count, cap,
+    curated inbox vs Drive-only) is ``dashboard_upload.handle_upload``.
+    No #852 gate: adding documents to a patient that already exists and has
+    Drive connected is not onboarding.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    raw_patient_id = str(request.query_params.get("patient_id") or "").strip()
+    if not raw_patient_id:
+        return JSONResponse({"error": "patient_id required"}, status_code=400)
+    patient_id, acl_err = await _dashboard_body_patient(request, db_inst, raw_patient_id)
+    if acl_err is not None:
+        return acl_err
+    ro_err = await _dashboard_write_refusal(request, db_inst, patient_id)
+    if ro_err is not None:
+        return ro_err
+
+    from starlette.datastructures import UploadFile
+
+    from oncofiles import dashboard_upload
+
+    try:
+        form = await request.form(max_files=dashboard_upload.MAX_FILES + 1, max_fields=5)
+    except Exception as exc:
+        logger.warning("API upload: unreadable multipart body (%s)", type(exc).__name__)
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    try:
+        uploads = [f for f in form.getlist("files") if isinstance(f, UploadFile)]
+        outcome = await dashboard_upload.handle_upload(db_inst, patient_id, uploads)
+        return JSONResponse(outcome.payload, status_code=outcome.status)
+    except Exception:
+        logger.exception("API upload error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    finally:
+        await form.close()
+
+
+# ── Documents by e-mail (#950 phase 1) ───────────────────────────────────────
+
+
+@mcp.custom_route("/api/inbound-address", methods=["GET"])
+async def api_inbound_address(request: Request) -> JSONResponse:
+    """The patient's private document e-mail address (#950).
+
+    The #867 ACL (``_dashboard_patient_or_refusal``: unknown and foreign are
+    the same 404), then the #921 write refusal: the address is a credential to
+    write into the patient's inbox, so only the caregiver sees it (an admin's
+    read-only view and the operator bearer get 403 ``read_only``). The row is
+    created on first view. While neither adapter is configured
+    (``INBOUND_MIME_HMAC_SECRET`` and ``INBOUND_BREVO_TOKEN`` both unset)
+    nothing is created and the answer is ``{"enabled": false}``: no address is
+    shown that could not receive mail.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    patient_id, refusal = await _dashboard_patient_or_refusal(request)
+    if refusal is not None:
+        return refusal
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    ro_err = await _dashboard_write_refusal(request, db_inst, patient_id)
+    if ro_err is not None:
+        return ro_err
+    from oncofiles import inbound_email
+
+    if not inbound_email.is_enabled():
+        return JSONResponse({"enabled": False})
+    try:
+        return JSONResponse(await inbound_email.ensure_address(db_inst, patient_id))
+    except Exception:
+        logger.exception("API inbound-address error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/inbound-address/rotate", methods=["POST"])
+async def api_inbound_address_rotate(request: Request) -> JSONResponse:
+    """A new document address for the patient; the old one stops routing (#950).
+
+    Body ``{"patient_id": …}``: ``_dashboard_body_patient`` (#867) then the
+    #921 write refusal, as for the upload. The dashboard asks for a second,
+    armed click first (no browser dialog).
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    patient_id, acl_err = await _dashboard_body_patient(
+        request, db_inst, str(body.get("patient_id") or "")
+    )
+    if acl_err is not None:
+        return acl_err
+    ro_err = await _dashboard_write_refusal(request, db_inst, patient_id)
+    if ro_err is not None:
+        return ro_err
+    from oncofiles import inbound_email
+
+    if not inbound_email.is_enabled():
+        return JSONResponse({"enabled": False}, status_code=409)
+    try:
+        return JSONResponse(await inbound_email.rotate_address(db_inst, patient_id))
+    except Exception:
+        logger.exception("API inbound-address rotate error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+@mcp.custom_route("/api/inbound-unmatched", methods=["GET"])
+async def api_inbound_unmatched(request: Request) -> JSONResponse:
+    """Admin zone: mail to patient addresses that was not filed (#950).
+
+    In-memory, counts only: a keyed hash of the sender (never the address),
+    the patient id prefix, mails, files, reason codes and times, plus totals,
+    and the durable queue's counts per state / failure reason (#952).
+    Go-live diagnostics: ``auth_refusals`` (counter per refusal code) and
+    ``authserv_candidates`` (hostname-shaped authserv-ids only, counts, times);
+    ``header_names`` / ``item_keys`` / ``payload_keys`` (field NAMES of the
+    Brevo payload as ``{name, items}``, never values), ``auth_evidence``
+    (presence-flag counts) and ``field_names_stats``.
+    """
+    err = _require_admin(request)
+    if err:
+        return err
+    from oncofiles import inbound_email
+
+    out = inbound_email.unmatched_overview()
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        # #952: durable queue counts (per state; failed per reason code, e.g.
+        # download_expired), so a lost mail is visible after a restart too.
+        out["jobs"] = await db_inst.inbound_job_counts()
+    except Exception as exc:
+        logger.warning("API inbound-unmatched: job counts failed (%s)", type(exc).__name__)
+        out["jobs"] = None
+    try:
+        # #950 DKIM mode: the claimed bucket (mail waiting for its verification)
+        out["claimed_jobs"] = await db_inst.inbound_claimed_counts()
+    except Exception as exc:
+        logger.warning("API inbound-unmatched: claimed counts failed (%s)", type(exc).__name__)
+        out["claimed_jobs"] = None
+    # #950 phase 2: why the trial reader last waited (codes and counts only)
+    from oncofiles import holding_extract
+
+    out["holding_reader"] = holding_extract.reader_status()
+    # #950 phase 3: time-to-value funnel of the welcome@ trials (counts and
+    # median seconds only; no ids, addresses, names or files)
+    from oncofiles import trial_funnel
+
+    try:
+        out["trial_funnel"] = trial_funnel.funnel(await db_inst.trial_funnel_rows())
+    except Exception as exc:
+        logger.warning("API inbound-unmatched: trial funnel failed (%s)", type(exc).__name__)
+        out["trial_funnel"] = None
+    return JSONResponse(out)
+
+
+@mcp.custom_route("/api/trial-status", methods=["GET"])
+async def api_trial_status(request: Request) -> JSONResponse:
+    """The welcome@ trial of the dashboard patient (#950 phase 2), counts only.
+
+    Same auth and patient resolution as ``/api/activity``
+    (``_get_dashboard_patient_id``; a caller without a patient gets the
+    sentinel, which has no trial). ``{"trial": false}`` for every patient that
+    did not start through welcome@. Otherwise ``trial_until`` (the 30-day end),
+    ``days_left`` and the holding documents per reading state (``documents``,
+    ``reading``, ``ready``, ``attention``) for the first-steps checklist, and
+    ``drive_connected``. No name, file name or address.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        db: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+        patient_id = await _get_dashboard_patient_id(request)
+        trial = await db.get_trial(patient_id=patient_id)
+        if trial is None:
+            return JSONResponse({"trial": False})
+        from oncofiles import holding_store
+
+        counts = await db.holding_document_counts(patient_id=patient_id)
+        ends = datetime.strptime(trial["trial_ends_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        days_left = max(0, -(-int((ends - datetime.now(UTC)).total_seconds()) // 86400))
+        return JSONResponse(
+            {
+                "trial": True,
+                "trial_until": trial["trial_ends_at"],
+                "days_left": days_left,
+                "documents": sum(counts.values()),
+                "reading": counts.get("pending", 0) + counts.get("reading", 0),
+                "ready": counts.get("done", 0),
+                "attention": counts.get("failed", 0) + counts.get("excluded", 0),
+                "drive_connected": not await holding_store.holding_mode(db, patient_id),
+                # #950 phase 3: held files with a verified copy in Drive, and
+                # whether every one has one (the trial is converted)
+                "moved_to_drive": await db.holding_moved_count(patient_id=patient_id),
+                "converted": bool(trial.get("converted_at")),
+            }
+        )
+    except Exception:
+        logger.exception("API trial-status error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+# Google's cap for an unverified OAuth client with sensitive/restricted scopes.
+GOOGLE_UNVERIFIED_USER_CAP = 100
+GOOGLE_OAUTH_BASIS = "distinct_link_account_hashes_plus_unaudited_token_rows"
+
+
+@mcp.custom_route("/api/admin/oauth-users", methods=["GET"])
+async def api_admin_oauth_users(request: Request) -> JSONResponse:
+    """Admin zone: Google accounts that completed the Drive/Gmail/Calendar OAuth.
+
+    The unverified OAuth client is capped by Google at 100 users who granted
+    its restricted scope. Counted (``basis``): distinct keyed account hashes of
+    every stored Google link (append-only audit, so ever-granted) plus stored
+    tokens of patients linked before that audit existed (one each, account
+    unknown), a conservative upper bound. Dashboard sign-in (Google Identity
+    Services, ``openid``/``email`` only) and MCP OAuth (our own server) grant no
+    sensitive scope and are not counted. Counts only, never an e-mail.
+    """
+    err = _require_admin(request)
+    if err:
+        return err
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        counts = await db_inst.count_google_oauth_accounts()
+    except Exception as exc:
+        logger.warning("API admin oauth-users: count failed (%s)", type(exc).__name__)
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    return JSONResponse(
+        {
+            "google_oauth_users": counts["accounts"] + counts["unaudited_links"],
+            "cap": GOOGLE_UNVERIFIED_USER_CAP,
+            "basis": GOOGLE_OAUTH_BASIS,
+            "accounts": counts["accounts"],
+            "unaudited_links": counts["unaudited_links"],
+        }
+    )
+
+
+async def _read_capped_body(request: Request, limit: int) -> bytearray | None:
+    """The request body in ONE buffer, or None as soon as it exceeds ``limit``."""
+    buf = bytearray()
+    async for chunk in request.stream():
+        if len(buf) + len(chunk) > limit:
+            return None
+        buf.extend(chunk)
+    return buf
+
+
+async def _read_capped_body_in_time(request: Request, limit: int) -> bytearray | None | bool:
+    """``_read_capped_body`` under ``inbound_email.READ_DEADLINE_S``; False on timeout."""
+    from oncofiles import inbound_email
+
+    try:
+        async with asyncio.timeout(inbound_email.READ_DEADLINE_S):
+            return await _read_capped_body(request, limit)
+    except TimeoutError:
+        return False
+
+
+def _inbound_read_timeout() -> JSONResponse:
+    return JSONResponse({"error": "request timeout"}, status_code=408)
+
+
+def _declared_too_large(request: Request, limit: int) -> bool:
+    try:
+        return int(request.headers.get("content-length") or 0) > limit
+    except ValueError:
+        return False
+
+
+def _inbound_busy() -> JSONResponse:
+    return JSONResponse({"error": "busy"}, status_code=503, headers={"Retry-After": "30"})
+
+
+@mcp.custom_route("/inbound/email", methods=["POST"])
+async def inbound_email_webhook(request: Request) -> Response:
+    """Inbound mail webhook, provider-agnostic raw MIME (#950 phase 1).
+
+    Not a dashboard route: it is authenticated by the HMAC signature of the
+    provider (contract in ``oncofiles.inbound_email``), keyed with its own
+    secret ``INBOUND_MIME_HMAC_SECRET``. Order (infra review): FIRST the
+    adapter must be enabled, else the app's ordinary 404 before a single body
+    byte is read; then a read slot of its own (``MIME_READ_SLOTS``, two at a
+    time, read deadline 408; full = 503, nothing read); then the capped read
+    (413); then the signature (it needs the body), a missing or wrong one is
+    the same 404. After a valid signature always 202, whatever happened to
+    the mail. Nothing from the request content is logged.
+    """
+    from starlette.exceptions import HTTPException
+
+    from oncofiles import inbound_email
+
+    secret = inbound_email.mime_secret()
+    if not secret:
+        raise HTTPException(status_code=404)
+    if inbound_email.MIME_READ_SLOTS.locked():
+        return _inbound_busy()
+    async with inbound_email.MIME_READ_SLOTS:
+        if _declared_too_large(request, inbound_email.MAX_BODY_BYTES):
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        raw = await _read_capped_body_in_time(request, inbound_email.MAX_BODY_BYTES)
+        if raw is False:
+            return _inbound_read_timeout()
+        if raw is None:
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        original_to = request.headers.get(inbound_email.RECIPIENT_HEADER, "")
+        auth = request.headers.get(inbound_email.AUTH_HEADER, "")
+        signature = request.headers.get(inbound_email.SIGNATURE_HEADER, "")
+        if not inbound_email.signature_ok(secret, signature, original_to, auth, raw):
+            logger.info("inbound: refused request (signature)")
+            raise HTTPException(status_code=404)
+        try:
+            message = inbound_email.parse_raw_mime(raw, original_to=original_to, auth=auth)
+        except inbound_email.UnparseableMessageError:
+            logger.info("inbound: dropped reason=unparseable")
+            return JSONResponse({"status": "accepted"}, status_code=202)
+        finally:
+            raw = None
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        await inbound_email.process_message(db_inst, message)
+    except Exception as exc:
+        logger.error("inbound: processing failed (%s)", type(exc).__name__)
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    return JSONResponse({"status": "accepted"}, status_code=202)
+
+
+@mcp.custom_route("/inbound/brevo", methods=["POST"])
+async def inbound_brevo_webhook(request: Request) -> Response:
+    """Brevo inbound-parsing webhook (#950, D3 = Brevo).
+
+    Brevo does not sign its calls: the webhook is created with the custom
+    header ``X-Inbound-Token: <INBOUND_BREVO_TOKEN>`` (its own secret, never
+    the raw-MIME HMAC key). Order (infra review): FIRST the adapter must be
+    enabled, else the app's ordinary 404; then the token with
+    ``hmac.compare_digest`` (missing or wrong = the same 404); both before a
+    single body byte is read. Without the mandatory ``INBOUND_JOBS_SECRET``
+    (#952) the answer is then 503 + Retry-After, nothing read or queued, so
+    Brevo retries. Then a read slot of its own
+    (``BREVO_READ_SLOTS``; full = 503; read deadline 408), the capped read
+    (413) and the strict JSON parse (duplicate keys refused).
+    Then every routable mail is written to the durable queue ``inbound_jobs``
+    (#952, ``inbound_queue.enqueue``: encrypted minimal payload, one
+    transaction) BEFORE the 202; if that write fails the answer is 500, so
+    Brevo retries (an already queued mail is not queued twice); over a queue
+    cap (``MAX_OPEN_JOBS_PER_TOKEN`` / ``MAX_OPEN_JOBS_TOTAL``) it is 503 +
+    Retry-After with nothing written. Checks,
+    attachment downloads, filing and the receipt run in the queue worker
+    (``inbound_queue.kick`` now, plus the startup and periodic runs),
+    serialized under ``PROCESS_LOCK``. Nothing from the request content is
+    logged.
+    """
+    from starlette.exceptions import HTTPException
+
+    from oncofiles import inbound_email
+
+    secret = inbound_email.brevo_token()
+    if not secret:
+        raise HTTPException(status_code=404)
+    token = request.headers.get(inbound_email.BREVO_TOKEN_HEADER, "")
+    if not inbound_email.brevo_token_ok(secret, token):
+        logger.info("inbound: refused request (token)")
+        raise HTTPException(status_code=404)
+    from oncofiles import inbound_queue
+
+    if not inbound_queue.configured():
+        # #952: INBOUND_JOBS_SECRET is mandatory; without it nothing can be
+        # queued safely, so Brevo is asked to retry later (fail closed).
+        inbound_queue._warn_unconfigured_once()
+        return _inbound_busy()
+    if inbound_email.BREVO_READ_SLOTS.locked():
+        return _inbound_busy()
+    async with inbound_email.BREVO_READ_SLOTS:
+        if _declared_too_large(request, inbound_email.BREVO_MAX_BODY_BYTES):
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        raw = await _read_capped_body_in_time(request, inbound_email.BREVO_MAX_BODY_BYTES)
+        if raw is False:
+            return _inbound_read_timeout()
+        if raw is None:
+            return JSONResponse({"error": "request body too large"}, status_code=413)
+        try:
+            messages = inbound_email.parse_brevo_payload(inbound_email.parse_json_strict(raw))
+        except inbound_email.UnparseableMessageError:
+            logger.info("inbound: dropped reason=unparseable")
+            return JSONResponse({"status": "accepted"}, status_code=202)
+        finally:
+            raw = None
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    if messages:
+        try:
+            await inbound_queue.enqueue(db_inst, messages)
+        except inbound_queue.InboundQueueFullError:
+            # #952 caps (nothing written), or #950 claimed address rows over
+            # their bounds (the rest of the batch is then committed and the
+            # periodic worker picks it up): Brevo retries after Retry-After
+            return _inbound_busy()
+        except Exception as exc:
+            logger.error("inbound: enqueue failed (%s)", type(exc).__name__)
+            return JSONResponse({"error": "internal error"}, status_code=500)
+        inbound_queue.kick(db_inst)
+    return JSONResponse({"status": "accepted"}, status_code=202)
+
+
 def _require_admin(request: Request) -> JSONResponse | None:
     """Admin-only operations (#573): static bearer or an admin dashboard session.
 
@@ -7654,7 +8248,7 @@ async def oauth_authorize(request: Request) -> JSONResponse:
         principal = {"k": "s", "tid": parsed_session[2]}
     if service not in {"drive", "gmail", "calendar", "all"}:
         return JSONResponse({"error": "unknown service"}, status_code=400)
-    # Resolve slug → UUID (e.g. "q1b" → UUID); an unknown value is refused
+    # Resolve slug → UUID (e.g. "jana-testova" → UUID); an unknown value is refused
     # here (#867), never passed on.
     try:
         db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]

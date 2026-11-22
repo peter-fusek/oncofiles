@@ -17,7 +17,7 @@ from oncofiles.curated import reocr_compare as rc
 from oncofiles.curated.facts_rules import Vocabulary
 from oncofiles.curated.reocr import Reread
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID, TEST_PATIENT_UUID
+from tests.helpers import PRIMARY_TEST_UUID, TEST_PATIENT_UUID
 from tests.test_admin_reread_console import _doc, _fact
 from tests.test_curated_reocr import _scan_pdf
 
@@ -181,21 +181,21 @@ async def _seed(db):
         "INSERT OR IGNORE INTO patients (patient_id, slug, display_name) VALUES (?, ?, ?)",
         (TEST_PATIENT_UUID, "synth-other", "Synthetic Other"),
     )
-    await _doc(db, 501, ERIKA_UUID)
-    await _doc(db, 502, ERIKA_UUID)
+    await _doc(db, 501, PRIMARY_TEST_UUID)
+    await _doc(db, 502, PRIMARY_TEST_UUID)
     await _doc(db, 601, TEST_PATIENT_UUID)  # another patient's document
-    await _fact(db, 501, ERIKA_UUID, "CEA", verification="machine", meta={})
+    await _fact(db, 501, PRIMARY_TEST_UUID, "CEA", verification="machine", meta={})
     for code in ("CEA", "CA19_9", "CREA"):
-        await _fact(db, 502, ERIKA_UUID, code, verification="machine", meta={})
-    await _fact(db, 502, ERIKA_UUID, "WBC")
+        await _fact(db, 502, PRIMARY_TEST_UUID, code, verification="machine", meta={})
+    await _fact(db, 502, PRIMARY_TEST_UUID, "WBC")
     await db.db.commit()
 
 
 async def _run(db, ids):
-    out = await tool.start_reocr_compare(db, ERIKA_UUID, ids)
+    out = await tool.start_reocr_compare(db, PRIMARY_TEST_UUID, ids)
     assert out.get("kind") == "reocr_compare", out
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    return tool._reocr_jobs[ERIKA_UUID]
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    return tool._reocr_jobs[PRIMARY_TEST_UUID]
 
 
 async def test_the_job_compares_most_machine_facts_first_and_writes_nothing(db, env):
@@ -218,51 +218,53 @@ async def test_the_job_compares_most_machine_facts_first_and_writes_nothing(db, 
     assert drive.other == []
     assert [c[0] for c in gdrive.dedicated_copy.return_value.method_calls] == ["close", "close"]
     assert not tool.run_active()  # a deploy may cut it
-    status = await tool.reocr_status(db, ERIKA_UUID)
+    status = await tool.reocr_status(db, PRIMARY_TEST_UUID)
     assert status["kind"] == "reocr_compare" and status["dry_run"] is True
 
 
 async def test_more_than_ten_ids_are_refused(db, env):
-    out = await tool.start_reocr_compare(db, ERIKA_UUID, list(range(700, 711)))
+    out = await tool.start_reocr_compare(db, PRIMARY_TEST_UUID, list(range(700, 711)))
     assert out["error"].startswith("too many")
     assert tool._reocr_jobs == {}
 
 
 async def test_no_ids_is_refused(db, env):
-    assert "required" in (await tool.start_reocr_compare(db, ERIKA_UUID, []))["error"]
+    assert "required" in (await tool.start_reocr_compare(db, PRIMARY_TEST_UUID, []))["error"]
 
 
 @pytest.mark.parametrize("kind", ["reocr", "reread", "llm_shadow", "reocr_compare"])
 async def test_refused_while_another_job_runs_for_the_patient(db, env, kind):
     await _seed(db)
-    tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": kind}
-    out = await tool.start_reocr_compare(db, ERIKA_UUID, [501])
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": kind}
+    out = await tool.start_reocr_compare(db, PRIMARY_TEST_UUID, [501])
     assert out["error"].startswith("busy")
-    assert tool._reocr_jobs[ERIKA_UUID] == {"state": "running", "kind": kind}
+    assert tool._reocr_jobs[PRIMARY_TEST_UUID] == {"state": "running", "kind": kind}
 
 
 async def test_refused_while_the_patient_lock_is_held(db, env):
     await _seed(db)
-    async with tool.patient_lock(ERIKA_UUID):
-        out = await tool.start_reocr_compare(db, ERIKA_UUID, [501])
+    async with tool.patient_lock(PRIMARY_TEST_UUID):
+        out = await tool.start_reocr_compare(db, PRIMARY_TEST_UUID, [501])
     assert out["error"].startswith("busy")
 
 
 async def test_refused_while_a_curated_run_is_active(db, env):
     await _seed(db)
-    tool._runs[ERIKA_UUID] = {"state": "running"}
-    assert (await tool.start_reocr_compare(db, ERIKA_UUID, [501]))["error"].startswith("busy")
+    tool._runs[PRIMARY_TEST_UUID] = {"state": "running"}
+    assert (await tool.start_reocr_compare(db, PRIMARY_TEST_UUID, [501]))["error"].startswith(
+        "busy"
+    )
 
 
 async def test_a_running_compare_never_blocks_a_curated_run(db, env):
-    tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": "reocr_compare"}
-    assert tool.run_block_reason(ERIKA_UUID) is None
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": "reocr_compare"}
+    assert tool.run_block_reason(PRIMARY_TEST_UUID) is None
 
 
 async def test_another_patients_document_is_never_read(db, env):
     drive, _ = env
     await _seed(db)
-    out = await tool.start_reocr_compare(db, ERIKA_UUID, [601])
+    out = await tool.start_reocr_compare(db, PRIMARY_TEST_UUID, [601])
     not_found = {"document_id": 601, "result": "skipped", "error": "not_found"}
     assert out == {"status": "nothing to do", "skipped": [not_found]}
     assert tool._reocr_jobs == {}
@@ -278,7 +280,7 @@ class _Ctx:
 
 
 @contextmanager
-def _as_caller(*, admin: bool, pid: str = ERIKA_UUID):
+def _as_caller(*, admin: bool, pid: str = PRIMARY_TEST_UUID):
     """The verified caller (admin flag, bound patient) inside the test's context."""
     from oncofiles.persistent_oauth import (
         _verified_caller_email,
@@ -296,16 +298,16 @@ def _as_caller(*, admin: bool, pid: str = ERIKA_UUID):
             var.reset(tok)
 
 
-async def _erika_slug(db) -> str:
+async def _primary_slug(db) -> str:
     async with db.db.execute(
-        "SELECT slug FROM patients WHERE patient_id = ?", (ERIKA_UUID,)
+        "SELECT slug FROM patients WHERE patient_id = ?", (PRIMARY_TEST_UUID,)
     ) as cur:
         return (await cur.fetchone())[0]
 
 
 async def test_a_non_admin_is_refused_even_for_the_own_patient(db, env):
     await _seed(db)
-    slug = await _erika_slug(db)
+    slug = await _primary_slug(db)
     with _as_caller(admin=False):
         for kw in ({}, {"patient_slug": slug}, {"patient_slug": "synth-other"}):
             out = json.loads(await tool.curated_reocr_compare(_Ctx(db), [501], **kw))
@@ -324,12 +326,12 @@ async def test_an_admin_without_a_patient_slug_is_refused(db, env):
 
 async def test_an_admin_with_a_patient_slug_starts_a_job(db, env):
     await _seed(db)
-    slug = await _erika_slug(db)
+    slug = await _primary_slug(db)
     with _as_caller(admin=True, pid=""):
         out = json.loads(await tool.curated_reocr_compare(_Ctx(db), [501], patient_slug=slug))
     assert out["kind"] == "reocr_compare" and out["dry_run"] is True
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    assert tool._reocr_jobs[ERIKA_UUID]["state"] == "done"
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    assert tool._reocr_jobs[PRIMARY_TEST_UUID]["state"] == "done"
 
 
 def test_the_tool_is_registered_read_only():

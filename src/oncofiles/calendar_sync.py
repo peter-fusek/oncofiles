@@ -1,4 +1,10 @@
-"""Calendar sync — scan events, classify medical, create treatment events."""
+"""Calendar sync — scan events, classify medical, create treatment events.
+
+A keyword match (the fallback when no model classifies the event) only marks an
+event as possibly medical for display and search. It never creates a
+TreatmentEvent row (#930): the keywords match substrings ("ct", "lab", a first
+name), so a false hit would put an invented treatment into the patient's record.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +27,10 @@ _LOCK_TIMEOUT = 600
 
 # Initial scan date (RFC3339)
 _INITIAL_SCAN_AFTER = "2025-12-01T00:00:00Z"
+
+# Event type returned by the keyword fallback. Such an event is stored with
+# is_medical=True (display/search only) and never becomes a TreatmentEvent (#930).
+KEYWORD_EVENT_TYPE = "keyword_match"
 
 # Medical keywords for pre-filtering (both SK and EN)
 _MEDICAL_KEYWORDS = [
@@ -84,7 +94,7 @@ async def _classify_event_medical(
         text = f"{summary} {description} {location}".lower()
         for kw in _get_medical_keywords(patient_id):
             if kw.lower() in text:
-                return True, 0.7, "other_medical"
+                return True, 0.7, KEYWORD_EVENT_TYPE
         return False, 0.0, "not_medical"
 
     prompt = (
@@ -138,12 +148,16 @@ async def _classify_event_medical(
             result.get("event_type", "not_medical"),
         )
     except Exception:
-        logger.warning("Calendar event classification failed: %s", summary[:60], exc_info=True)
+        logger.warning(
+            "Calendar event classification failed (summary len=%d)",
+            len(summary or ""),
+            exc_info=True,
+        )
         # Fallback to keyword match (includes dynamic patient name terms)
         text_combined = f"{summary} {description} {location}".lower()
         for kw in _get_medical_keywords(patient_id):
             if kw.lower() in text_combined:
-                return True, 0.5, "other_medical"
+                return True, 0.5, KEYWORD_EVENT_TYPE
         return False, 0.0, "not_medical"
 
 
@@ -152,7 +166,12 @@ async def _auto_create_treatment_event(
     entry: CalendarEntry,
     event_type: str = "consult",
 ) -> int | None:
-    """Auto-create a treatment event from a medical calendar entry if not already linked."""
+    """Auto-create a treatment event from a medical calendar entry if not already linked.
+
+    Never for a keyword match (#930): the caller skips it, and so does this guard.
+    """
+    if event_type == KEYWORD_EVENT_TYPE:
+        return None
     if entry.treatment_event_id:
         return entry.treatment_event_id  # Already linked
 
@@ -179,14 +198,12 @@ async def _auto_create_treatment_event(
         )
         await db.db.commit()
 
-        logger.info(
-            "Auto-created treatment event #%d from calendar: %s", saved.id, entry.summary[:60]
-        )
+        logger.info("Auto-created treatment event #%d from calendar entry %s", saved.id, entry.id)
         return saved.id
     except Exception:
         logger.warning(
-            "Failed to create treatment event from calendar: %s",
-            entry.summary[:60],
+            "Failed to create treatment event from calendar entry %s",
+            entry.id,
             exc_info=True,
         )
         return None
@@ -346,8 +363,9 @@ async def _calendar_sync_inner(
             entry.patient_id = patient_id
             entry = await db.upsert_calendar_entry(entry)
 
-            # Auto-create treatment event for medical appointments
-            if is_medical and entry.id:
+            # Auto-create a treatment event only for a model classification;
+            # a keyword match never writes a clinical row (#930).
+            if is_medical and entry.id and event_type != KEYWORD_EVENT_TYPE:
                 te_id = await _auto_create_treatment_event(db, entry, event_type)
                 if te_id:
                     stats["treatment_events_created"] += 1

@@ -364,7 +364,9 @@ _SPECS: dict[str, _Spec] = {
     ),
     "tool_call_status": _here(("ok", "error"), "audit_middleware.py"),
     "prompt_call_type": _from("oncofiles.models", "PromptCallType", _values),
-    "prompt_status": _here(("ok", "error", "dedup_hit"), "prompt_logger, prompt_dedup"),
+    "prompt_status": _here(
+        ("ok", "error", "dedup_hit"), "prompt_logger; dedup_hit only on rows from before #930"
+    ),
     "audit_action": _here(
         ("create", "update", "delete", "restore"), "database._clinical_records, _facts"
     ),
@@ -395,6 +397,10 @@ _SPECS: dict[str, _Spec] = {
     ),
     "device_kind": _here(("llm-extractor",), "curated.clinical_store.device_id_for"),
     "dashboard_access_event": _from("oncofiles.database._access_log", "DASHBOARD_ACCESS_EVENTS"),
+    "inbound_job_state": _from("oncofiles.database._inbound_jobs", "INBOUND_JOB_STATES"),
+    "inbound_claimed_job_state": _from("oncofiles.database._inbound_claimed", "CLAIMED_JOB_STATES"),
+    "consent_kind": _from("oncofiles.patient_consent", "CONSENT_KINDS"),
+    "trial_source": _from("oncofiles.database._trials", "TRIAL_SOURCES"),
 }
 
 # (table, column) → domain. Every enum-like column is here, in
@@ -468,6 +474,10 @@ COLUMN_DOMAINS: dict[tuple[str, str], str] = {
     ("calendar_entries", "status"): "calendar_event_status",
     ("devices", "kind"): "device_kind",
     ("dashboard_access_log", "event"): "dashboard_access_event",
+    ("inbound_jobs", "state"): "inbound_job_state",
+    ("inbound_claimed_jobs", "state"): "inbound_claimed_job_state",
+    ("patient_consents", "kind"): "consent_kind",
+    ("trial_accounts", "source"): "trial_source",
 }
 
 # Codes used as keys into a reference table or an external code system that this
@@ -901,6 +911,26 @@ _LABELS: dict[str, dict[str, tuple[str, str]]] = {
         "sign_in": ("Prihlásenie", "Sign-in"),
         "patient_read": ("Čítanie cudzieho pacienta (admin)", "Admin read of another patient"),
         "acl_refused": ("Prístup odmietnutý", "Access refused"),
+    },
+    "inbound_job_state": {
+        "pending": ("Čaká na spracovanie", "Pending"),
+        "processing": ("Spracúva sa", "Processing"),
+        "done": ("Spracované", "Done"),
+        "failed": ("Zlyhalo", "Failed"),
+    },
+    "inbound_claimed_job_state": {
+        "pending": ("Čaká na overenie", "Pending verification"),
+        "processing": ("Overuje sa", "Verifying"),
+        "deferred": ("Odložené (plné miesta)", "Deferred (slots full)"),
+        "done": ("Overené", "Done"),
+        "failed": ("Zlyhalo", "Failed"),
+    },
+    "consent_kind": {
+        "wizard": ("Súhlas v sprievodcovi", "Consent in the wizard"),
+        "by_sending": ("Súhlas poslaním dokumentov", "Consent by sending documents"),
+    },
+    "trial_source": {
+        "welcome_email": ("E-mail na welcome@", "E-mail to welcome@"),
     },
 }
 

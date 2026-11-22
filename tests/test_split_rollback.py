@@ -12,7 +12,7 @@ import pytest
 from oncofiles.models import Document, DocumentCategory
 from oncofiles.split import split_document
 
-ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+PRIMARY_TEST_UUID = "00000000-0000-4000-8000-000000000001"
 
 
 async def _seed_source_doc(db) -> Document:
@@ -27,7 +27,7 @@ async def _seed_source_doc(db) -> Document:
         mime_type="application/pdf",
         size_bytes=1000,
     )
-    return await db.insert_document(doc, patient_id=ERIKA_UUID)
+    return await db.insert_document(doc, patient_id=PRIMARY_TEST_UUID)
 
 
 @pytest.mark.asyncio
@@ -52,7 +52,7 @@ async def test_split_rolls_back_when_files_api_fails_mid_loop(db):
         size_bytes=1000,
         gdrive_id="gd_src",
     )
-    source = await db.insert_document(src, patient_id=ERIKA_UUID)
+    source = await db.insert_document(src, patient_id=PRIMARY_TEST_UUID)
 
     gdrive = MagicMock()
     gdrive.download.return_value = b"pdf bytes"
@@ -88,11 +88,11 @@ async def test_split_rolls_back_when_files_api_fails_mid_loop(db):
         gdrive=gdrive,
         doc=source,
         sub_docs=sub_docs,
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     assert created == []
-    all_docs = await db.list_documents(limit=100, patient_id=ERIKA_UUID)
+    all_docs = await db.list_documents(limit=100, patient_id=PRIMARY_TEST_UUID)
     live = [d for d in all_docs if d.deleted_at is None]
     # Only the source document should remain live. The rolled-back part 1 and
     # the never-created part 2 must not leave live rows behind.
@@ -131,12 +131,12 @@ async def test_split_succeeds_when_all_uploads_succeed(db):
         gdrive=None,
         doc=source,
         sub_docs=sub_docs,
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
     )
 
     assert len(created) == 2
     assert {c.part_number for c in created} == {1, 2}
     assert all(c.total_parts == 2 for c in created)
     # Source should be soft-deleted after successful split.
-    refreshed_source = await db.get_document(source.id, patient_id=ERIKA_UUID)
+    refreshed_source = await db.get_document(source.id, patient_id=PRIMARY_TEST_UUID)
     assert refreshed_source.deleted_at is not None

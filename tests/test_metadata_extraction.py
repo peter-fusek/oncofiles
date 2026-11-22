@@ -96,13 +96,13 @@ class TestStructuredMetadataDB:
 
     @pytest.mark.asyncio
     async def test_update_and_read_structured_metadata(self, db):
-        from tests.helpers import ERIKA_UUID, make_doc
+        from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
-        doc = await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
+        doc = await db.insert_document(make_doc(), patient_id=PRIMARY_TEST_UUID)
         metadata = json.dumps({"document_type": "lab_report", "findings": ["WBC elevated"]})
         await db.update_structured_metadata(doc.id, metadata)
 
-        updated = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+        updated = await db.get_document(doc.id, patient_id=PRIMARY_TEST_UUID)
         assert updated.structured_metadata is not None
         parsed = json.loads(updated.structured_metadata)
         assert parsed["document_type"] == "lab_report"
@@ -110,8 +110,8 @@ class TestStructuredMetadataDB:
 
     @pytest.mark.asyncio
     async def test_structured_metadata_null_by_default(self, db):
-        from tests.helpers import ERIKA_UUID, make_doc
+        from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
-        doc = await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
-        fetched = await db.get_document(doc.id, patient_id=ERIKA_UUID)
+        doc = await db.insert_document(make_doc(), patient_id=PRIMARY_TEST_UUID)
+        fetched = await db.get_document(doc.id, patient_id=PRIMARY_TEST_UUID)
         assert fetched.structured_metadata is None

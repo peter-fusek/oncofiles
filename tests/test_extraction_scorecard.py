@@ -21,7 +21,7 @@ from oncofiles.curated import llm, llm_extract
 from oncofiles.curated import llm_extract_clinical as lx
 from oncofiles.curated import scorecard as sc
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_llm_extract import PAGE as LAB_PAGE
 from tests.test_llm_extract import model_answer as lab_answer
 
@@ -65,8 +65,8 @@ async def _doc(db, doc_id, pages, category):
         "INSERT INTO documents (id, file_id, filename, original_filename, category, mime_type, "
         "size_bytes, patient_id, gdrive_id, structured_metadata, document_date) "
         "VALUES (?, ?, ?, ?, ?, 'application/pdf', 1, ?, ?, ?, ?)",
-        (doc_id, f"gdrive:g{doc_id}", f"d{doc_id}.pdf", f"d{doc_id}.pdf", category, ERIKA_UUID,
-         f"g{doc_id}", json.dumps(meta), DAY),
+        (doc_id, f"gdrive:g{doc_id}", f"d{doc_id}.pdf", f"d{doc_id}.pdf", category,
+         PRIMARY_TEST_UUID, f"g{doc_id}", json.dumps(meta), DAY),
     )  # fmt: skip
     for n, text in enumerate(pages, 1):
         await db.save_ocr_page(doc_id, n, text, "curated-sidecar")
@@ -81,7 +81,7 @@ async def seeded(db):
         "INSERT INTO clinical_records (patient_id, record_type, source_document_id, param, "
         "code, occurred_at, value_canonical, verification, metadata_json, page_number, "
         "source) VALUES (?, 'lab', ?, 'ALT', 'ALT', '2027-06-14', ?, 'machine', '{}', 1, 't')",
-        (ERIKA_UUID, DOC_LAB, 0.45),
+        (PRIMARY_TEST_UUID, DOC_LAB, 0.45),
     )
     await db.db.commit()
     return db
@@ -98,7 +98,7 @@ def local_model(monkeypatch):
     monkeypatch.setattr(llm, "chat", chat)
     monkeypatch.setattr(tool, "_reocr_jobs", {})
     monkeypatch.setattr(tool, "_runs", {})
-    monkeypatch.setattr(tool, "_readme_births", {ERIKA_UUID: {DOB}})
+    monkeypatch.setattr(tool, "_readme_births", {PRIMARY_TEST_UUID: {DOB}})
 
 
 def _ctx(db):
@@ -111,7 +111,7 @@ async def _run(db, **kw):
     kw.setdefault("lab_document_ids", [DOC_LAB])
     started = json.loads(await tool.curated_extraction_scorecard(_ctx(db), [DOC_A, DOC_B], **kw))
     assert started["kind"] == "extraction_scorecard", started
-    await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
+    await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
     return json.loads(await tool.curated_reocr_status(_ctx(db)))
 
 
@@ -287,11 +287,11 @@ async def test_scorecard_row_holds_aggregates_only_and_never_passes_the_preview_
     assert stored["totals"] == status["report"]["totals"]
     _assert_counts_only(stored)
     # never a curated run or preview
-    assert await db.get_last_curated_run(patient_id=ERIKA_UUID) is None
-    assert await db.get_last_curated_run(patient_id=ERIKA_UUID, dry_run=True) is None
-    assert await db.list_curated_runs(patient_id=ERIKA_UUID) == []
-    assert "no preview" in (await tool.preview_gate(db, ERIKA_UUID))
-    assert await db.get_last_reocr_job(patient_id=ERIKA_UUID) is None
+    assert await db.get_last_curated_run(patient_id=PRIMARY_TEST_UUID) is None
+    assert await db.get_last_curated_run(patient_id=PRIMARY_TEST_UUID, dry_run=True) is None
+    assert await db.list_curated_runs(patient_id=PRIMARY_TEST_UUID) == []
+    assert "no preview" in (await tool.preview_gate(db, PRIMARY_TEST_UUID))
+    assert await db.get_last_reocr_job(patient_id=PRIMARY_TEST_UUID) is None
 
 
 async def test_run_active_and_block_semantics(seeded, local_model):
@@ -312,20 +312,22 @@ async def test_run_active_and_block_semantics(seeded, local_model):
         # a dry run: never blocks a deploy (/health.curated_run_active) ...
         assert tool.run_active() is False
         # ... but it holds the patient's one job slot, like the previews
-        assert tool.run_block_reason(ERIKA_UUID) == "extraction_scorecard_in_progress"
+        assert tool.run_block_reason(PRIMARY_TEST_UUID) == "extraction_scorecard_in_progress"
         rows = await _scorecard_rows(db)
         assert [r["status"] for r in rows] == ["running"]
         gate.set()
-        await asyncio.wait_for(tool._reocr_jobs[ERIKA_UUID]["task"], 10)
-    assert tool.run_active() is False and tool.run_block_reason(ERIKA_UUID) is None
+        await asyncio.wait_for(tool._reocr_jobs[PRIMARY_TEST_UUID]["task"], 10)
+    assert tool.run_active() is False and tool.run_block_reason(PRIMARY_TEST_UUID) is None
     assert [r["status"] for r in await _scorecard_rows(db)] == ["ok"]
 
 
 async def test_a_cut_scorecard_is_marked_interrupted_and_is_no_baseline(seeded, local_model):
     db = seeded
-    rid = await db.insert_curated_run(patient_id=ERIKA_UUID, dry_run=True, trigger="scorecard")
+    rid = await db.insert_curated_run(
+        patient_id=PRIMARY_TEST_UUID, dry_run=True, trigger="scorecard"
+    )
     assert await db.mark_interrupted_curated_runs() == 1
-    assert await db.get_last_scorecard(patient_id=ERIKA_UUID) is None
+    assert await db.get_last_scorecard(patient_id=PRIMARY_TEST_UUID) is None
     status = await _run(db, label="v1-baseline")
     assert status["report"]["compared_to"] is None and status["run_row_id"] > rid
 
@@ -337,16 +339,16 @@ async def test_a_cut_scorecard_is_marked_interrupted_and_is_no_baseline(seeded, 
                                   "clinical_extract", "extraction_scorecard"])  # fmt: skip
 async def test_refused_while_another_job_is_active(seeded, local_model, kind):
     db = seeded
-    tool._reocr_jobs[ERIKA_UUID] = {"state": "running", "kind": kind}
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = {"state": "running", "kind": kind}
     out = json.loads(await tool.curated_extraction_scorecard(_ctx(db), [DOC_A]))
     assert out["error"].startswith("busy")
-    assert tool._reocr_jobs[ERIKA_UUID] == {"state": "running", "kind": kind}
+    assert tool._reocr_jobs[PRIMARY_TEST_UUID] == {"state": "running", "kind": kind}
     assert await _scorecard_rows(db) == []
 
 
 async def test_refused_while_a_curated_run_is_active(seeded, local_model):
     db = seeded
-    tool._runs[ERIKA_UUID] = {"state": "running"}
+    tool._runs[PRIMARY_TEST_UUID] = {"state": "running"}
     out = json.loads(await tool.curated_extraction_scorecard(_ctx(db), [DOC_A]))
     assert out["error"].startswith("busy") and await _scorecard_rows(db) == []
 
@@ -375,7 +377,7 @@ async def test_argument_validation(seeded, local_model, monkeypatch):
     monkeypatch.setattr(config, "LLM_EXTRACT_SHADOW_DISABLED", True)
     out = json.loads(await tool.curated_extraction_scorecard(ctx, [], lab_document_ids=[DOC_LAB]))
     assert "LLM_EXTRACT_SHADOW_DISABLED" in out["error"]
-    assert await _scorecard_rows(db) == [] and ERIKA_UUID not in tool._reocr_jobs
+    assert await _scorecard_rows(db) == [] and PRIMARY_TEST_UUID not in tool._reocr_jobs
 
 
 # ── deltas ──────────────────────────────────────────────────────────────

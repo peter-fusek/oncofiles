@@ -30,9 +30,9 @@ from starlette.responses import JSONResponse
 from oncofiles import server
 from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
 from oncofiles.database import Database
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
-A_UUID = ERIKA_UUID
+A_UUID = PRIMARY_TEST_UUID
 B_UUID = "00000000-0000-4000-8000-0000000008b7"
 C_UUID = "00000000-0000-4000-8000-0000000008c7"  # archived, caregiver B
 A_EMAIL = "carer-a@example.test"

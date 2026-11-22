@@ -120,7 +120,7 @@
  <span data-sk="Ukážka: vymyslená pacientka a vymyslené dokumenty. Žiadne skutočné údaje, nič sa neukladá." data-en="Demo: an invented patient with invented documents. No real data, nothing is saved.">Ukážka: vymyslená pacientka a vymyslené dokumenty. Žiadne skutočné údaje, nič sa neukladá.</span>
  <span class="demo-banner-links">
  <a href="/demo/assistant" data-sk="Ako odpovedá AI asistent" data-en="How an AI assistant answers">Ako odpovedá AI asistent</a>
- <a class="btn-primary btn-small" href="/#join" data-sk="Pridať sa na zoznam" data-en="Join the waitlist">Pridať sa na zoznam</a>
+ <a class="btn-primary btn-small" href="/#join" data-sk="Vyskúšať s vlastnými dokumentmi" data-en="Try it with your own documents">Vyskúšať s vlastnými dokumentmi</a>
  </span>
  </div>
  <!--/demo-only-->
@@ -158,6 +158,39 @@
  <p id="pending-note" class="pending-note" hidden></p>
  </section>
 
+ <!-- #950: the patient's private document e-mail address (caregiver only; hidden until the server enables it) -->
+ <section class="panel inbound-card" id="inbound-card" hidden aria-labelledby="inbound-title">
+ <div class="section-head">
+ <h2 id="inbound-title" data-sk="Posielajte dokumenty na túto adresu" data-en="Send documents to this address">Posielajte dokumenty na túto adresu</h2>
+ </div>
+ <p class="section-lead" data-sk="Prepošlite sem e-mail s výsledkami alebo pošlite fotku z mobilu, zo svojej adresy, ktorou sa prihlasujete. Prílohy pôjdu bez zmeny do priečinka pacienta a spracujú sa automaticky; dostanete krátke potvrdenie. Pošta z iných adries sa zatiaľ nepridáva." data-en="Forward an e-mail with results here or send a photo from your phone, from the address you sign in with. The attachments go unchanged into the patient folder and are processed automatically; you get a short receipt. Mail from other addresses is not added yet.">Prepošlite sem e-mail s výsledkami alebo pošlite fotku z mobilu, zo svojej adresy, ktorou sa prihlasujete. Prílohy pôjdu bez zmeny do priečinka pacienta a spracujú sa automaticky; dostanete krátke potvrdenie. Pošta z iných adries sa zatiaľ nepridáva.</p>
+ <div class="inbound-row">
+ <code id="inbound-address" class="inbound-address"></code>
+ <div class="inbound-actions">
+ <button type="button" class="copy-btn" id="inbound-copy-btn" data-action="copyInboundAddress" data-sk="Kopírovať" data-en="Copy">Kopírovať</button>
+ <button type="button" class="copy-btn" id="inbound-vcard-btn" data-action="downloadInboundVcard" data-sk="Pridať do kontaktov (vCard)" data-en="Add to contacts (vCard)">Pridať do kontaktov (vCard)</button>
+ <button type="button" class="copy-btn" id="inbound-rotate-btn" data-action="rotateInboundAddress" data-sk="Vytvoriť novú adresu" data-en="Create a new address">Vytvoriť novú adresu</button>
+ </div>
+ </div>
+ <p class="inbound-terms"><span data-sk="Poslaním dokumentov na túto adresu súhlasíte s" data-en="By sending documents to this address you agree to the">Poslaním dokumentov na túto adresu súhlasíte s</span> <a href="/terms" target="_blank" rel="noopener" data-sk="podmienkami používania" data-en="terms of service">podmienkami používania</a>. <span data-sk="Adresou sa dokumenty dajú len poslať, nikdy nie čítať." data-en="The address can only send documents, never read them.">Adresou sa dokumenty dajú len poslať, nikdy nie čítať.</span></p>
+ <p class="inbound-terms inbound-bcc-note" data-sk="Adresu dajte do poľa Komu (alebo Kópia). Ako skrytá kópia (Bcc) to nefunguje." data-en="Put the address in To (or Cc). It does not work as a blind copy (Bcc).">Adresu dajte do poľa Komu (alebo Kópia). Ako skrytá kópia (Bcc) to nefunguje.</p>
+ <p class="inbound-terms inbound-share-note" data-sk="Adresa obsahuje časť vašej Gmail adresy, zdieľajte ju len v rodine a s ošetrujúcim tímom." data-en="The address contains part of your Gmail address; share it only within the family and the care team.">Adresa obsahuje časť vašej Gmail adresy, zdieľajte ju len v rodine a s ošetrujúcim tímom.</p>
+ <p id="inbound-status" class="inbound-status" role="status" hidden></p>
+ </section>
+
+ <!-- #950 phase 2: first steps of a welcome@ trial (hidden for every other patient) -->
+ <section class="panel trial-card" id="trial-card" hidden aria-labelledby="trial-title">
+ <div class="section-head">
+ <h2 id="trial-title" data-sk="Prvé kroky" data-en="First steps">Prvé kroky</h2>
+ </div>
+ <p class="section-lead" id="trial-days"></p>
+ <ol class="trial-steps">
+ <li><span class="step-mark" id="trial-step-docs-mark" aria-hidden="true"></span> <span id="trial-step-docs"></span></li>
+ <li><span class="step-mark" aria-hidden="true"></span> <span data-sk="Pripojte svoju AI (Claude alebo ChatGPT) a pýtajte sa na dokumenty." data-en="Connect your AI (Claude or ChatGPT) and ask about your documents.">Pripojte svoju AI (Claude alebo ChatGPT) a pýtajte sa na dokumenty.</span> <button type="button" class="copy-btn" data-action="showShareModal" data-sk="Pripojiť AI" data-en="Connect AI">Pripojiť AI</button></li>
+ <li><span class="step-mark" id="trial-step-drive-mark" aria-hidden="true"></span> <span data-sk="Neskôr pripojte vlastný Google Drive, kde dokumenty zostanú natrvalo." data-en="Later, connect your own Google Drive, where the documents stay for good.">Neskôr pripojte vlastný Google Drive, kde dokumenty zostanú natrvalo.</span> <button type="button" class="copy-btn" id="trial-drive-btn" data-action="showGdriveSetup" data-sk="Pripojiť Google Drive" data-en="Connect Google Drive">Pripojiť Google Drive</button></li>
+ </ol>
+ </section>
+
  <!-- Documents -->
  <section class="docs-section" aria-labelledby="docs-title">
  <div class="section-head">
@@ -166,7 +199,28 @@
  </div>
  <div class="docs-toolbar">
  <input type="search" id="doc-search" placeholder="Hľadať v dokumentoch…" data-sk-placeholder="Hľadať v dokumentoch…" data-en-placeholder="Search documents…" data-input="renderTable" aria-label="Search documents">
+ <!-- #948: list or grid of previews, like Finder; the choice is remembered per browser -->
+ <div class="view-switch" role="group" aria-labelledby="view-switch-label">
+ <span id="view-switch-label" class="sr-only" data-sk="Zobrazenie dokumentov" data-en="Document view">Zobrazenie dokumentov</span>
+ <button type="button" class="view-btn is-active" id="view-btn-list" data-action="setDocView|list" aria-pressed="true"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2" y="3.5" width="3" height="3" rx="0.8"/><rect x="7" y="4" width="11" height="2" rx="1"/><rect x="2" y="8.5" width="3" height="3" rx="0.8"/><rect x="7" y="9" width="11" height="2" rx="1"/><rect x="2" y="13.5" width="3" height="3" rx="0.8"/><rect x="7" y="14" width="11" height="2" rx="1"/></svg><span class="view-btn-label" data-sk="Zoznam" data-en="List">Zoznam</span></button>
+ <button type="button" class="view-btn" id="view-btn-grid" data-action="setDocView|grid" aria-pressed="false"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2.5" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="2.5" y="11" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="11" width="6.5" height="6.5" rx="1.2"/></svg><span class="view-btn-label" data-sk="Mriežka" data-en="Grid">Mriežka</span></button>
+ </div>
  <button type="button" class="copy-btn" id="export-btn" data-action="downloadManifest" data-sk="Stiahnuť údaje (JSON)" data-en="Download data (JSON)">Stiahnuť údaje (JSON)</button>
+ <button type="button" class="btn-primary" id="upload-btn" data-action="toggleUploadPanel" aria-expanded="false" aria-controls="upload-panel" data-sk="Pridať dokumenty" data-en="Add documents">Pridať dokumenty</button>
+ </div>
+ <!-- #921: add documents (hidden in the admin read-only view; in /demo nothing is sent) -->
+ <div id="upload-panel" class="upload-panel" hidden>
+ <div id="drop-zone" class="drop-zone">
+ <p class="drop-title" data-sk="Presuňte sem súbory alebo celý priečinok" data-en="Drop files or a whole folder here">Presuňte sem súbory alebo celý priečinok</p>
+ <div class="upload-pickers">
+ <label class="copy-btn upload-pick"><span data-sk="Vybrať súbory" data-en="Choose files">Vybrať súbory</span><input type="file" id="upload-files" class="sr-only" multiple accept=".pdf,.jpg,.jpeg,.png,.heic,.heif,.tif,.tiff,.webp,.md,.txt,application/pdf,image/*,text/plain,text/markdown" data-change="uploadFromInput|@this"></label>
+ <label class="copy-btn upload-pick"><span data-sk="Vybrať priečinok" data-en="Choose a folder">Vybrať priečinok</span><input type="file" id="upload-folder" class="sr-only" multiple webkitdirectory data-change="uploadFromInput|@this"></label>
+ <label class="copy-btn upload-pick"><span data-sk="Odfotiť (mobil)" data-en="Take a photo (phone)">Odfotiť (mobil)</span><input type="file" id="upload-camera" class="sr-only" accept="image/*" capture="environment" data-change="uploadFromInput|@this"></label>
+ </div>
+ <p class="upload-hint" data-sk="PDF, fotografie (JPEG, PNG, HEIC, TIFF, WebP) a poznámky .md alebo .txt; najviac 25 MB na súbor a 20 súborov naraz. Surové genetické dáta (.vcf, .csv, .tsv) sa nenahrávajú. Súbory idú bez zmeny do priečinka pacienta na Google Drive a spracujú sa automaticky." data-en="PDF, photos (JPEG, PNG, HEIC, TIFF, WebP) and .md or .txt notes; at most 25 MB per file and 20 files at a time. Raw genetic data (.vcf, .csv, .tsv) is not accepted. Files go unchanged into the patient folder on Google Drive and are processed automatically.">PDF, fotografie (JPEG, PNG, HEIC, TIFF, WebP) a poznámky .md alebo .txt; najviac 25 MB na súbor a 20 súborov naraz. Surové genetické dáta (.vcf, .csv, .tsv) sa nenahrávajú. Súbory idú bez zmeny do priečinka pacienta na Google Drive a spracujú sa automaticky.</p>
+ </div>
+ <p id="upload-note" class="upload-note" role="status" hidden></p>
+ <ul id="upload-list" class="upload-list" aria-live="polite"></ul>
  </div>
  <ol class="steps-legend" aria-label="Processing steps">
  <li><span class="legend-num">1</span><span><strong data-sk="Vyťažený" data-en="Extracted">Vyťažený</strong> <span data-sk="– text a údaje sú prečítané" data-en="– text and data have been read">– text a údaje sú prečítané</span></span></li>
@@ -174,10 +228,11 @@
  <li><span class="legend-num">3</span><span><strong data-sk="Zaradený" data-en="Filed">Zaradený</strong> <span data-sk="– je v správnom priečinku na Drive" data-en="– sits in the right Drive folder">– je v správnom priečinku na Drive</span></span></li>
  <li class="legend-key"><span class="step-mark done" aria-hidden="true"></span><span data-sk="hotové" data-en="done">hotové</span><span class="step-mark" aria-hidden="true"></span><span data-sk="čaká" data-en="waiting">čaká</span></li>
  </ol>
- <div class="table-wrap">
+ <div class="table-wrap" id="doc-table-wrap">
  <table id="doc-table">
  <thead>
  <tr>
+ <th class="col-thumb"><span class="sr-only" data-sk="Náhľad" data-en="Preview">Náhľad</span></th>
  <th class="col-toggle"><span class="sr-only" data-sk="Rozbaliť" data-en="Expand">Rozbaliť</span></th>
  <th data-sort="filename"><span data-sk="Dokument" data-en="Document">Dokument</span> <span class="sort-arrow"></span></th>
  <th data-sort="category"><span data-sk="Kategória" data-en="Category">Kategória</span> <span class="sort-arrow"></span></th>
@@ -188,9 +243,25 @@
  </tr>
  </thead>
  <tbody id="doc-tbody">
- <tr><td colspan="7" class="table-empty" data-sk="Načítavam…" data-en="Loading…">Načítavam…</td></tr>
+ <tr><td colspan="8" class="table-empty" data-sk="Načítavam…" data-en="Loading…">Načítavam…</td></tr>
  </tbody>
  </table>
+ </div>
+ <!-- #948 grid: the same filtered and sorted list as cards with a preview -->
+ <div class="doc-grid-wrap" id="doc-grid-wrap" hidden>
+ <div class="grid-sort">
+ <label for="grid-sort-col" data-sk="Zoradené podľa" data-en="Sorted by">Zoradené podľa</label>
+ <select id="grid-sort-col" data-change="setGridSort|@value">
+ <option value="filename" data-sk="Dokument" data-en="Document">Dokument</option>
+ <option value="category" data-sk="Kategória" data-en="Category">Kategória</option>
+ <option value="institution" data-sk="Inštitúcia" data-en="Institution">Inštitúcia</option>
+ <option value="date" data-sk="Dátum dokumentu" data-en="Document date">Dátum dokumentu</option>
+ <option value="uploaded_at" selected data-sk="Nahraté" data-en="Uploaded">Nahraté</option>
+ <option value="stage_rank" data-sk="Stav" data-en="Status">Stav</option>
+ </select>
+ <button type="button" class="grid-sort-dir" id="grid-sort-dir" data-action="toggleSortDir"><span class="grid-sort-arrow" id="grid-sort-arrow" aria-hidden="true">&#9660;</span> <span id="grid-sort-dir-label">od najnovších</span></button>
+ </div>
+ <ul class="doc-grid" id="doc-grid"><li class="grid-empty" data-sk="Načítavam…" data-en="Loading…">Načítavam…</li></ul>
  </div>
  </section>
 
@@ -259,11 +330,12 @@
  <div class="admin-body" id="admin-body-schedules" hidden>
  <div id="schedules-section">
  <div id="sched-groups" style="display:flex;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
- <span class="pill active" data-sched-filter="all">All</span>
- <span class="pill" data-sched-filter="sync">Sync</span>
- <span class="pill" data-sched-filter="pipeline">Pipeline</span>
- <span class="pill" data-sched-filter="housekeeping">Housekeeping</span>
- <span class="pill" data-sched-filter="infra">Infrastructure</span>
+ <span class="pill active" data-sched-filter="all" data-sk="Všetko" data-en="All">Všetko</span>
+ <span class="pill" data-sched-filter="curated" data-sk="Kurátorská slučka" data-en="Curated loop">Kurátorská slučka</span>
+ <span class="pill" data-sched-filter="sync" data-sk="Synchronizácia" data-en="Sync">Synchronizácia</span>
+ <span class="pill" data-sched-filter="pipeline" data-sk="Spracovanie" data-en="Pipeline">Spracovanie</span>
+ <span class="pill" data-sched-filter="housekeeping" data-sk="Údržba dát" data-en="Housekeeping">Údržba dát</span>
+ <span class="pill" data-sched-filter="infra" data-sk="Infraštruktúra" data-en="Infrastructure">Infraštruktúra</span>
  </div>
  <div id="sched-jobs" style="font-size:0.8125rem"></div>
  <!-- Prompt stats by call type -->
@@ -272,6 +344,23 @@
  <div id="sched-prompt-stats" style="font-size:0.8125rem"></div>
  </div>
  </div>
+ </div>
+ </div>
+
+ <div class="admin-panel">
+ <button type="button" class="admin-head" data-action="toggleAdminPanel|inbound|@this" aria-expanded="false" aria-controls="admin-body-inbound"><span class="chevron" aria-hidden="true"></span><span data-sk="Nepriradení odosielatelia (dokumenty e-mailom)" data-en="Unmatched senders (documents by e-mail)">Nepriradení odosielatelia (dokumenty e-mailom)</span></button>
+ <div class="admin-body" id="admin-body-inbound" hidden>
+ <p class="section-lead" data-sk="Pošta na adresy pacientov, ktorá sa nezaradila: odosielateľ nie je opatrovateľ alebo neprešlo overenie odosielateľa. Len počty a kľúčovaný odtlačok odosielateľa, nikdy adresa. Údaje sú v pamäti servera a po reštarte sa začínajú od nuly." data-en="Mail to patient addresses that was not filed: the sender is not the caregiver or the sender check failed. Counts and a keyed sender hash only, never an address. Kept in server memory; a restart starts from zero.">Pošta na adresy pacientov, ktorá sa nezaradila: odosielateľ nie je opatrovateľ alebo neprešlo overenie odosielateľa. Len počty a kľúčovaný odtlačok odosielateľa, nikdy adresa. Údaje sú v pamäti servera a po reštarte sa začínajú od nuly.</p>
+ <p class="curated-ops-note" id="inbound-admin-totals"></p>
+ <div id="inbound-admin-body" class="curated-ops-report"></div>
+ </div>
+ </div>
+
+ <div class="admin-panel">
+ <button type="button" class="admin-head" data-action="toggleAdminPanel|oauth|@this" aria-expanded="false" aria-controls="admin-body-oauth"><span class="chevron" aria-hidden="true"></span><span data-sk="Používatelia Google OAuth (limit neovereného klienta)" data-en="Google OAuth users (unverified client cap)">Používatelia Google OAuth (limit neovereného klienta)</span></button>
+ <div class="admin-body" id="admin-body-oauth" hidden>
+ <p class="section-lead" data-sk="Google pustí neoverený OAuth klient s prístupom k Drive najviac 100 účtom. Počítajú sa rôzne Google účty, ktoré kedy dokončili prepojenie (aj neskôr odpojené), plus staršie prepojenia bez záznamu účtu (každé ako jeden). Prihlásenie do dashboardu sa nepočíta. Len počty, nikdy adresa." data-en="Google allows an unverified OAuth client with Drive access at most 100 accounts. Counted: distinct Google accounts that ever completed a link (also ones unlinked later), plus older links without an account record (one each). Dashboard sign-in does not count. Counts only, never an address.">Google pustí neoverený OAuth klient s prístupom k Drive najviac 100 účtom. Počítajú sa rôzne Google účty, ktoré kedy dokončili prepojenie (aj neskôr odpojené), plus staršie prepojenia bez záznamu účtu (každé ako jeden). Prihlásenie do dashboardu sa nepočíta. Len počty, nikdy adresa.</p>
+ <p class="curated-ops-note" id="oauth-users-line"></p>
  </div>
  </div>
 
@@ -352,13 +441,40 @@
  <!-- No third-party DOM capture libraries — screenshot via paste/upload only -->
  <!--/app-only-->
 
- <!-- Onboarding not open yet (#852): shown instead of the wizard for a caller the server gate does not admit -->
+ <!-- Large preview, "quick look" (#948): first page left, the document detail right -->
+ <div id="quicklook" class="quicklook" hidden>
+ <div class="ql-backdrop" data-action="closeQuickLook"></div>
+ <div class="ql-panel" id="ql-panel" role="dialog" aria-modal="true" aria-labelledby="ql-title" tabindex="-1">
+ <div class="ql-head">
+ <div class="ql-heading">
+ <h2 id="ql-title" class="ql-title"></h2>
+ <p id="ql-meta" class="ql-meta"></p>
+ </div>
+ <div class="ql-nav">
+ <button type="button" class="ql-btn" id="ql-prev" data-action="quickLookStep|-1"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M12.5 4.5 7 10l5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="sr-only" data-sk="Predchádzajúci dokument" data-en="Previous document">Predchádzajúci dokument</span></button>
+ <span class="ql-pos" id="ql-pos"></span>
+ <button type="button" class="ql-btn" id="ql-next" data-action="quickLookStep|1"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M7.5 4.5 13 10l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="sr-only" data-sk="Nasledujúci dokument" data-en="Next document">Nasledujúci dokument</span></button>
+ <button type="button" class="ql-btn ql-close" id="ql-close" data-action="closeQuickLook"><svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><path d="M5 5l10 10M15 5 5 15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span class="sr-only" data-sk="Zavrieť" data-en="Close">Zavrieť</span></button>
+ </div>
+ </div>
+ <div class="ql-body">
+ <div class="ql-preview" id="ql-preview">
+ <div class="ql-page" id="ql-page"></div>
+ <div class="ql-links" id="ql-links"></div>
+ <p class="ql-hint" data-sk="Prvá strana dokumentu. Šípky doľava a doprava listujú zoznamom, Esc zavrie." data-en="First page of the document. Left and right arrows move through the list, Esc closes.">Prvá strana dokumentu. Šípky doľava a doprava listujú zoznamom, Esc zavrie.</p>
+ </div>
+ <div class="ql-detail" id="ql-detail"></div>
+ </div>
+ </div>
+ </div>
+
+ <!-- Onboarding not open yet (#852, by invitation): shown instead of the wizard for a caller the server gate does not admit -->
  <div id="onboarding-closed-overlay" class="wizard-overlay" role="dialog" aria-modal="true" aria-labelledby="onboarding-closed-title">
  <div class="wizard-panel">
- <h2 id="onboarding-closed-title" data-sk="Pripojenie Drive zatiaľ nie je otvorené" data-en="Drive connection is not open yet">Pripojenie Drive zatiaľ nie je otvorené</h2>
- <p id="onboarding-closed-text" data-sk="Pripojenie vlastného Google Drive zatiaľ nie je otvorené pre nových používateľov. Zapíšte sa do poradovníka a ozveme sa vám." data-en="Connecting your own Google Drive is not open to new users yet. Join the waitlist and we will let you know.">Pripojenie vlastného Google Drive zatiaľ nie je otvorené pre nových používateľov. Zapíšte sa do poradovníka a ozveme sa vám.</p>
+ <h2 id="onboarding-closed-title" data-sk="Pripojenie Drive je zatiaľ na pozvanie" data-en="Drive connection is by invitation for now">Pripojenie Drive je zatiaľ na pozvanie</h2>
+ <p id="onboarding-closed-text" data-sk="Pripojenie vlastného Google Drive je zatiaľ len na pozvanie. Pozrite si ukážku alebo nám napíšte o prístup." data-en="Connecting your own Google Drive is by invitation for now. See the demo, or write to us for access.">Pripojenie vlastného Google Drive je zatiaľ len na pozvanie. Pozrite si ukážku alebo nám napíšte o prístup.</p>
  <div class="wizard-actions">
- <a class="wizard-btn-primary onboarding-closed-link" id="onboarding-closed-waitlist" href="/#join" data-sk="Zapísať sa do poradovníka" data-en="Join the waitlist">Zapísať sa do poradovníka</a>
+ <a class="wizard-btn-primary onboarding-closed-link" id="onboarding-closed-waitlist" href="/#join" data-sk="Ukážka a ako získať prístup" data-en="Demo and how to get access">Ukážka a ako získať prístup</a>
  <button class="wizard-btn-secondary" data-action="hideOnboardingClosed" data-sk="Zavrieť" data-en="Close">Zavrieť</button>
  </div>
  </div>
@@ -380,6 +496,8 @@
  <!-- Step 1: Create patient -->
  <div id="wiz-step-1">
  <h2 data-sk="Vytvoriť pacienta" data-en="Create Patient">Vytvoriť pacienta</h2>
+ <!-- First visit (no patient yet, onboarding open): one sentence on the two ways in -->
+ <p id="wiz-first-visit" class="wizard-folder-hint" style="display:none" data-sk="Vitajte. Dokumenty dostanete do Oncofiles dvoma spôsobmi: hneď teraz vyberiete priečinok na Google Drive, v ktorom už dokumentáciu máte, alebo, keď to spustíme, pošlete e-mail s prílohou z Gmailu; najprv vytvorte pacienta." data-en="Welcome. There are two ways to get documents into Oncofiles: pick the Google Drive folder that already holds them right now, or, once it is live, send an e-mail with an attachment from Gmail; first create the patient.">Vitajte. Dokumenty dostanete do Oncofiles dvoma spôsobmi: hneď teraz vyberiete priečinok na Google Drive, v ktorom už dokumentáciu máte, alebo, keď to spustíme, pošlete e-mail s prílohou z Gmailu; najprv vytvorte pacienta.</p>
  <div class="wizard-field">
  <label for="wiz-name" data-sk="Meno pacienta *" data-en="Patient name *">Meno pacienta *</label>
  <input type="text" id="wiz-name" placeholder="napr. Meno Priezvisko" data-sk-placeholder="napr. Meno Priezvisko" data-en-placeholder="e.g. First Last" required>

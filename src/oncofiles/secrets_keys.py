@@ -106,3 +106,107 @@ def caller_email_hash(email: str, bearer: str | None = None) -> str | None:
     except RuntimeError:
         return None
     return hmac.new(key, normalised.encode(), hashlib.sha256).hexdigest()
+
+
+_INBOUND_ADDRESS_PURPOSE = b"oncofiles.inbound_address.v1"
+
+
+def inbound_address_key(bearer: str | None = None) -> bytes:
+    """Key for the patient document e-mail address token (#950).
+
+    ``token = base32(HMAC(key, f"{patient_id}:{version}"))[:10]``; the DB keeps
+    only a keyed hash of it. Override with ``INBOUND_ADDRESS_SECRET`` so the
+    addresses survive a rotation of ``MCP_BEARER_TOKEN`` (the derived key
+    changes with it, and with it every patient's address).
+    """
+    override = os.environ.get("INBOUND_ADDRESS_SECRET", "")
+    if override:
+        return override.encode()
+    return _derive(_INBOUND_ADDRESS_PURPOSE, bearer)
+
+
+_INBOUND_TOKEN_HASH_PURPOSE = b"oncofiles.inbound_token_hash.v1"
+
+
+def inbound_token_hash_key(bearer: str | None = None) -> bytes:
+    """Key for the stored routing hash of an inbound address token (#950).
+
+    Derived from the address key material (``INBOUND_ADDRESS_SECRET`` when
+    set, else ``MCP_BEARER_TOKEN``) with its own purpose string, so the hash
+    and the token never share a key and no extra env is needed.
+    """
+    return hmac.new(
+        inbound_address_key(bearer), _INBOUND_TOKEN_HASH_PURPOSE, hashlib.sha256
+    ).digest()
+
+
+_INBOUND_JOBS_PURPOSE = b"oncofiles.inbound_jobs.v1"
+_INBOUND_JOBS_MESSAGE_ID_PURPOSE = b"oncofiles.inbound_jobs.message_id.v1"
+_INBOUND_JOBS_SENDER_PURPOSE = b"oncofiles.inbound_jobs.sender.v1"
+INBOUND_JOBS_SECRET_ENV = "INBOUND_JOBS_SECRET"
+
+
+class InboundJobsSecretMissingError(RuntimeError):
+    """``INBOUND_JOBS_SECRET`` is unset: the inbound queue fails closed."""
+
+
+def inbound_jobs_secret_set() -> bool:
+    return bool(os.environ.get(INBOUND_JOBS_SECRET_ENV, ""))
+
+
+def inbound_jobs_key() -> bytes:
+    """32-byte AES-GCM key for the encrypted ``inbound_jobs.payload_enc`` (#952).
+
+    From the MANDATORY runtime env ``INBOUND_JOBS_SECRET`` only (raw string,
+    any length, stretched to 32 bytes with the purpose string). Never derived
+    from ``MCP_BEARER_TOKEN`` (infra review): a bearer rotation must not touch
+    queued mail, and the queue must not depend on a secret reused for HTTP
+    auth. Unset → ``InboundJobsSecretMissingError`` (fail closed: the Brevo
+    route answers 503 and queues nothing, the worker leaves jobs untouched).
+    Rotating it makes jobs still queued at that moment ``undecryptable``.
+    """
+    secret = os.environ.get(INBOUND_JOBS_SECRET_ENV, "")
+    if not secret:
+        raise InboundJobsSecretMissingError(INBOUND_JOBS_SECRET_ENV)
+    return hmac.new(secret.encode(), _INBOUND_JOBS_PURPOSE, hashlib.sha256).digest()
+
+
+def inbound_message_id_hash_key() -> bytes:
+    """Key for ``inbound_jobs.message_id_hash`` (#952): derived from the same
+    mandatory secret with its own purpose string, never the AES key itself."""
+    return hmac.new(inbound_jobs_key(), _INBOUND_JOBS_MESSAGE_ID_PURPOSE, hashlib.sha256).digest()
+
+
+def inbound_sender_hash_key() -> bytes:
+    """Key for ``inbound_jobs.sender_hash`` (#952 security review): same
+    derivation pattern, its own purpose string."""
+    return hmac.new(inbound_jobs_key(), _INBOUND_JOBS_SENDER_PURPOSE, hashlib.sha256).digest()
+
+
+_HOLDING_STORE_PURPOSE = b"oncofiles.holding_store.v1"
+HOLDING_STORE_SECRET_ENV = "HOLDING_STORE_SECRET"
+
+
+class HoldingStoreSecretMissingError(RuntimeError):
+    """``HOLDING_STORE_SECRET`` is unset: the holding store fails closed (#950)."""
+
+
+def holding_store_secret_set() -> bool:
+    return bool(os.environ.get(HOLDING_STORE_SECRET_ENV, ""))
+
+
+def holding_store_key() -> bytes:
+    """32-byte AES-GCM key of the encrypted holding store (#950 phase 2).
+
+    From the MANDATORY runtime env ``HOLDING_STORE_SECRET`` only (raw string,
+    stretched with the purpose string), like ``INBOUND_JOBS_SECRET`` (#952):
+    never derived from ``MCP_BEARER_TOKEN``, so a bearer rotation never makes
+    held documents unreadable. Unset → ``HoldingStoreSecretMissingError``:
+    nothing is stored (welcome@ mail is not admitted) and nothing is read.
+    Rotating it makes every held file unreadable: rotate only with an empty
+    store.
+    """
+    secret = os.environ.get(HOLDING_STORE_SECRET_ENV, "")
+    if not secret:
+        raise HoldingStoreSecretMissingError(HOLDING_STORE_SECRET_ENV)
+    return hmac.new(secret.encode(), _HOLDING_STORE_PURPOSE, hashlib.sha256).digest()

@@ -55,7 +55,10 @@ from oncofiles.curated.ocr_markers import strip_charts_pages
 # v10: dense pages (#826): ``evidence`` is the result's own segment, not the
 # whole line, and a page with many result-like segments is sent as density
 # chunks with date / heading context (``llm_extract_call.split_by_density``).
-EXTRACTOR_VERSION = "llm-extract-v10"
+# v11 (#933): every item carries ``date_evidence``, the printed text its date
+# was taken from; the worked examples show it, and one shows a report that
+# prints the draw date apart from the visit date.
+EXTRACTOR_VERSION = "llm-extract-v11"
 
 # Density split of the lab extractor (#826); the constants live with the splitter.
 DENSITY = xcall.DensitySplit()
@@ -82,6 +85,7 @@ SCHEMA = {
                     "flag_as_printed",
                     "date_as_printed",
                     "date_role",
+                    "date_evidence",
                     "evidence",
                 ],  # fmt: skip
                 "properties": {
@@ -93,6 +97,7 @@ SCHEMA = {
                     "flag_as_printed": {"type": ["string", "null"]},
                     "date_as_printed": {"type": ["string", "null"]},
                     "date_role": {"type": ["string", "null"], "enum": [*DATE_ROLES, None]},
+                    "date_evidence": {"type": ["string", "null"]},
                     "evidence": {"type": "string"},
                 },
             },
@@ -121,6 +126,10 @@ Answer with ONLY a JSON object {"facts": [...]}. One item per result:
 sample / collection date, else the report date), or null when no date on the page applies.
 - "date_role": "sample" (odber, odobrané, collected), "report" (vydané, report, \
 visit or exam date) or "other".
+- "date_evidence": the printed text you took the date from, copied character for \
+character: the date with the word in front of it ("Odber: 05.03.2027 07:40", \
+"Lab. z 10.4.2028"), or the range with its colon. It must contain "date_as_printed" \
+exactly. null when "date_as_printed" is null.
 - "evidence": this result's own printed piece of the page, copied character for \
 character: from the test name to the end of its value, unit, range and mark. On a line \
 with one result that is the line. On a line with several results (separated by ";" or \
@@ -141,15 +150,20 @@ numbers and dates that stand alone.
 7. A long page arrives in parts. A part may begin with "Context:" lines: date and \
 heading lines repeated from earlier on the same page. Use them only to find the date of \
 the results under "Text:"; never return a result from a Context line and never copy \
-one into the evidence.
+one into the evidence ("date_evidence" may be copied from a Context line).
+8. Give a result only the date that belongs to IT. A clinic report often names the \
+visit date and, elsewhere, the day the blood was taken: use the sampling date when it \
+is printed for these results. If no date on the page belongs to the result, give \
+null; never borrow an unrelated date.
 """
 
 
-def _example(label, value, evidence, *, date, role, unit=None, ref=None, flag=None,
-             comparator=None) -> dict:  # fmt: skip
+def _example(label, value, evidence, *, date, role, date_evidence, unit=None, ref=None,
+             flag=None, comparator=None) -> dict:  # fmt: skip
     return {"label_as_printed": label, "value": value, "comparator": comparator,
             "unit_as_printed": unit, "ref_range_as_printed": ref, "flag_as_printed": flag,
-            "date_as_printed": date, "date_role": role, "evidence": evidence}  # fmt: skip
+            "date_as_printed": date, "date_role": role, "date_evidence": date_evidence,
+            "evidence": evidence}  # fmt: skip
 
 
 # (title, page text, facts). Every item must verify as ``machine`` against its
@@ -161,26 +175,31 @@ EXAMPLES: tuple[tuple[str, str, list[dict]], ...] = (
         "Odber: 05.03.2027 07:40\nS-Glukóza   5,83   mmol/l   3,9 - 5,6   H",
         [_example("S-Glukóza", "5,83", "S-Glukóza   5,83   mmol/l   3,9 - 5,6   H",
                   unit="mmol/l", ref="3,9 - 5,6", flag="H",
-                  date="05.03.2027 07:40", role="sample")],
+                  date="05.03.2027 07:40", role="sample",
+                  date_evidence="Odber: 05.03.2027 07:40")],
     ),
     (
-        "Page (two results on one line: each item quotes only its own piece):",
-        "Kontrola 12.4.2028. Lab.: CRP 17,3 mg/l, Leukocyty 9,1.",
-        [_example("CRP", "17,3", "CRP 17,3 mg/l", unit="mg/l", date="12.4.2028", role="report"),
-         _example("Leukocyty", "9,1", "Leukocyty 9,1", date="12.4.2028", role="report")],
+        "Page (a report: the visit date and the sampling date differ; two results on one "
+        "line, each item quotes only its own piece):",
+        "Kontrola 12.4.2028. Lab. z 10.4.2028: CRP 17,3 mg/l, Leukocyty 9,1.",
+        [_example("CRP", "17,3", "CRP 17,3 mg/l", unit="mg/l", date="10.4.2028",
+                  role="sample", date_evidence="Lab. z 10.4.2028"),
+         _example("Leukocyty", "9,1", "Leukocyty 9,1", date="10.4.2028", role="sample",
+                  date_evidence="Lab. z 10.4.2028")],
     ),
     (
         "Page:",
         "Vydané: 2.2.2029\nCEA        <0,5 ng/ml\nHBsAg      negat.",
         [_example("CEA", "0,5", "CEA        <0,5 ng/ml", comparator="<", unit="ng/ml",
-                  date="2.2.2029", role="report"),
-         _example("HBsAg", "negat.", "HBsAg      negat.", date="2.2.2029", role="report")],
+                  date="2.2.2029", role="report", date_evidence="Vydané: 2.2.2029"),
+         _example("HBsAg", "negat.", "HBsAg      negat.", date="2.2.2029", role="report",
+                  date_evidence="Vydané: 2.2.2029")],
     ),
     (
         "Page (an unknown test stays as printed):",
         "Odobraté 30.9.2027\nQ-Faktor X7   2,22   arb.j.",
         [_example("Q-Faktor X7", "2,22", "Q-Faktor X7   2,22   arb.j.", unit="arb.j.",
-                  date="30.9.2027", role="sample")],
+                  date="30.9.2027", role="sample", date_evidence="Odobraté 30.9.2027")],
     ),
     (
         "Page:",
@@ -193,20 +212,25 @@ EXAMPLES: tuple[tuple[str, str, list[dict]], ...] = (
         "Biochémia: Faktor M 4,71 mmol/l (2,10 - 4,20) H; Faktor N 0,83 g/l (0,50 - 1,90); "
         "Faktor P <3 U/l",
         [_example("Faktor M", "4,71", "Faktor M 4,71 mmol/l (2,10 - 4,20) H", unit="mmol/l",
-                  ref="2,10 - 4,20", flag="H", date="18.11.2027 06:55", role="sample"),
+                  ref="2,10 - 4,20", flag="H", date="18.11.2027 06:55", role="sample",
+                  date_evidence="Odber: 18.11.2027 06:55"),
          _example("Faktor N", "0,83", "Faktor N 0,83 g/l (0,50 - 1,90)", unit="g/l",
-                  ref="0,50 - 1,90", date="18.11.2027 06:55", role="sample"),
+                  ref="0,50 - 1,90", date="18.11.2027 06:55", role="sample",
+                  date_evidence="Odber: 18.11.2027 06:55"),
          _example("Faktor P", "3", "Faktor P <3 U/l", comparator="<", unit="U/l",
-                  date="18.11.2027 06:55", role="sample")],
+                  date="18.11.2027 06:55", role="sample",
+                  date_evidence="Odber: 18.11.2027 06:55")],
     ),
     (
         "Part of a page (the date comes from a Context line):",
         "Context:\nOdobrané: 9.1.2028 07:10\nKrvný obraz:\nText:\n"
         "Faktor R 1,15 µkat/l (0,20 - 1,40); Faktor S 88 % (30 - 120) L",
         [_example("Faktor R", "1,15", "Faktor R 1,15 µkat/l (0,20 - 1,40)", unit="µkat/l",
-                  ref="0,20 - 1,40", date="9.1.2028 07:10", role="sample"),
+                  ref="0,20 - 1,40", date="9.1.2028 07:10", role="sample",
+                  date_evidence="Odobrané: 9.1.2028 07:10"),
          _example("Faktor S", "88", "Faktor S 88 % (30 - 120) L", unit="%", ref="30 - 120",
-                  flag="L", date="9.1.2028 07:10", role="sample")],
+                  flag="L", date="9.1.2028 07:10", role="sample",
+                  date_evidence="Odobrané: 9.1.2028 07:10")],
     ),
 )  # fmt: skip
 
@@ -279,7 +303,7 @@ def parse_answer(text: str) -> list:
 
 
 _NULLABLE = ("comparator", "unit_as_printed", "ref_range_as_printed", "flag_as_printed",
-             "date_as_printed", "date_role")  # fmt: skip
+             "date_as_printed", "date_role", "date_evidence")  # fmt: skip
 _REQUIRED_STR = ("label_as_printed", "value", "evidence")
 
 
@@ -417,6 +441,7 @@ def normalize_item(raw) -> tuple[dict | None, str | None]:
         "flag_as_printed": _text(raw.get("flag_as_printed")),
         "date_as_printed": date,
         "date_role": role if date else None,
+        "date_evidence": _text(raw.get("date_evidence")) if date else None,
         "evidence": evidence,
     }, None
 
@@ -556,10 +581,12 @@ def extract_document(
     chat: Callable[..., str] | None = None,
     stop: Callable[[], bool] | None = None,
     cfg: xcall.CallSettings | None = None,
+    document_category: str | None = None,
 ) -> dict:
     """Blocking. Extract + verify every page; one model call at a time (one
     LM Studio slot). Returns verified fact dicts (``facts_rules`` shape) and
-    counts; nothing is stored."""
+    counts; nothing is stored. ``document_category`` goes to the verifier
+    (a report date on a report is no draw date, #933)."""
     from oncofiles.curated import verifier
 
     cfg = cfg or xcall.settings()
@@ -594,6 +621,7 @@ def extract_document(
             fact = verifier.verify(
                 cand, page_text=text_of[number], vocab=vocab, report_date=report_date,
                 birth_dates=birth_dates, source_reason=source_reason,
+                document_category=document_category,
             )  # fmt: skip
             facts.append(fact)
             if DATE_SHAPE_REASONS.intersection(fact["metadata"].get("unverified_reasons") or ()):
@@ -632,6 +660,10 @@ def _key(code, day, value) -> tuple:
 PAIRED_BUCKETS = ("agree", "parser_crosscheck", "value_mismatch", "date_mismatch")
 RULE_BUCKETS = (*PAIRED_BUCKETS, "rule_only")
 LLM_BUCKETS = (*PAIRED_BUCKETS, "llm_only", "llm_no_value", "llm_uncoded")
+# Every bucket of either side. Every sum over the buckets
+# (``tools.curated._LAB_SUM_KEYS``, ``scorecard._LAB_COUNTS``) must list all
+# of them (lock test, #933).
+BUCKETS = tuple(dict.fromkeys((*RULE_BUCKETS, *LLM_BUCKETS)))
 
 
 def _page(row: dict) -> int:

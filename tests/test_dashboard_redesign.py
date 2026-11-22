@@ -16,7 +16,7 @@ from starlette.requests import Request
 
 from oncofiles import server
 from oncofiles.server import api_demo_data, demo_dashboard
-from tests.helpers import ERIKA_UUID, make_doc
+from tests.helpers import PRIMARY_TEST_UUID, make_doc
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "oncofiles"
 HTML = (SRC / "dashboard.html").read_text(encoding="utf-8")
@@ -74,11 +74,25 @@ def test_requests_use_the_auth_header_helper():
     assert "authToken" not in JS
 
 
+def test_no_new_inner_html_sinks():
+    # dynamic DOM is built with createElement + textContent (XSS guard); the only
+    # innerHTML uses are the esc() safety net and the hard-coded i18n strings
+    lines = [ln.strip() for ln in JS.splitlines() if "innerHTML" in ln]
+    assert lines == [
+        "return d.innerHTML;",
+        "el.innerHTML = text;  // safe: only hardcoded i18n strings, no user input",
+    ]
+
+
 # ── the document list ────────────────────────────────────────────────────
 
 
 def test_one_status_column_and_newest_upload_first():
     head = HTML[HTML.index("<thead>") : HTML.index("</thead>")]
+    # #948: the first column is the preview tile, no label, no sort; then the chevron
+    ths = re.findall(r"<th(?:\s[^>]*)?>", head)
+    assert ths[:2] == ['<th class="col-thumb">', '<th class="col-toggle">']
+    assert len(ths) == 8
     assert re.findall(r'data-sort="([a-z_]+)"', head) == [
         "filename",
         "category",
@@ -216,13 +230,21 @@ async def test_demo_page_is_the_dashboard_without_the_account_parts():
         'id="doc-table"',
         'id="activity-section"',
         'id="share-overlay"',
+        'id="doc-grid"',
+        'id="quicklook"',
     ):
         assert present in page, present
     assert page.count("<title") == 1
-    # same document table as the app, column for column
+    # same document table, grid and quick look as the app, column for column
     app = server._load_dashboard_html()
-    table = re.compile(r'<table id="doc-table">.*?</table>', re.S)
-    assert table.search(page).group(0) == table.search(app).group(0)
+    for block in (
+        r'<table id="doc-table">.*?</table>',
+        r'<div class="view-switch".*?</div>',
+        r'<div class="doc-grid-wrap".*?</ul>',
+        r'<div id="quicklook".*?<div class="ql-detail" id="ql-detail"></div>',
+    ):
+        pattern = re.compile(block, re.S)
+        assert pattern.search(page).group(0) == pattern.search(app).group(0), block
 
 
 def test_demo_mode_can_reach_nothing_but_the_demo_data():
@@ -258,12 +280,18 @@ def test_demo_blocks_the_actions_that_write():
 async def test_demo_shows_every_state():
     data = await _demo_dashboard_data()
     rows = data["documents"]["documents"]
-    assert {r["stage"] for r in rows} >= {"ready", "waiting_text", "waiting_name", "attention"}
+    assert {r["stage"] for r in rows} >= {"ready", "in_inbox", "waiting_name", "attention"}
     summary = data["documents"]["summary"]
     assert summary["ready"] + summary["in_progress"] + summary["attention"] == summary["total"]
     assert summary["total"] == len(rows)
+    assert summary["inbox"] == sum(1 for r in rows if r.get("inbox")) >= 1
     assert all(r["gdrive_id"] is None for r in rows), "no Drive link in the demo"
-    assert set(data["details"]) == {str(r["id"]) for r in rows}
+    # inbox rows have no document behind them, so no detail (#921 follow-up)
+    assert set(data["details"]) == {str(r["id"]) for r in rows if not r.get("inbox")}
+    assert all(r["id"].startswith("inbox:") for r in rows if r.get("inbox"))
+    # #948: a synthetic preview for every document (not for inbox rows), answered by the demo twin
+    assert set(data["thumbnails"]) == {str(r["id"]) for r in rows if not r.get("inbox")}
+    assert "if (path === '/api/doc-thumbnails') {" in _function("demoRoute")
     assert [p["patient_id"] for p in data["patients"]["own"]] == ["demo-patient"]
     assert data["patients"]["is_admin"] is False
 
@@ -271,15 +299,16 @@ async def test_demo_shows_every_state():
 async def test_demo_rows_have_the_keys_of_real_rows(db):
     from oncofiles.tools.hygiene import _build_document_matrix
 
-    await db.insert_document(make_doc(), patient_id=ERIKA_UUID)
-    real = await _build_document_matrix(db, patient_id=ERIKA_UUID, truncate_names=False)
+    await db.insert_document(make_doc(), patient_id=PRIMARY_TEST_UUID)
+    real = await _build_document_matrix(db, patient_id=PRIMARY_TEST_UUID, truncate_names=False)
     data = await _demo_dashboard_data()
     demo = data["documents"]
 
     def plain(keys) -> set[str]:
         return {k for k in keys if not k.endswith("_en")}
 
-    assert plain(demo["documents"][0]) == set(real["documents"][0])
+    first_doc = next(r for r in demo["documents"] if not r.get("inbox"))
+    assert plain(first_doc) == set(real["documents"][0])
     assert set(demo["summary"]) == set(real["summary"])
     assert set(demo) == set(real)
 

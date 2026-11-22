@@ -9,7 +9,7 @@ from tests import network_guard
 # Installed at import, before collection, so module-level code is covered too.
 network_guard.install()
 
-ERIKA_UUID = "00000000-0000-4000-8000-000000000001"
+PRIMARY_TEST_UUID = "00000000-0000-4000-8000-000000000001"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -61,8 +61,9 @@ def _reset_anthropic_client():
 # ``tests/test_curated_state_reset.py`` fails when one is missing.
 CURATED_CLEARED = (
     "_runs", "_restoring", "_readme_births", "_extract_cache", "_propose_cache",
-    "_text_reviews", "_inflight_pages", "_patient_locks", "_watch", "_empty_streak",
-    "_probe_stats", "_import_done", "_onboarding", "_startup_index_stats", "_reocr_jobs",
+    "_text_reviews", "_backfill_failures", "_inflight_pages", "_patient_locks", "_watch",
+    "_empty_streak", "_probe_stats", "_import_done", "_onboarding", "_startup_index_stats",
+    "_reocr_jobs", "_inbox_snapshots",
 )  # fmt: skip
 CURATED_SCALARS = {"_last_probe_at": None, "_onboarding_active": None, "_round_no": 0}
 CURATED_COUNTERS = ("_dry_runs",)  # dict of counters: every value back to zero
@@ -123,17 +124,17 @@ def gmail_calendar_on(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _set_patient_context():
-    """Seed the test patient's name in the per-patient cache (keyed by ERIKA_UUID).
+    """Seed the test patient's name in the per-patient cache (keyed by PRIMARY_TEST_UUID).
 
     There is no legacy/default patient (#733): code that parses filenames
     must resolve a patient — explicitly or via the request ContextVar, which
-    the `db` fixture (or `request_patient`) sets to ERIKA_UUID.
+    the `db` fixture (or `request_patient`) sets to PRIMARY_TEST_UUID.
     """
     from oncofiles import patient_context
 
     original_contexts = dict(patient_context._contexts)
     patient_context._contexts.clear()
-    patient_context._contexts[ERIKA_UUID] = {"name": "Jana Testova"}
+    patient_context._contexts[PRIMARY_TEST_UUID] = {"name": "Jana Testova"}
 
     yield
 
@@ -143,13 +144,13 @@ def _set_patient_context():
 
 @pytest.fixture
 def request_patient():
-    """Bind the request ContextVar to ERIKA_UUID for tests without the `db` fixture.
+    """Bind the request ContextVar to PRIMARY_TEST_UUID for tests without the `db` fixture.
 
     Stands in for PatientResolutionMiddleware so pure helpers (filename
     parsing) resolve the test patient the same way they do inside a request.
     """
-    token = _current_patient_id.set(ERIKA_UUID)
-    yield ERIKA_UUID
+    token = _current_patient_id.set(PRIMARY_TEST_UUID)
+    yield PRIMARY_TEST_UUID
     _current_patient_id.reset(token)
 
 
@@ -160,7 +161,7 @@ async def db():
     await database.connect()
     await database.migrate()
     # Set the middleware context variable so _get_patient_id() returns the UUID
-    token = _current_patient_id.set(ERIKA_UUID)
+    token = _current_patient_id.set(PRIMARY_TEST_UUID)
     yield database
     _current_patient_id.reset(token)
     await database.close()

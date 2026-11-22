@@ -159,6 +159,18 @@ def curated_loop_running() -> bool:
     return task is not None and not task.done()
 
 
+def current_scheduler() -> tuple[Any, dict] | None:
+    """Read-only peek at the running scheduler and its tracker (admin panel).
+
+    Unlike ``existing_scheduler()`` this takes no reference: the caller only
+    reads ``get_jobs()`` and must never shut it down.
+    """
+    with _lock:
+        if not _scheduler_alive(_scheduler):
+            return None
+        return _scheduler, _tracker if _tracker is not None else {}
+
+
 def status() -> dict:
     """In-memory snapshot for operator /readiness. No DB, no patient data."""
     sched = _scheduler
@@ -179,6 +191,39 @@ def status() -> dict:
         "curated_loop_running": curated_loop_running(),
         "curated_loop_started_at": _curated_started_at if curated_loop_running() else None,
     }
+
+
+def job_snapshot() -> list[dict] | None:
+    """The jobs the running scheduler really has, or None when none runs here.
+
+    Read-only: unlike ``existing_scheduler()`` it takes no reference. One entry
+    per job (id, trigger, next run) plus the job tracker's last outcome
+    timestamps; no error texts, no DB call, no patient data.
+    """
+    current = current_scheduler()  # the same read-only peek as the admin panel (#923)
+    if current is None:
+        return None
+    sched, tracker = current
+    try:
+        jobs = sched.get_jobs()
+    except Exception:  # telemetry must never break the caller
+        logger.warning("scheduler job snapshot failed", exc_info=True)
+        return None
+    out = []
+    for job in sorted(jobs, key=lambda j: j.id):
+        nxt = getattr(job, "next_run_time", None)
+        live = tracker.get(job.id, {})
+        out.append(
+            {
+                "id": job.id,
+                "trigger": str(job.trigger),
+                "next_run_at": nxt.isoformat(timespec="seconds") if nxt else None,
+                "running": bool(live.get("running", False)),
+                "last_ok": live.get("last_ok"),
+                "last_error": live.get("last_error"),
+            }
+        )
+    return out
 
 
 def _reset_for_tests() -> None:

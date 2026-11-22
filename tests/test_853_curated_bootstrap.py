@@ -518,14 +518,19 @@ OTHER_UUID = "44444444-4444-4444-8444-444444444853"
 
 
 async def test_list_other_patient_folder_ids_excludes_own_and_empty(db: Database):
-    from tests.helpers import ERIKA_UUID
+    from tests.helpers import PRIMARY_TEST_UUID
 
     await db.insert_patient(Patient(patient_id=OTHER_UUID, slug="other-853", display_name="O"))
-    for pid, folder in ((ERIKA_UUID, "idOwnFolder0000001"), (OTHER_UUID, "idOtherFolder00001")):
+    for pid, folder in (
+        (PRIMARY_TEST_UUID, "idOwnFolder0000001"),
+        (OTHER_UUID, "idOtherFolder00001"),
+    ):
         await db.upsert_oauth_token(
             OAuthToken(patient_id=pid, access_token="a", refresh_token="r", gdrive_folder_id=folder)
         )
-    assert await db.list_other_patient_folder_ids(patient_id=ERIKA_UUID) == {"idOtherFolder00001"}
+    assert await db.list_other_patient_folder_ids(patient_id=PRIMARY_TEST_UUID) == {
+        "idOtherFolder00001"
+    }
     assert await db.list_other_patient_folder_ids(patient_id=OTHER_UUID) == {"idOwnFolder0000001"}
 
 
@@ -849,9 +854,22 @@ def _calls(attr: str) -> dict[str, int]:
 
 
 def test_contract_writes_callers_are_the_pipeline_and_the_bootstrap_only():
-    """Only the curated pipeline (tools/curated.py) and the bootstrap lift the write block."""
-    assert set(_calls("contract_writes")) == {"tools/curated.py", "curated/bootstrap.py"}
+    """Only the curated pipeline (tools/curated.py), the bootstrap and the
+    dashboard inbox upload (#921) lift the write block.
+
+    #921 added ``curated/inbox_upload.py``: the dashboard's "Add documents"
+    puts a caregiver's file unchanged into the README §2 inbox, and its only
+    write is ``drive_ops.upload_original`` (create-only, read back, never
+    retried, refuses any folder but the inbox), locked in
+    ``tests/test_921_dashboard_upload.py``.
+    """
+    assert set(_calls("contract_writes")) == {
+        "tools/curated.py",
+        "curated/bootstrap.py",
+        "curated/inbox_upload.py",
+    }
     assert _calls("contract_writes")["curated/bootstrap.py"] == 1
+    assert _calls("contract_writes")["curated/inbox_upload.py"] == 1
 
 
 def test_only_the_bootstrap_creates_folders_through_drive_ops():

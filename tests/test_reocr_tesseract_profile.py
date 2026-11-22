@@ -35,7 +35,7 @@ from oncofiles.curated import llm, reocr
 from oncofiles.curated.facts_rules import Vocabulary
 from oncofiles.curated.indexer import parse_sidecar
 from oncofiles.tools import curated as tool
-from tests.helpers import ERIKA_UUID
+from tests.helpers import PRIMARY_TEST_UUID
 from tests.test_curated_reocr import NOW
 from tests.test_curated_runner import LABS, LOGS, FakeDrive
 from tests.test_reocr_candidate import _wired
@@ -607,13 +607,13 @@ async def test_tool_requires_admin(db, vocab):
 @pytest.mark.usefixtures("admin_scope")
 async def test_tool_dry_run_then_real_promotion(db, vocab):
     drive, src, side, old, _, d = _reviewed_before_the_profile(vocab)
-    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side, filename=NAME)
     with _wired(drive) as (index, entered):
         preview = await _call(db)
         assert preview["dry_run"] is True and preview["results"] == {"previewed": 1}
         assert drive.writes == [] and entered == [] and index.await_count == 0
         assert "pre_store" not in preview and await _activity(db) == []
-        assert tool._restoring[ERIKA_UUID]["state"] == "done" and not tool.run_active()
+        assert tool._restoring[PRIMARY_TEST_UUID]["state"] == "done" and not tool.run_active()
 
         out = await _call(db, document_ids=[801], dry_run=False)
     assert out["results"] == {"promoted": 1} and out["pre_store"] == "synthetic-copy.db"
@@ -627,10 +627,10 @@ async def test_tool_dry_run_then_real_promotion(db, vocab):
     index.assert_awaited_once()
     assert index.await_args.kwargs["force_ids"] == {801}
     _originals_untouched(drive, src)
-    assert tool._restoring[ERIKA_UUID]["kind"] == "promote"
+    assert tool._restoring[PRIMARY_TEST_UUID]["kind"] == "promote"
     # report and activity_log: ids, counts and reason codes only
     [row] = await _activity(db)
-    assert row["patient_id"] == ERIKA_UUID and row["status"] == "ok"
+    assert row["patient_id"] == PRIMARY_TEST_UUID and row["status"] == "ok"
     inp, outp = json.loads(row["input_summary"]), json.loads(row["output_summary"])
     assert inp["document_ids"] == [801] and inp["profile"] == "tesseract_baseline"
     assert outp["promoted"] == [801] and outp["results"] == {"promoted": 1}
@@ -642,7 +642,7 @@ async def test_tool_dry_run_then_real_promotion(db, vocab):
 @pytest.mark.usefixtures("admin_scope")
 async def test_tool_keeps_a_failing_candidate_and_never_reindexes(db, vocab):
     drive, src, side, old, _, _ = _reviewed_before_the_profile(vocab, old_body=OLD_WITH_TIME)
-    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side, filename=NAME)
     with _wired(drive) as (index, _):
         out = await _call(db, dry_run=False)
     assert out["results"] == {"review": 1}
@@ -654,7 +654,7 @@ async def test_tool_keeps_a_failing_candidate_and_never_reindexes(db, vocab):
 @pytest.mark.usefixtures("admin_scope")
 async def test_tool_refuses_other_documents_and_engines(db, vocab):
     drive, src, side, old, _, _ = _reviewed_before_the_profile(vocab, engine="pdftotext")
-    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side, filename=NAME)
     with _wired(drive) as (index, _):
         out = await _call(db, document_ids=[801, 999], dry_run=False)
     by_id = {e["document_id"]: e for e in out["documents"]}
@@ -666,18 +666,18 @@ async def test_tool_refuses_other_documents_and_engines(db, vocab):
 @pytest.mark.usefixtures("admin_scope")
 async def test_tool_refuses_while_the_patient_is_busy(db, vocab):
     drive, src, side, old, _, _ = _reviewed_before_the_profile(vocab)
-    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side, filename=NAME)
     with _wired(drive) as (index, _):
-        tool._reocr_jobs[ERIKA_UUID] = {"kind": "reocr", "state": "running"}
+        tool._reocr_jobs[PRIMARY_TEST_UUID] = {"kind": "reocr", "state": "running"}
         assert (await _call(db, dry_run=False))["error"].startswith("busy:")
         tool._reocr_jobs.clear()
-        tool._runs[ERIKA_UUID] = {"state": "running"}
+        tool._runs[PRIMARY_TEST_UUID] = {"state": "running"}
         assert (await _call(db, dry_run=False))["error"].startswith("busy:")
         tool._runs.clear()
-        tool._restoring[ERIKA_UUID] = {"kind": "restore", "state": "running"}
+        tool._restoring[PRIMARY_TEST_UUID] = {"kind": "restore", "state": "running"}
         assert (await _call(db, dry_run=False))["error"].startswith("busy:")
         tool._restoring.clear()
-        async with tool.patient_lock(ERIKA_UUID):
+        async with tool.patient_lock(PRIMARY_TEST_UUID):
             assert (await _call(db, dry_run=False))["error"].startswith("busy:")
     assert drive.writes == [] and index.await_count == 0
     assert drive.items[side]["content"] == old.encode()
@@ -686,14 +686,14 @@ async def test_tool_refuses_while_the_patient_is_busy(db, vocab):
 @pytest.mark.usefixtures("admin_scope")
 async def test_tool_limits_and_the_env_switch(db, vocab, monkeypatch):
     drive, src, side, old, _, _ = _reviewed_before_the_profile(vocab)
-    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side, filename=NAME)
     with _wired(drive) as (index, _):
         many = await _call(db, document_ids=list(range(1, 22)), dry_run=False)
         assert many == {"error": "refused: at most 20 documents per call"}
         monkeypatch.setattr(config, "REOCR_TESSERACT_PROFILE", False)
         off = await _call(db, dry_run=False)
         assert off == {"error": "refused: tesseract_profile_disabled"}
-    assert drive.writes == [] and ERIKA_UUID not in tool._restoring
+    assert drive.writes == [] and PRIMARY_TEST_UUID not in tool._restoring
 
 
 @pytest.mark.usefixtures("admin_scope")
@@ -703,7 +703,7 @@ async def test_tool_without_a_pre_store_copy_writes_nothing(db, vocab):
     from oncofiles.pre_store import PreStoreError
 
     drive, src, side, old, _, _ = _reviewed_before_the_profile(vocab)
-    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side, filename=NAME)
     with (
         _wired(drive) as (index, entered),
         patch("oncofiles.pre_store.make_copy", side_effect=PreStoreError("synthetic")),
@@ -711,7 +711,7 @@ async def test_tool_without_a_pre_store_copy_writes_nothing(db, vocab):
         out = await _call(db, dry_run=False)
     assert out["error"].startswith("refused: pre-store copy failed")
     assert drive.writes == [] and entered == [] and index.await_count == 0
-    assert tool._restoring[ERIKA_UUID]["state"] == "failed" and not tool.run_active()
+    assert tool._restoring[PRIMARY_TEST_UUID]["state"] == "failed" and not tool.run_active()
 
 
 def test_a_running_promotion_counts_as_an_active_run():
@@ -753,7 +753,7 @@ async def test_a_profile_report_and_log_carry_no_values(db, vocab, caplog, dry_r
     # a real job's activity_log row: counts of the muted reason codes
     job = {"kind": "reocr", "dry_run": False, "state": "done", "documents": [],
            "report": reports[0]}  # fmt: skip
-    await tool._audit_real_job(db, ERIKA_UUID, job)
+    await tool._audit_real_job(db, PRIMARY_TEST_UUID, job)
     async with db.db.execute(
         "SELECT output_summary FROM activity_log WHERE tool_name = 'curated_reocr'"
     ) as cur:
@@ -822,7 +822,7 @@ async def _fact(db, doc_id: int, code: str, verification: str, *, deleted: bool 
     await db.db.execute(
         "INSERT INTO clinical_records (patient_id, record_type, source_document_id, param, "
         "code, verification, source, deleted_at) VALUES (?, 'lab', ?, ?, ?, ?, 't', ?)",
-        (ERIKA_UUID, doc_id, code, code, verification, "2027-05-01" if deleted else None),
+        (PRIMARY_TEST_UUID, doc_id, code, code, verification, "2027-05-01" if deleted else None),
     )
     await db.db.commit()
 
@@ -830,13 +830,13 @@ async def _fact(db, doc_id: int, code: str, verification: str, *, deleted: bool 
 async def test_trusted_fact_codes_is_scoped_and_skips_unverified_and_deleted(db):
     from tests.helpers import TEST_PATIENT_UUID
 
-    await _seed_doc(db, 801, ERIKA_UUID, "s801", filename=NAME)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, "s801", filename=NAME)
     await _fact(db, 801, "HGB", "machine")
     await _fact(db, 801, "PLT", "verified")
     await _fact(db, 801, "CEA", "corrected")
     await _fact(db, 801, "WBC", "unverified")
     await _fact(db, 801, "CRP", "machine", deleted=True)
-    got = await db.trusted_fact_codes(patient_id=ERIKA_UUID, document_ids=[801, 802])
+    got = await db.trusted_fact_codes(patient_id=PRIMARY_TEST_UUID, document_ids=[801, 802])
     assert got == {801: {"HGB", "PLT", "CEA"}, 802: set()}
     other = await db.trusted_fact_codes(patient_id=TEST_PATIENT_UUID, document_ids=[801])
     assert other == {801: set()}
@@ -853,14 +853,14 @@ async def test_reocr_job_and_promotion_respect_stored_trusted_facts(
 ):
     # the re-OCR job
     drive, src, side, old, doc, reader = _setup([NEW_PAGE])
-    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side, filename=NAME)
     if verification:
         await _fact(db, 801, "HGB", verification)
     doc = {k: v for k, v in doc.items() if k != "trusted_codes"} | {"document_id": 801}
-    tool._reocr_jobs[ERIKA_UUID] = job = {"kind": "reocr", "state": "running",
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = job = {"kind": "reocr", "state": "running",
                                           "dry_run": False, "documents": [doc]}  # fmt: skip
     with _wired(drive, lambda *a, **k: reader()) as (index, _):
-        await tool._reocr_job(db, ERIKA_UUID, [doc], dry_run=False, passes=2)
+        await tool._reocr_job(db, PRIMARY_TEST_UUID, [doc], dry_run=False, passes=2)
     [d] = job["report"]["documents"]
     if blocked:
         assert d["result"] == "review" and d["review_reasons"] == ["lost_trusted_values"]
@@ -898,12 +898,12 @@ async def test_a_failed_fact_lookup_fails_closed_in_the_job_and_the_tool(db, voc
 
     monkeypatch.setattr(db, "trusted_fact_codes", boom)
     drive, src, side, old, doc, reader = _setup([NEW_PAGE])
-    await _seed_doc(db, 801, ERIKA_UUID, side, filename=NAME)
+    await _seed_doc(db, 801, PRIMARY_TEST_UUID, side, filename=NAME)
     doc = {k: v for k, v in doc.items() if k != "trusted_codes"} | {"document_id": 801}
-    tool._reocr_jobs[ERIKA_UUID] = job = {"kind": "reocr", "state": "running",
+    tool._reocr_jobs[PRIMARY_TEST_UUID] = job = {"kind": "reocr", "state": "running",
                                           "dry_run": False, "documents": [doc]}  # fmt: skip
     with _wired(drive, lambda *a, **k: reader()) as (index, _):
-        await tool._reocr_job(db, ERIKA_UUID, [doc], dry_run=False, passes=2)
+        await tool._reocr_job(db, PRIMARY_TEST_UUID, [doc], dry_run=False, passes=2)
         [d] = job["report"]["documents"]
         assert d["result"] == "review"
         assert d["review_reasons"] == ["lost_trusted_values_unknown"]

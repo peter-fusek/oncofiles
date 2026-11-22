@@ -5,7 +5,7 @@ from __future__ import annotations
 from oncofiles.models import PromptCallType, PromptLogEntry, PromptLogQuery
 from oncofiles.prompt_logger import _extract_result_summary
 
-from .helpers import ERIKA_UUID
+from .helpers import PRIMARY_TEST_UUID
 
 # ── _extract_result_summary ──────────────────────────────────────────
 
@@ -52,7 +52,7 @@ async def test_insert_and_get_prompt_log(db):
         call_type=PromptCallType.SUMMARY_TAGS,
         document_id=1,
         model="claude-haiku-4-5",
-        patient_id=ERIKA_UUID,
+        patient_id=PRIMARY_TEST_UUID,
         system_prompt="You are a medical analyst.",
         user_prompt="Document text:\n\ntest content",
         raw_response='{"summary": "Test summary"}',
@@ -78,7 +78,7 @@ async def test_search_prompt_log_by_type(db):
             PromptLogEntry(
                 call_type=ct,
                 model="claude-haiku-4-5",
-                patient_id=ERIKA_UUID,
+                patient_id=PRIMARY_TEST_UUID,
                 result_summary="test",
             )
         )
@@ -95,7 +95,7 @@ async def test_search_prompt_log_by_document(db):
             call_type=PromptCallType.SUMMARY_TAGS,
             document_id=42,
             model="claude-haiku-4-5",
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
         )
     )
     await db.insert_prompt_log(
@@ -103,7 +103,7 @@ async def test_search_prompt_log_by_document(db):
             call_type=PromptCallType.SUMMARY_TAGS,
             document_id=99,
             model="claude-haiku-4-5",
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
         )
     )
 
@@ -118,7 +118,7 @@ async def test_search_prompt_log_text_search(db):
         PromptLogEntry(
             call_type=PromptCallType.OCR,
             model="claude-haiku-4-5",
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             raw_response="Jana Testova blood count results",
             result_summary="blood count",
         )
@@ -127,7 +127,7 @@ async def test_search_prompt_log_text_search(db):
         PromptLogEntry(
             call_type=PromptCallType.OCR,
             model="claude-haiku-4-5",
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             raw_response="CT scan imaging report",
             result_summary="CT scan",
         )
@@ -145,7 +145,7 @@ async def test_get_prompt_log_stats(db):
             PromptLogEntry(
                 call_type=PromptCallType.OCR,
                 model="claude-haiku-4-5",
-                patient_id=ERIKA_UUID,
+                patient_id=PRIMARY_TEST_UUID,
                 input_tokens=200,
                 output_tokens=100,
                 duration_ms=1000,
@@ -155,7 +155,7 @@ async def test_get_prompt_log_stats(db):
         PromptLogEntry(
             call_type=PromptCallType.SUMMARY_TAGS,
             model="claude-haiku-4-5",
-            patient_id=ERIKA_UUID,
+            patient_id=PRIMARY_TEST_UUID,
             input_tokens=500,
             output_tokens=50,
             duration_ms=2000,
