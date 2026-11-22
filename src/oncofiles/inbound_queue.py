@@ -552,9 +552,9 @@ async def _claimed_bucket(db, msg: inbound_email.InboundMessage) -> str | None:
         bucket = "welcome"
     else:
         th = inbound_email.token_hash(token)
-        row = await db.find_inbound_address(th)
-        if row is None or not row["active"]:
-            return None  # dropped by the normal path
+        row, _reason = await inbound_email.lookup_address(db, token, count=False)
+        if row is None:
+            return None  # dropped (and counted) by the normal path
         patient = await db.get_patient(row["patient_id"])
         caregiver = getattr(patient, "caregiver_email", None) if patient else None
         if patient is None or not _email_matches_caregiver(msg.sender, caregiver):
@@ -707,11 +707,9 @@ async def enqueue(
             token = admitted[1]
             msg.welcome = admitted[2]  # False: handed to an existing caregiver's patient
         th = inbound_email.token_hash(token) if token else None
-        row = await db.find_inbound_address(th) if th else None
-        if row is None or not row["active"]:
-            reason = "unknown_token" if row is None else "inactive_token"
-            inbound_email._state.counters[reason] += 1
-            dropped += 1
+        row, _reason = await inbound_email.lookup_address(db, token)
+        if row is None:
+            dropped += 1  # silent: nothing stored, sent or downloaded
             continue
         pid = row["patient_id"]
         trusted = await inbound_email.sender_refusal(db, pid, msg) is None

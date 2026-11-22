@@ -7,11 +7,26 @@ Address
 when that address is ``@gmail.com`` (lowercase, dots kept, ``+tag`` dropped);
 for a non-Gmail caregiver, a list whose first address is not Gmail, or no
 caregiver, there is no prefix (token only), nothing is guessed. The prefix is
-part of an e-mail address and is never logged. The token is 10
+part of an e-mail address and is never logged. The token is 6
 characters of lowercase Crockford base32 (no ``i l o u``, so nothing is
-ambiguous), about 50 bits, derived and never stored::
+ambiguous), about 30 bits, derived and never stored::
 
-    token = base32(HMAC(inbound_address_key(), f"{patient_id}:{version}"))[:10]
+    token = base32(HMAC(inbound_address_key(), f"{patient_id}:{version}"))[:6]
+
+Six characters (maintainer decision 2026-11-22, easier to dictate; it was 10)
+are enough because a guessed address files nothing from a stranger: the
+sender rules and our own DKIM verification still apply, so a guess only
+reaches the unmatched list. Bad-token mail is counted globally per hour
+(``bad_tokens_overview``, alert ``bad_tokens_high``) to see enumeration.
+
+**Transition:** a row written before migration 100 holds a 10-character token
+(``token_length`` NULL). It keeps routing until ``legacy_grace_end``: 30 days
+from ``SHORT_TOKEN_SINCE``, or from the row's ``created_at`` when newer. The
+first ``ensure_address`` (dashboard card, welcome reply) supersedes it with a
+6-character row of the next version; the old row goes inactive with
+``grace_ends_at`` set and still routes until then. After it, a 10-character
+token lapses by a time check (``lapsed_token``); nothing is deleted. A rotation
+stops every earlier address at once, a graced one included.
 
 ``inbound_address_key`` is the #502 purpose-bound key
 (``oncofiles.inbound_address.v1``, override ``INBOUND_ADDRESS_SECRET``). The
@@ -114,11 +129,12 @@ import hmac
 import logging
 import os
 import re
+import sqlite3
 import time
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email import policy
 from email.parser import BytesParser
 from email.utils import getaddresses, parseaddr
@@ -130,9 +146,25 @@ INBOUND_DOMAIN = "docs.oncofiles.com"
 OWN_DOMAINS = frozenset({"oncofiles.com", INBOUND_DOMAIN})
 TERMS_URL = "https://oncofiles.com/terms"
 
-TOKEN_LEN = 10
+TOKEN_LEN = 6  # maintainer decision 2026-11-22 (was 10), ~30 bits
+LEGACY_TOKEN_LEN = 10  # rows written before migration 100 (token_length NULL)
 TOKEN_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz"  # Crockford base32, lowercase
-_TOKEN_RE = re.compile(rf"^[{TOKEN_ALPHABET}]{{{TOKEN_LEN}}}$")
+_TOKEN_RE = re.compile(
+    rf"^(?:[{TOKEN_ALPHABET}]{{{TOKEN_LEN}}}|[{TOKEN_ALPHABET}]{{{LEGACY_TOKEN_LEN}}})$"
+)
+# A 10-character address keeps working for LEGACY_GRACE_DAYS from this instant
+# (the deploy of the short tokens), or from the row's created_at when newer.
+SHORT_TOKEN_SINCE = datetime(2026, 11, 23, tzinfo=UTC)
+LEGACY_GRACE_DAYS = 30
+# A token-hash collision (UNIQUE token_hash) bumps the version and retries.
+ACTIVATE_ATTEMPTS = 5
+# Enumeration watch: mail to an unknown, inactive or lapsed token, all
+# addresses together, in a sliding hour; above the threshold each further one
+# raises the alert ``bad_tokens_high`` (counts only).
+BAD_TOKENS_ALERT_PER_HOUR = 20
+BAD_TOKENS_WINDOW_S = 3600
+BAD_TOKENS_KEEP = 10_000  # memory bound of the sliding window
+BAD_TOKEN_REASONS = ("unknown_token", "inactive_token", "lapsed_token")
 GMAIL_DOMAIN = "gmail.com"
 # Gmail local parts: letters, digits and single dots, not at either end.
 _GMAIL_LOCAL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.]{0,62}[a-z0-9])?$")
@@ -176,14 +208,15 @@ def _b32(data: bytes, length: int) -> str:
     return "".join(out)
 
 
-def derive_token(patient_id: str, version: int) -> str:
-    """The 10-character token of ``patient_id`` at ``version`` (deterministic)."""
+def derive_token(patient_id: str, version: int, length: int = TOKEN_LEN) -> str:
+    """The token of ``patient_id`` at ``version`` (deterministic, ``TOKEN_LEN``
+    characters; ``length=LEGACY_TOKEN_LEN`` gives a pre-migration-100 token)."""
     from oncofiles.secrets_keys import inbound_address_key
 
     digest = hmac.new(
         inbound_address_key(), f"{patient_id}:{int(version)}".encode(), hashlib.sha256
     ).digest()
-    return _b32(digest, TOKEN_LEN)
+    return _b32(digest, length)
 
 
 def token_hash(token: str) -> str:
@@ -239,29 +272,158 @@ def token_from_address(address: str) -> str | None:
     return candidate if _TOKEN_RE.match(candidate) else None
 
 
+def _utcnow() -> datetime:
+    """The clock of the legacy-grace checks (one place, patched by tests)."""
+    return datetime.now(UTC)
+
+
+def _parse_instant(value) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def is_legacy(row: dict) -> bool:
+    """True for a row holding a 10-character token (written before migration 100)."""
+    return int(row.get("token_length") or LEGACY_TOKEN_LEN) != TOKEN_LEN
+
+
+def legacy_grace_end(row: dict) -> datetime:
+    """Until when a 10-character row routes: its ``grace_ends_at`` when an
+    upgrade set it, else 30 days from ``SHORT_TOKEN_SINCE`` or from the row's
+    ``created_at`` when that is newer."""
+    graced = _parse_instant(row["grace_ends_at"]) if row.get("grace_ends_at") else None
+    if graced is not None:
+        return graced
+    created = _parse_instant(row.get("created_at")) or SHORT_TOKEN_SINCE
+    return max(SHORT_TOKEN_SINCE, created) + timedelta(days=LEGACY_GRACE_DAYS)
+
+
+def address_routes(row: dict | None, now: datetime | None = None) -> str | None:
+    """None when mail to this row is routed, else the drop reason.
+
+    ``unknown_token`` (no row), ``inactive_token`` (rotated away), or
+    ``lapsed_token`` (a 10-character row past ``legacy_grace_end``). An
+    inactive 10-character row with ``grace_ends_at`` (superseded by its short
+    successor, not rotated) still routes until then.
+    """
+    if row is None:
+        return "unknown_token"
+    if not is_legacy(row):
+        return None if row["active"] else "inactive_token"
+    if not row["active"] and not row.get("grace_ends_at"):
+        return "inactive_token"
+    if (now or _utcnow()) >= legacy_grace_end(row):
+        return "lapsed_token"
+    return None
+
+
+def note_bad_token(reason: str, now: float | None = None) -> None:
+    """Count one mail to a token that does not route (global, per hour).
+
+    Codes and counts only. Above ``BAD_TOKENS_ALERT_PER_HOUR`` in the last
+    hour each further one raises ``bad_tokens_high`` (enumeration watch).
+    """
+    now = time.time() if now is None else now
+    _state.counters[reason] += 1
+    book = _state.bad_tokens
+    book.append(now)
+    while book and now - book[0] >= BAD_TOKENS_WINDOW_S:
+        book.popleft()
+    if len(book) > BAD_TOKENS_ALERT_PER_HOUR:
+        note_alert("bad_tokens_high")
+
+
+def bad_tokens_overview(now: float | None = None) -> dict:
+    """Bad-token mails in the last hour, all addresses (operator ``/readiness``
+    and the admin inbound panel; never ``/health``)."""
+    now = time.time() if now is None else now
+    last_hour = sum(1 for t in _state.bad_tokens if now - t < BAD_TOKENS_WINDOW_S)
+    return {
+        "last_hour": last_hour,
+        "alert_above": BAD_TOKENS_ALERT_PER_HOUR,
+        "alerting": last_hour > BAD_TOKENS_ALERT_PER_HOUR,
+    }
+
+
+async def lookup_address(db, token: str | None, *, count: bool = True):
+    """``(row, None)`` when mail to ``token`` routes, else ``(None, reason)``.
+
+    The patient is resolved ONLY here, from the keyed token hash. ``count``
+    records a drop in the bad-token counter (the paths that drop the mail).
+    """
+    row = await db.find_inbound_address(token_hash(token)) if token else None
+    reason = address_routes(row)
+    if reason is not None:
+        if count:
+            note_bad_token(reason)
+        return None, reason
+    return row, None
+
+
+async def _activate_next(db, patient_id: str, keep_previous_until: str | None = None) -> int:
+    """Activate a 6-character address at the next free version.
+
+    A ``token_hash`` collision (or a version taken meanwhile) violates a
+    UNIQUE constraint and rolls the transaction back; the version is bumped
+    and tried again, at most ``ACTIVATE_ATTEMPTS`` times.
+    """
+    version = await db.max_inbound_address_version(patient_id=patient_id) + 1
+    for attempt in range(ACTIVATE_ATTEMPTS):
+        try:
+            await db.activate_inbound_address(
+                patient_id=patient_id,
+                version=version,
+                token_hash=token_hash(derive_token(patient_id, version)),
+                token_length=TOKEN_LEN,
+                keep_previous_until=keep_previous_until,
+            )
+            return version
+        except sqlite3.IntegrityError:
+            logger.warning(
+                "inbound: address collision patient %s version=%d attempt=%d",
+                patient_id[:4],
+                version,
+                attempt + 1,
+            )
+            version += 1
+    raise RuntimeError("inbound: no free address token after retries")
+
+
 async def ensure_address(db, patient_id: str) -> dict:
-    """The patient's active address, created (version 1, or next) when missing."""
+    """The patient's active address, created (version 1, or next) when missing.
+
+    An active 10-character row is superseded lazily here by a 6-character row
+    of the next version; the old row keeps routing until ``legacy_grace_end``.
+    """
     row = await db.get_active_inbound_address(patient_id=patient_id)
     if row is None:
-        version = await db.max_inbound_address_version(patient_id=patient_id) + 1
-        await db.activate_inbound_address(
-            patient_id=patient_id,
-            version=version,
-            token_hash=token_hash(derive_token(patient_id, version)),
-        )
+        version = await _activate_next(db, patient_id)
         row = await db.get_active_inbound_address(patient_id=patient_id)
         logger.info("inbound: address created patient %s version=%d", patient_id[:4], version)
+    elif is_legacy(row):
+        grace = legacy_grace_end(row)
+        keep = _iso(grace) if _utcnow() < grace else None
+        version = await _activate_next(db, patient_id, keep_previous_until=keep)
+        row = await db.get_active_inbound_address(patient_id=patient_id)
+        logger.info(
+            "inbound: short address patient %s version=%d old_kept=%s",
+            patient_id[:4],
+            version,
+            "yes" if keep else "no",
+        )
     return await _address_payload(db, patient_id, row)
 
 
 async def rotate_address(db, patient_id: str) -> dict:
-    """A new address (version + 1); the old one stops routing at once."""
-    version = await db.max_inbound_address_version(patient_id=patient_id) + 1
-    await db.activate_inbound_address(
-        patient_id=patient_id,
-        version=version,
-        token_hash=token_hash(derive_token(patient_id, version)),
-    )
+    """A new address (next version); every earlier one stops routing at once."""
+    version = await _activate_next(db, patient_id)
     logger.info("inbound: address rotated patient %s version=%d", patient_id[:4], version)
     row = await db.get_active_inbound_address(patient_id=patient_id)
     return await _address_payload(db, patient_id, row)
@@ -269,7 +431,7 @@ async def rotate_address(db, patient_id: str) -> dict:
 
 async def _address_payload(db, patient_id: str, row: dict) -> dict:
     patient = await db.get_patient(patient_id)
-    token = derive_token(patient_id, row["version"])
+    token = derive_token(patient_id, row["version"], TOKEN_LEN)
     return {
         "enabled": True,
         "address": format_address(token, getattr(patient, "caregiver_email", None)),
@@ -671,7 +833,7 @@ AUTH_REFUSAL_REASONS = (
 )
 
 
-ALERT_CODES = ("claimed_address_refusals_high",)
+ALERT_CODES = ("claimed_address_refusals_high", "bad_tokens_high")
 
 
 def note_alert(code: str) -> None:
@@ -1262,6 +1424,8 @@ class _State:
         # counts only), and the claimed-bucket batch-503s per token hash
         self.alerts: Counter = Counter()
         self.claimed_503: dict[str, list[float]] = {}
+        # #950 short tokens: times of bad-token mails, all addresses (1 h)
+        self.bad_tokens: deque[float] = deque(maxlen=BAD_TOKENS_KEEP)
         self.authserv_hosts: dict[str, dict] = {}
         self.authserv_stats: Counter = Counter()
         # header / item / payload field names and auth evidence flags (#950)
@@ -1338,6 +1502,7 @@ def unmatched_overview() -> dict:
         "totals": dict(_state.counters),
         "auth_refusals": {r: _state.auth_refusals[r] for r in AUTH_REFUSAL_REASONS},
         "alerts": alerts_overview(),
+        "bad_tokens": bad_tokens_overview(),
         "authserv_candidates": authserv_candidates(),
         **field_names_overview(),
     }
@@ -1802,10 +1967,8 @@ async def _process_message(db, msg: InboundMessage, progress: JobProgress | None
                 return Result("welcome_refused")
             token = admitted[1]
             msg.welcome = admitted[2]
-    row = await db.find_inbound_address(token_hash(token)) if token else None
-    if row is None or not row["active"]:
-        reason = "unknown_token" if row is None else "inactive_token"
-        _state.counters[reason] += 1
+    row, reason = await lookup_address(db, token)
+    if row is None:
         logger.info("inbound: dropped reason=%s", reason)
         return Result(reason)
     patient_id = row["patient_id"]

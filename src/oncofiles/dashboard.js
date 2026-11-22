@@ -1410,13 +1410,17 @@
       if (!totalsEl || !body) return;
       var t = (data && data.totals) || {};
       var unmatched = (t.unmatched_unknown_sender || 0) + (t.unmatched_auth_failed || 0);
+      var badTotal = (t.unknown_token || 0) + (t.inactive_token || 0) + (t.lapsed_token || 0);
+      var bad = (data && data.bad_tokens) || {};
       setI18n(totalsEl,
         (data && data.enabled ? 'Príjem pošty je zapnutý. ' : 'Príjem pošty je vypnutý (chýba tajomstvo webhooku). ') +
           'Zaradené správy: ' + (t.mails_filed || 0) + ', prijaté súbory: ' + (t.files_accepted || 0) +
-          ', nezaradené: ' + unmatched + ', neznáma adresa: ' + ((t.unknown_token || 0) + (t.inactive_token || 0)) + '.',
+          ', nezaradené: ' + unmatched + ', neznáma adresa: ' + badTotal +
+          ' (za poslednú hodinu: ' + (bad.last_hour || 0) + ').',
         (data && data.enabled ? 'Receiving mail is on. ' : 'Receiving mail is off (no webhook secret). ') +
           'Filed mails: ' + (t.mails_filed || 0) + ', files accepted: ' + (t.files_accepted || 0) +
-          ', unmatched: ' + unmatched + ', unknown address: ' + ((t.unknown_token || 0) + (t.inactive_token || 0)) + '.');
+          ', unmatched: ' + unmatched + ', unknown address: ' + badTotal +
+          ' (last hour: ' + (bad.last_hour || 0) + ').');
       clearEl(body);
       // #952: durable queue (counts survive restarts). download_expired = the
       // attachments waited longer than Brevo keeps them; nothing was filed.
@@ -1451,6 +1455,17 @@
           'Upozornenie: adresa pacienta opakovane dostáva viac neoverenej pošty, než unesie; dávky sa odmietajú a Brevo ich zopakuje, nič sa nezahodí (' + refusals + '×, kód claimed_address_refusals_high).',
           'Alert: a patient address keeps getting more unverified mail than it can hold; batches are refused and Brevo retries them, nothing is dropped (' + refusals + '×, code claimed_address_refusals_high).');
         body.appendChild(alertLine);
+      }
+      // #950 short tokens: many mails to unknown / inactive / lapsed addresses
+      // within an hour, all addresses together; likely someone guessing tokens.
+      var badHigh = alerts.bad_tokens_high || 0;
+      if (badHigh) {
+        var badLine = document.createElement('p');
+        badLine.className = 'curated-ops-meta inbound-alert';
+        setI18n(badLine,
+          'Upozornenie: veľa pošty na neexistujúce adresy za hodinu (možné hádanie adries); nič sa neuložilo ani neodoslalo (' + badHigh + '×, kód bad_tokens_high).',
+          'Alert: many mails to unknown addresses within an hour (possible address guessing); nothing was stored or sent (' + badHigh + '×, code bad_tokens_high).');
+        body.appendChild(badLine);
       }
       renderTrialFunnel(body, data && data.trial_funnel);
       // #950 quarantine: pending bytes against its own budget, and the retained
