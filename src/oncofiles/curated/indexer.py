@@ -51,7 +51,9 @@ INDEX_ENGINE = "curated-sidecar"
 # v25: a month-precision date (#919: YYYYMM00 name, doc_date "YYYY-MM" or
 #      doc_date_precision: month) is stored as document_date NULL plus
 #      doc_date_precision "month" and doc_month "YYYY-MM" in the metadata
-INDEX_VERSION = 25
+# v26: a month-only "YYYY-MM-…" filename (a monthly note such as a conversation
+#      log) is dated by month like a YYYYMM00 name; a full "YYYY-MM-DD" is not
+INDEX_VERSION = 26
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)
@@ -192,11 +194,20 @@ def _filename_date(name: str) -> date | None:
         return None
 
 
+# A caregiver's month-only name such as "2027-03-conversation-log.md": the
+# month and then a separator that does NOT start a day ("2027-03-14_…" is a day).
+_DASHED_MONTH_RE = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])[-_ ](?!\d{1,2}(?:[-_ .]|$))")
+
+
 def _filename_month(name: str) -> str | None:
-    """``YYYY-MM`` of a ``YYYYMM00-…`` name (month precision, #919)."""
+    """``YYYY-MM`` of a ``YYYYMM00-…`` name (month precision, #919), or of a
+    month-only ``YYYY-MM-…`` name such as a monthly note (v26)."""
     token = name[:8]
     if len(name) > 8 and name[8] in "-_" and date_precision(token) == PRECISION_MONTH:
         return f"{token[:4]}-{token[4:6]}"
+    m = _DASHED_MONTH_RE.match(name)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
     return None
 
 
@@ -258,6 +269,8 @@ class IndexRecord:
     review_override: bool = False
     # #919: "YYYY-MM" of a month-precision date (document_date stays None)
     doc_month: str | None = None
+    # v26: True while ``doc_month`` comes from the filename only (no front matter)
+    month_from_filename: bool = False
 
     @property
     def file_id(self) -> str:
@@ -307,6 +320,7 @@ def _record(folder: str, category: DocumentCategory, item: Item) -> IndexRecord:
         original_filename=nfc(item.name),
         document_date=_filename_date(item.name),
         doc_month=_filename_month(nfc(item.name)),
+        month_from_filename=_filename_month(nfc(item.name)) is not None,
         institution=fields[2] if len(fields) >= 6 and fields[2] != "Unknown" else None,
         description="-".join(fields[5:]) if len(fields) > 5 else None,
     )
@@ -318,10 +332,13 @@ def _apply_sidecar(rec: IndexRecord, front: dict, pages: list[str], text: str = 
     month = _front_month(front)
     if day is not None and front.get(PRECISION_KEY) != PRECISION_MONTH:
         rec.document_date, rec.doc_month = day, None  # a printed day wins
+        rec.month_from_filename = False
     elif month is not None:
         rec.document_date, rec.doc_month = None, month
+        rec.month_from_filename = False
     elif front.get(PRECISION_KEY) == PRECISION_MONTH and day is not None:
         rec.document_date, rec.doc_month = None, day.isoformat()[:7]
+        rec.month_from_filename = False
     if not rec.institution and front.get("institution") not in (None, "Unknown"):
         rec.institution = str(front["institution"])
     summary = front.get("summary")
@@ -417,5 +434,9 @@ def scan(
                 rec.document_date = None
                 rec.metadata[PRECISION_KEY] = PRECISION_MONTH
                 rec.metadata["doc_month"] = rec.doc_month
+                if rec.month_from_filename:
+                    # v26: the month is the filename's, never a printed date;
+                    # the index only reads it, nothing is ever renamed for it
+                    rec.metadata.setdefault("doc_date_source", "filename")
             records.append(rec)
     return IndexScan(records, contract.version, skipped, _iso_births(contract))

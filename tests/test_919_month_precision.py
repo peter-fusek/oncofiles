@@ -450,6 +450,7 @@ def test_index_reads_month_from_front_matter():
     d.add(name + ".md", d.folder[LABS], sidecar("2027-03", "NOU", doc_date_precision="month"))
     (rec,) = indexer.scan(d, d.root).records
     assert rec.document_date is None and rec.metadata["doc_month"] == "2027-03"
+    assert "doc_date_source" not in rec.metadata  # the front matter dated it
 
 
 def test_index_day_documents_are_unchanged():
@@ -548,3 +549,36 @@ def test_reocr_fact_comparison_ignores_a_month_doc_date():
 
     text = '---\ndoc_date: "2027-03"\ndoc_date_precision: "month"\ndoc_type: "Labs"\n---\n\n15.3. x'
     assert reocr._facts_of(text, Vocabulary.from_rows([])) == set()
+
+
+@pytest.mark.parametrize(
+    "name, month",
+    [
+        ("2027-03-conversation-log.md", "2027-03"),
+        ("2027-11_poznamky.md", "2027-11"),
+        ("2027-03 log.md", "2027-03"),
+        ("2027-03-14_kontrola.pdf", None),  # a full dashed day is not a month
+        ("2027-03-14 kontrola.pdf", None),
+        ("2027-03-1-x.md", None),
+        ("2027-13-log.md", None),  # no 13th month
+        ("2027-00-log.md", None),
+        ("202703-log.md", None),
+        ("conversation-log-2027-03.md", None),  # only a leading month counts
+    ],
+)
+def test_filename_month_reads_a_leading_dashed_month_only(name, month):
+    assert indexer._filename_month(name) == month
+
+
+def test_index_dates_a_dashed_month_note_by_month_without_renaming_it():
+    """v26: a caregiver's monthly note keeps its name (normalise waits for a
+    printed month) but the read model dates it by its month, so the dashboard
+    no longer shows it as missing a date; Drive is only read."""
+    d, note = _note_drive(b"- otazky na kontrolu\n")
+    (rec,) = [x for x in indexer.scan(d, d.root).records if x.filename == NOTE]
+    assert NOTE.startswith("2027-03")
+    assert rec.document_date is None
+    assert rec.metadata["doc_date_precision"] == "month"
+    assert rec.metadata["doc_month"] == "2027-03"
+    assert rec.metadata["doc_date_source"] == "filename"
+    assert d.items[note]["name"] == NOTE
