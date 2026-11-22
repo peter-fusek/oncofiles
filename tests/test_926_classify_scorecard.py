@@ -362,3 +362,24 @@ def test_scorecard_text_comes_only_through_load_for_llm():
         assert not _calls(job, forbidden), forbidden
     run = _fn("curated/classify_scorecard.py", "run_once")
     assert _calls(run, "propose") and _calls(run, "validate")
+
+
+async def test_scorecard_reports_progress_counts_and_logs_per_document(
+    seeded, scorecard_env, caplog
+):
+    """#942 follow-up: the job shows docs/calls done, and one INFO line per
+    document carries ids, counts and seconds only (no filename, no text)."""
+    caplog.set_level("INFO", logger="oncofiles")
+    status = await _run(seeded, label="progress", repeat=REPEAT)
+    n_docs = len(TEXT_OF)
+    want = {"docs_total": n_docs, "docs_done": n_docs, "docs_skipped": 0}
+    want |= {"calls_total": n_docs * REPEAT, "calls_done": n_docs * REPEAT}
+    assert status["progress"] == want
+    lines = [
+        r.getMessage() for r in caplog.records if "classification scorecard row=" in r.getMessage()
+    ]
+    assert len(lines) == n_docs
+    assert lines[-1].split()[4] == f"{n_docs}/{n_docs}"
+    for line in lines:
+        for needle in ("JanaNovakova", "kontrola_scan", "Javor", "SECRET", ".pdf"):
+            assert needle not in line, needle

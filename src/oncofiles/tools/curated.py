@@ -4651,15 +4651,25 @@ async def _classify_scorecard_job(
                 continue
             text = "\n\n".join(t for _, t in loaded if t and t.strip())
             work.append((d, text, None if text.strip() else "no_page_text"))
-        # phase 2: model calls only, one document and one run at a time
+        # phase 2: model calls only, one document and one run at a time.
+        # Progress (#942 follow-up): counts in the job (curated_reocr_status)
+        # and one INFO line per document — ids, counts and seconds only.
+        runnable = sum(1 for _, _, skip in work if not skip)
+        progress = job["progress"] = {
+            "docs_total": len(work), "docs_done": 0, "docs_skipped": 0,
+            "calls_total": runnable * repeat, "calls_done": 0,
+        }  # fmt: skip
         for d, text, skip in work:
             if skip:
                 cards.append(csc.skipped_card(d["id"], d.get("category"), skip))
+                progress["docs_skipped"] += 1
+                progress["docs_done"] += 1
                 continue
             if _stopping.is_set():
                 stopped = True
                 break
             runs = []
+            doc_started = time.monotonic()
             for _ in range(repeat):
                 runs.append(await asyncio.to_thread(
                     csc.run_once, contract, text, d.get("filename") or "",
@@ -4667,7 +4677,15 @@ async def _classify_scorecard_job(
                     sampling=request["sampling"] if variant == "v2" else None,
                     auto_vocab=auto_vocab,
                 ))  # fmt: skip
+                progress["calls_done"] += 1
             cards.append(csc.card(d["id"], d.get("category"), runs))
+            progress["docs_done"] += 1
+            logger.info(
+                "classification scorecard row=%s doc=%s %d/%d calls=%d/%d errors=%d seconds=%.0f",
+                row_id, d["id"], progress["docs_done"], progress["docs_total"],
+                progress["calls_done"], progress["calls_total"],
+                sum(1 for r in runs if r.get("error_kind")), time.monotonic() - doc_started,
+            )  # fmt: skip
         totals = csc.totals(cards, requested=requested, missing=missing)
         totals["speed"]["wall_seconds"] = round(time.monotonic() - started, 1)
         prev = await db.get_last_scorecard(
