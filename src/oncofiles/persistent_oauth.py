@@ -20,6 +20,7 @@ import json
 import logging
 import secrets
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -177,8 +178,12 @@ class ConsentedBinding:
 _consented_binding: contextvars.ContextVar[ConsentedBinding | None] = contextvars.ContextVar(
     "oncofiles_mcp_consented_binding", default=None
 )
-# code → (binding, created_at)
-_binding_for_code: dict[str, tuple[ConsentedBinding, float]] = {}
+# code → (binding, created_at), in insertion = expiry order (one TTL for all),
+# so pruning pops from the front and stops at the first live entry (no full
+# scan). Hard cap with oldest-first eviction: an evicted binding only makes
+# that code's exchange fail (fail closed).
+_binding_for_code: OrderedDict[str, tuple[ConsentedBinding, float]] = OrderedDict()
+BINDING_CAP = 10_000
 
 
 def normalize_redirect_uri(uri: object) -> str:
@@ -207,7 +212,10 @@ def consented_binding(email: str, client_id: str, code_challenge: str, redirect_
 
 def _record_binding(code: str, binding: ConsentedBinding) -> None:
     _prune_bindings()
+    _binding_for_code.pop(code, None)
     _binding_for_code[code] = (binding, time.monotonic())
+    while len(_binding_for_code) > BINDING_CAP:
+        _binding_for_code.popitem(last=False)
 
 
 def pop_binding_for_code(code: str) -> ConsentedBinding | None:
@@ -223,10 +231,13 @@ def pop_binding_for_code(code: str) -> ConsentedBinding | None:
 
 
 def _prune_bindings() -> None:
+    """Drop expired bindings from the front; stops at the first live one."""
     now = time.monotonic()
-    stale = [k for k, (_, t) in _binding_for_code.items() if now - t > _EMAIL_STASH_TTL_S]
-    for k in stale:
-        _binding_for_code.pop(k, None)
+    while _binding_for_code:
+        _, (_, created_at) = next(iter(_binding_for_code.items()))
+        if now - created_at <= _EMAIL_STASH_TTL_S:
+            break
+        _binding_for_code.popitem(last=False)
 
 
 UNBOUND_REFUSAL_MESSAGE = (
@@ -245,36 +256,92 @@ def unbound_tokens_allowed() -> bool:
     return bool(config.MCP_OAUTH_ALLOW_UNBOUND)
 
 
-def redirect_host_allowed(uri: object) -> bool:
-    """#898: may a client with this redirect URI be bound to an account?
-
-    ``config.MCP_OAUTH_REDIRECT_HOSTS`` + ``MCP_OAUTH_EXTRA_REDIRECT_HOSTS``:
-    an entry matches the host exactly; an entry starting with ``.`` matches
-    any subdomain. https only, plain http only for loopback hosts. No
-    userinfo. Any port.
-    """
+def is_loopback_redirect(uri: object) -> bool:
+    """http(s) to localhost / 127.0.0.1 / ::1, no userinfo (desktop / CLI)."""
     from urllib.parse import urlsplit
-
-    from oncofiles import config
 
     try:
         parts = urlsplit(str(uri))
         host = (parts.hostname or "").lower()
     except ValueError:
         return False
+    if parts.username is not None or parts.password is not None:
+        return False
+    return parts.scheme in ("http", "https") and host in _LOOPBACK_HOSTS
+
+
+def _exact_redirect_key(uri: object) -> str | None:
+    """scheme://host[:port]/path for an exact comparison, or None.
+
+    Lower-cases scheme and host, drops a default port, keeps the path as is;
+    a query, fragment or userinfo makes the URI unusable for an exact match.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(str(uri).strip())
+        host = (parts.hostname or "").lower()
+        port = parts.port
+    except ValueError:
+        return None
     if not host or parts.username is not None or parts.password is not None:
+        return None
+    if parts.query or parts.fragment or "#" in str(uri):
+        return None
+    scheme = parts.scheme.lower()
+    if port is not None and not (
+        (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    ):
+        host = f"{host}:{port}"
+    return f"{scheme}://{host}{parts.path or '/'}"
+
+
+def redirect_uri_allowed(uri: object) -> bool:
+    """#898: may a client with this redirect URI register / be authorized?
+
+    Loopback (any port, any path) for desktop / CLI clients; otherwise only an
+    EXACT match with ``config.MCP_OAUTH_REDIRECT_URIS`` or
+    ``MCP_OAUTH_EXTRA_REDIRECT_URIS``. The vendor hosts are multi-tenant
+    (custom-GPT action callbacks live on chatgpt.com), so no host or prefix
+    match and no subdomain wildcard.
+    """
+    from oncofiles import config
+
+    if is_loopback_redirect(uri):
+        return True
+    key = _exact_redirect_key(uri)
+    if key is None or not key.startswith("https://"):
         return False
-    loopback = host in _LOOPBACK_HOSTS
-    if parts.scheme != "https" and not (loopback and parts.scheme == "http"):
-        return False
-    for entry in (*config.MCP_OAUTH_REDIRECT_HOSTS, *config.MCP_OAUTH_EXTRA_REDIRECT_HOSTS):
-        entry = entry.lower()
-        if entry.startswith("."):
-            if host.endswith(entry) and len(host) > len(entry):
-                return True
-        elif host == entry:
-            return True
-    return False
+    allowed = {
+        _exact_redirect_key(u)
+        for u in (*config.MCP_OAUTH_REDIRECT_URIS, *config.MCP_OAUTH_EXTRA_REDIRECT_URIS)
+    }
+    return key in allowed
+
+
+def client_name_refusal(client_name: object, redirect_uris) -> str:
+    """'' when the client_name may be shown, else an error code (#898).
+
+    A name containing a reserved first-party word (Claude, Anthropic, ChatGPT,
+    OpenAI, Oncofiles; letters compared case-insensitively with everything
+    but letters removed) is allowed only when every redirect URI of the
+    client is that vendor's exact callback.
+    """
+    import unicodedata
+
+    from oncofiles import config
+
+    if not client_name:
+        return ""
+    folded = unicodedata.normalize("NFKD", str(client_name)).casefold()
+    letters = "".join(c for c in folded if c.isalpha() and c.isascii())
+    uris = [_exact_redirect_key(u) for u in (redirect_uris or [])]
+    for word, vendor_uris in config.MCP_OAUTH_RESERVED_CLIENT_NAMES.items():
+        if word in letters:
+            vendor = {_exact_redirect_key(u) for u in vendor_uris}
+            if not uris or not all(u is not None and u in vendor for u in uris):
+                return "client_name_reserved"
+    return ""
 
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -737,15 +804,21 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         # #898: DCR is open to anyone, so a client may only register redirect
         # URIs on the allowlist; otherwise it could phish authorization codes.
         for uri in client_info.redirect_uris or []:
-            if not redirect_host_allowed(uri):
+            if not redirect_uri_allowed(uri):
                 logger.info(
-                    "MCP OAuth register refused: code=redirect_host_not_allowed host=%s",
+                    "MCP OAuth register refused: code=redirect_uri_not_allowed host=%s",
                     redirect_host_for_log(uri),
                 )
                 raise RegistrationError(
                     "invalid_redirect_uri",
-                    "redirect_uri host is not allowed on this server",
+                    "redirect_uri is not allowed on this server",
                 )
+        if client_name_refusal(client_info.client_name, client_info.redirect_uris):
+            logger.info("MCP OAuth register refused: code=client_name_reserved")
+            raise RegistrationError(
+                "invalid_client_metadata",
+                "client_name names a first party this client is not",
+            )
         await super().register_client(client_info)
         await self._persist_client(client_info)
 
@@ -759,12 +832,15 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         Without a matching consent no code is minted (unless the single-user
         opt-out ``MCP_OAUTH_ALLOW_UNBOUND`` is on).
         """
-        if not redirect_host_allowed(params.redirect_uri):
+        if not redirect_uri_allowed(params.redirect_uri):
             logger.info(
-                "MCP OAuth authorize refused: code=redirect_host_not_allowed host=%s",
+                "MCP OAuth authorize refused: code=redirect_uri_not_allowed host=%s",
                 redirect_host_for_log(params.redirect_uri),
             )
-            raise AuthorizeError("access_denied", "redirect_uri host is not allowed")
+            raise AuthorizeError("access_denied", "redirect_uri is not allowed")
+        if client_name_refusal(client.client_name, client.redirect_uris):
+            logger.info("MCP OAuth authorize refused: code=client_name_reserved")
+            raise AuthorizeError("access_denied", "client_name is not allowed")
         binding = _consented_binding.get()
         matches = (
             binding is not None

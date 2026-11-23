@@ -112,7 +112,9 @@ QLINK = "qlink"
 CLASSES = (MCP, AUTH, API, PUBLIC, INBOUND, QLINK)
 
 _EXEMPT_PATHS = frozenset({"/health"})
-_AUTH_PATHS = frozenset({"/authorize", "/token", "/register", "/revoke", "/dashboard/verify"})
+_AUTH_PATHS = frozenset(
+    {"/authorize", "/authorize/consent", "/token", "/register", "/revoke", "/dashboard/verify"}
+)
 _AUTH_PREFIXES = ("/oauth/",)
 _API_PATHS = frozenset({"/dashboard/config"})
 # Unauthenticated JSON the landing reads (env only, no DB): class public.

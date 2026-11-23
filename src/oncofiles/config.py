@@ -291,27 +291,45 @@ MCP_OAUTH_ALLOW_UNBOUND: bool = os.environ.get(
     "MCP_OAUTH_ALLOW_UNBOUND", "false"
 ).strip().lower() in ("true", "1", "yes")
 
-# #898 security review: the consent page binds a signed-in account only for a
-# client whose redirect_uri host is on this list (exact host match; https,
-# plain http only for loopback; an entry starting with "." matches any
-# subdomain). Claude.ai and its subdomains, claude.com, the ChatGPT connector
-# callback hosts, and loopback (any port) for desktop/CLI clients.
-# MCP_OAUTH_EXTRA_REDIRECT_HOSTS (comma list) adds exact hosts at runtime.
-MCP_OAUTH_REDIRECT_HOSTS: tuple[str, ...] = (
-    "claude.ai",
-    ".claude.ai",
-    "claude.com",
-    "chatgpt.com",
-    "chat.openai.com",
-    "localhost",
-    "127.0.0.1",
-    "::1",
+# #898 security review: an MCP OAuth client may register / be authorized only
+# with one of these EXACT redirect URIs (scheme + host + default port + path,
+# no query, no fragment). The vendor hosts are shared and multi-tenant (e.g.
+# chatgpt.com also serves custom-GPT action callbacks that any GPT creator
+# controls), so a host match is not enough: only the vendors' own MCP
+# connector callbacks are listed. Loopback (localhost / 127.0.0.1 / ::1,
+# http or https, any port, any path) stays open for desktop and CLI clients.
+# MCP_OAUTH_EXTRA_REDIRECT_URIS (comma list of exact URIs) adds more at runtime.
+MCP_OAUTH_REDIRECT_URIS: tuple[str, ...] = (
+    "https://claude.ai/api/mcp/auth_callback",
+    "https://claude.com/api/mcp/auth_callback",
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+    "https://chat.openai.com/connector_platform_oauth_redirect",
 )
-MCP_OAUTH_EXTRA_REDIRECT_HOSTS: tuple[str, ...] = tuple(
-    h.strip().lower()
-    for h in os.environ.get("MCP_OAUTH_EXTRA_REDIRECT_HOSTS", "").split(",")
-    if h.strip()
+MCP_OAUTH_EXTRA_REDIRECT_URIS: tuple[str, ...] = tuple(
+    u.strip() for u in os.environ.get("MCP_OAUTH_EXTRA_REDIRECT_URIS", "").split(",") if u.strip()
 )
+# First-party names a client_name may contain only when ALL its redirect URIs
+# are that vendor's exact callbacks (anti-impersonation on the consent page).
+# "oncofiles" belongs to no client.
+MCP_OAUTH_RESERVED_CLIENT_NAMES: dict[str, tuple[str, ...]] = {
+    "claude": (
+        "https://claude.ai/api/mcp/auth_callback",
+        "https://claude.com/api/mcp/auth_callback",
+    ),
+    "anthropic": (
+        "https://claude.ai/api/mcp/auth_callback",
+        "https://claude.com/api/mcp/auth_callback",
+    ),
+    "chatgpt": (
+        "https://chatgpt.com/connector_platform_oauth_redirect",
+        "https://chat.openai.com/connector_platform_oauth_redirect",
+    ),
+    "openai": (
+        "https://chatgpt.com/connector_platform_oauth_redirect",
+        "https://chat.openai.com/connector_platform_oauth_redirect",
+    ),
+    "oncofiles": (),
+}
 
 # Sync scheduler (v1.0)
 SYNC_INTERVAL_MINUTES: int = int(os.environ.get("SYNC_INTERVAL_MINUTES", "5"))

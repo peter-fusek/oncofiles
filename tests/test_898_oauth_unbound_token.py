@@ -52,7 +52,7 @@ from oncofiles.persistent_oauth import (
     _verified_caller_is_admin,
     _verified_patient_id,
     consented_binding,
-    redirect_host_allowed,
+    redirect_uri_allowed,
     token_digest,
 )
 
@@ -71,7 +71,7 @@ def _default_fail_closed(monkeypatch):
     from oncofiles import server
 
     monkeypatch.setattr("oncofiles.config.MCP_OAUTH_ALLOW_UNBOUND", False)
-    monkeypatch.setattr("oncofiles.config.MCP_OAUTH_EXTRA_REDIRECT_HOSTS", ())
+    monkeypatch.setattr("oncofiles.config.MCP_OAUTH_EXTRA_REDIRECT_URIS", ())
     for mod in ("oncofiles.config", "oncofiles.server"):
         monkeypatch.setattr(f"{mod}.MCP_BEARER_TOKEN", BEARER)
     _binding_for_code.clear()
@@ -138,39 +138,121 @@ async def _token_rows(db) -> list[dict]:
         return [dict(r) for r in await cur.fetchall()]
 
 
-# ── redirect host allowlist ──────────────────────────────────────────
+# ── redirect URI allowlist (exact URIs, loopback open) ───────────────
+
+GPT_ACTION = "https://chatgpt.com/aip/g-synthetic898/oauth/callback"
 
 
 @pytest.mark.parametrize(
     ("uri", "ok"),
     [
         ("https://claude.ai/api/mcp/auth_callback", True),
-        ("https://mcp.claude.ai/callback", True),
+        ("https://CLAUDE.ai:443/api/mcp/auth_callback", True),
         ("https://claude.com/api/mcp/auth_callback", True),
         ("https://chatgpt.com/connector_platform_oauth_redirect", True),
-        ("https://chat.openai.com/aip/callback", True),
+        ("https://chat.openai.com/connector_platform_oauth_redirect", True),
         ("http://localhost:3000/callback", True),
-        ("http://127.0.0.1:53682/cb", True),
+        ("http://127.0.0.1:53682/any/path", True),
         ("http://[::1]:8765/cb", True),
+        # Shared vendor hosts: only the exact connector callback.
+        (GPT_ACTION, False),
+        ("https://chat.openai.com/aip/g-synthetic898/oauth/callback", False),
+        ("https://chatgpt.com/connector_platform_oauth_redirect/extra", False),
+        ("https://chatgpt.com/connector_platform_oauth_redirect?x=1", False),
+        ("https://claude.ai/api/mcp/auth_callback#frag", False),
+        ("https://claude.ai/other", False),
+        ("https://mcp.claude.ai/api/mcp/auth_callback", False),  # no subdomains
+        ("https://claude.ai:8443/api/mcp/auth_callback", False),
         ("http://claude.ai/api/mcp/auth_callback", False),  # https only
-        ("https://claude.ai.evil.example.test/cb", False),
-        ("https://evilclaude.ai/cb", False),
+        ("https://claude.ai.evil.example.test/api/mcp/auth_callback", False),
         ("https://attacker.example.test/cb", False),
-        ("https://user:pw@claude.ai/cb", False),
+        ("https://user:pw@claude.ai/api/mcp/auth_callback", False),
+        ("http://user@localhost/cb", False),
         ("javascript:alert(1)", False),
         ("", False),
     ],
 )
-def test_redirect_host_allowlist(uri, ok):
-    assert redirect_host_allowed(uri) is ok
+def test_redirect_uri_allowlist(uri, ok):
+    assert redirect_uri_allowed(uri) is ok
 
 
-def test_extra_hosts_env_extends_the_list(monkeypatch):
+def test_extra_uris_env_extends_the_list_exactly(monkeypatch):
     monkeypatch.setattr(
-        "oncofiles.config.MCP_OAUTH_EXTRA_REDIRECT_HOSTS", ("connector.example.test",)
+        "oncofiles.config.MCP_OAUTH_EXTRA_REDIRECT_URIS",
+        ("https://connector.example.test/oauth/cb",),
     )
-    assert redirect_host_allowed("https://connector.example.test/cb")
-    assert not redirect_host_allowed("https://sub.connector.example.test/cb")
+    assert redirect_uri_allowed("https://connector.example.test/oauth/cb")
+    assert not redirect_uri_allowed("https://connector.example.test/oauth/cb2")
+    assert not redirect_uri_allowed("https://connector.example.test/other")
+
+
+async def test_gpt_action_callback_is_refused_at_register_and_authorize(provider):
+    with pytest.raises(RegistrationError):
+        await provider.register_client(_client_info("gpt-898", GPT_ACTION, name="My GPT"))
+    provider.clients["gpt-898"] = _client_info("gpt-898", GPT_ACTION, name="My GPT")
+    client = await provider.get_client("gpt-898")
+    with (
+        consented_binding(CAREGIVER, "gpt-898", "chal-gpt", GPT_ACTION),
+        pytest.raises(AuthorizeError),
+    ):
+        await provider.authorize(client, _params("chal-gpt", GPT_ACTION))
+    app = _FastMCPLike(provider)
+    start, body = await _call(app, qs=_qs("chal-gpt", "gpt-898", GPT_ACTION), cookie=_cookie())
+    assert start["status"] == 400 and b"redirect_uri_not_allowed" in body
+    assert provider.auth_codes == {} and app.calls == []
+
+
+# ── client_name anti-impersonation ───────────────────────────────────
+
+CLAUDE_CB = "https://claude.ai/api/mcp/auth_callback"
+GPT_CB = "https://chatgpt.com/connector_platform_oauth_redirect"
+LOCAL_CB = "http://localhost:3000/callback"
+
+
+@pytest.mark.parametrize(
+    ("name", "redirect", "ok"),
+    [
+        ("Claude", CLAUDE_CB, True),
+        ("Anthropic Claude", CLAUDE_CB, True),
+        ("ChatGPT", GPT_CB, True),
+        ("OpenAI connector", GPT_CB, True),
+        ("My tool", LOCAL_CB, True),
+        (None, LOCAL_CB, True),
+        ("Claude Desktop helper", LOCAL_CB, False),
+        ("C-l-a-u-d-e", LOCAL_CB, False),
+        ("ChatGPT", CLAUDE_CB, False),
+        ("Claude", GPT_CB, False),
+        ("Official OpenAI", LOCAL_CB, False),
+        ("Oncofiles", CLAUDE_CB, False),
+        ("oncofiles official", LOCAL_CB, False),
+    ],
+)
+async def test_reserved_client_names(odb, name, redirect, ok):
+    from oncofiles.persistent_oauth import client_name_refusal
+
+    assert (client_name_refusal(name, [redirect]) == "") is ok
+    p = PersistentOAuthProvider(db=odb)
+    if ok:
+        await p.register_client(_client_info("n-898", redirect, name=name))
+        assert await p.get_client("n-898") is not None
+    else:
+        with pytest.raises(RegistrationError) as exc_info:
+            await p.register_client(_client_info("n-898", redirect, name=name))
+        assert exc_info.value.error == "invalid_client_metadata"
+        assert await p.get_client("n-898") is None
+
+
+async def test_reserved_name_on_an_old_client_is_refused_at_authorize(provider):
+    provider.clients["fake-claude"] = _client_info("fake-claude", LOCAL_CB, name="Claude")
+    client = await provider.get_client("fake-claude")
+    with (
+        consented_binding(CAREGIVER, "fake-claude", "chal-n", LOCAL_CB),
+        pytest.raises(AuthorizeError),
+    ):
+        await provider.authorize(client, _params("chal-n", LOCAL_CB))
+    app = _FastMCPLike(provider)
+    start, body = await _call(app, qs=_qs("chal-n", "fake-claude", LOCAL_CB), cookie=_cookie())
+    assert start["status"] == 400 and b"client_name_reserved" in body
 
 
 # ── DCR /register ────────────────────────────────────────────────────
@@ -501,8 +583,8 @@ async def test_signed_in_get_shows_consent_page_and_binds_nothing(provider):
     assert b"frame-ancestors 'none'" in headers[b"content-security-policy"]
     html = page.decode("utf-8")
     assert "Synthetic Connector" in html
-    assert "claude.ai" in html
-    assert "/api/mcp/auth_callback" not in html  # host only
+    assert "as supplied by the app" in html
+    assert REDIRECT in html  # the full callback URI for a web client
     assert CAREGIVER in html
     assert 'action="/authorize/consent"' in html
     # GET never reaches FastMCP and never binds.
@@ -629,7 +711,7 @@ async def test_phishing_with_a_foreign_redirect_host_is_refused(provider):
     provider.clients["evil"] = _client_info("evil", foreign)
     app = _FastMCPLike(provider)
     start, body = await _call(app, qs=_qs("chal-ph", "evil", foreign), cookie=_cookie())
-    assert start["status"] == 400 and b"redirect_host_not_allowed" in body
+    assert start["status"] == 400 and b"redirect_uri_not_allowed" in body
     # An attacker-made consent POST for it (no valid nonce) is refused too.
     q = _qs("chal-ph", "evil", foreign)
     start, _ = await _call(
@@ -768,3 +850,157 @@ async def test_whoami_unbound_oauth_says_sign_in_and_reconnect(db, _identity):
     assert data["patients"] == []
     assert "oncofiles.com/dashboard" in data["guidance"]
     assert "reconnect" in data["guidance"]
+
+
+# ── HEAD, rate limiting, bounded bookkeeping ─────────────────────────
+
+
+@pytest.mark.parametrize("path", ["/authorize", "/authorize/consent"])
+@pytest.mark.parametrize("cookie", [False, True])
+async def test_head_and_other_methods_never_reach_fastmcp(provider, path, cookie):
+    app = _FastMCPLike(provider)
+    for method in ("HEAD", "PUT", "DELETE"):
+        start, _ = await _call(
+            app, path=path, method=method, qs=_qs(), cookie=_cookie() if cookie else None
+        )
+        assert start["status"] == 405
+    assert app.calls == [] and provider.auth_codes == {}
+
+
+def test_consent_paths_are_in_the_auth_rate_limit_class():
+    from oncofiles.ratelimit import AUTH, classify
+
+    assert classify("/authorize") == AUTH
+    assert classify("/authorize/consent") == AUTH
+
+
+def test_consent_middleware_sits_inside_the_rate_limiter():
+    """main(): the limiter must run before the consent middleware's early
+    returns (consent page, refusals), which still run before FastMCP."""
+    src = (SRC / "server.py").read_text(encoding="utf-8")
+    main_src = src[src.index("def main() -> None:") :]
+    rl = main_src.index("Middleware(RateLimitMiddleware")
+    consent = main_src.index("Middleware(MCPAuthorizeEmailCaptureMiddleware)")
+    assert rl < consent
+    assert main_src.count("Middleware(MCPAuthorizeEmailCaptureMiddleware)") == 1
+
+
+def _limited(app, clock_value=1000.0):
+    from oncofiles import ratelimit
+    from oncofiles.ratelimit import AUTH, ClassLimits, Limit, RateLimitConfig, RateLimitMiddleware
+    from oncofiles.server import MCPAuthorizeEmailCaptureMiddleware
+
+    classes = dict(ratelimit.DEFAULTS)
+    trickle = Limit(per_minute=1, burst=2)
+    classes[AUTH] = ClassLimits(trickle, trickle, trickle, 8192)
+    cfg = RateLimitConfig(classes=classes, trusted_proxies=(), static_bearer="")
+    return RateLimitMiddleware(
+        MCPAuthorizeEmailCaptureMiddleware(app),
+        config=cfg,
+        clock=lambda: clock_value,
+        session_verifier=lambda token: None,
+    )
+
+
+async def test_rate_limit_applies_to_consent_get_and_post(provider):
+    import httpx
+
+    app = _FastMCPLike(provider)
+    stack = _limited(app)
+    transport = httpx.ASGITransport(app=stack, client=("203.0.113.9", 1234))
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http:
+        headers = {"cookie": _cookie()}
+        codes = [
+            (await http.get("/authorize?" + _qs(), headers=headers)).status_code for _ in range(4)
+        ]
+        assert codes[:2] == [200, 200]
+        assert 429 in codes[2:]
+        post = await http.post(
+            "/authorize/consent",
+            content=urlencode({"q": _qs(), "nonce": "1.2.3"}),
+            headers={**headers, "content-type": "application/x-www-form-urlencoded"},
+        )
+        assert post.status_code == 429
+    assert app.calls == []
+
+
+def test_binding_map_is_capped_oldest_first(monkeypatch):
+    from oncofiles import persistent_oauth as po
+
+    monkeypatch.setattr(po, "BINDING_CAP", 3)
+    b = ConsentedBinding(CAREGIVER, CLIENT_ID, "c", REDIRECT)
+    keys = ["code-a", "code-b", "code-c", "code-d", "code-e"]
+    for key in keys:
+        po._record_binding(key, b)
+    assert list(po._binding_for_code) == keys[2:]
+    assert po.pop_binding_for_code(keys[0]) is None
+    assert po.pop_binding_for_code(keys[-1]) == b
+
+
+def test_binding_prune_stops_at_the_first_live_entry(monkeypatch):
+    """Structure-level: pruning pops expired entries from the front and does
+    not iterate the live remainder."""
+    from oncofiles import persistent_oauth as po
+
+    b = ConsentedBinding(CAREGIVER, CLIENT_ID, "c", REDIRECT)
+    old = po.time.monotonic() - po._EMAIL_STASH_TTL_S - 10
+    stale = ("stale-a", "stale-b")
+    for key in stale:
+        po._binding_for_code[key] = (b, old)
+    live_count = 50
+    for i in range(live_count):
+        po._binding_for_code[f"live-{i}"] = (b, po.time.monotonic())
+
+    seen = []
+
+    class Spy(type(po._binding_for_code)):
+        def items(self):
+            for kv in super().items():
+                seen.append(kv[0])
+                yield kv
+
+    spy = Spy(po._binding_for_code)
+    monkeypatch.setattr(po, "_binding_for_code", spy)
+    po._prune_bindings()
+    assert not any(key in spy for key in stale)
+    assert len(spy) == live_count
+    assert len(seen) <= len(stale) + 1  # the stale ones + the first live one
+
+
+def test_consumed_nonce_map_is_capped_and_refuses_at_the_cap(monkeypatch):
+    """At the cap new consents are refused (fail closed): evicting a live
+    consumed nonce would make it replayable."""
+    from oncofiles import server
+
+    monkeypatch.setattr(server, "CONSENT_NONCE_CAP", 2)
+    nonces = [_mk_nonce(f"chal-{i}") for i in range(3)]
+    assert _chk(nonces[0], "chal-0") == ""
+    assert _chk(nonces[1], "chal-1") == ""
+    assert _chk(nonces[2], "chal-2") == "consent_busy"
+    assert _chk(nonces[0], "chal-0") == "nonce_replayed"
+    assert len(server._consumed_consent_nonces) == 2
+
+
+def test_consumed_nonce_prune_is_front_only():
+    from oncofiles import server
+
+    now = int(server.time.time())
+    server._consumed_consent_nonces["old-a"] = now - 10
+    server._consumed_consent_nonces["old-b"] = now - 5
+    for i in range(20):
+        server._consumed_consent_nonces[f"live-{i}"] = now + 100
+    server._prune_consent_nonces(now)
+    assert list(server._consumed_consent_nonces)[:1] == ["live-0"]
+    assert len(server._consumed_consent_nonces) == 20
+
+
+def _mk_nonce(challenge):
+    from oncofiles.server import _make_consent_nonce
+
+    return _make_consent_nonce(CAREGIVER, "tid898", CLIENT_ID, challenge, REDIRECT)
+
+
+def _chk(nonce, challenge):
+    from oncofiles.server import _check_consent_nonce
+
+    return _check_consent_nonce(nonce, CAREGIVER, "tid898", CLIENT_ID, challenge, REDIRECT)

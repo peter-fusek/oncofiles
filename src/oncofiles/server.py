@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -8998,7 +8999,21 @@ _AUTHORIZE_REQUIRED_PARAMS = ("client_id", "code_challenge", "redirect_uri", "re
 CONSENT_PATH = "/authorize/consent"
 CONSENT_NONCE_TTL_S = 300
 CONSENT_BODY_MAX = 8192
-_consumed_consent_nonces: dict[str, int] = {}  # nonce id → expiry (unix s)
+# nonce id → expiry (unix s), in insertion order. Every nonce gets the same
+# TTL, so insertion order is (almost) expiry order: pruning pops expired ids
+# from the front and stops at the first live one (no full scan). The map is
+# capped; at the cap new consents are REFUSED rather than evicting a live id,
+# because evicting a consumed nonce would make it replayable.
+_consumed_consent_nonces: OrderedDict[str, int] = OrderedDict()
+CONSENT_NONCE_CAP = 10_000
+
+
+def _prune_consent_nonces(now: int) -> None:
+    while _consumed_consent_nonces:
+        _, exp = next(iter(_consumed_consent_nonces.items()))
+        if exp >= now:
+            break
+        _consumed_consent_nonces.popitem(last=False)
 
 
 def _authorize_params(qs: str) -> tuple[dict[str, str] | None, str]:
@@ -9080,17 +9095,22 @@ def _check_consent_nonce(
     now = int(time.time())
     if exp < now:
         return "nonce_expired"
-    for stale in [k for k, e in _consumed_consent_nonces.items() if e < now]:
-        _consumed_consent_nonces.pop(stale, None)
+    _prune_consent_nonces(now)
     if nid in _consumed_consent_nonces:
         return "nonce_replayed"
+    if len(_consumed_consent_nonces) >= CONSENT_NONCE_CAP:
+        return "consent_busy"
     _consumed_consent_nonces[nid] = exp
     return ""
 
 
 async def _consent_client(params: dict[str, str]):
     """``(client, normalised redirect_uri, "")`` or ``(None, "", error_code)``."""
-    from oncofiles.persistent_oauth import normalize_redirect_uri, redirect_host_allowed
+    from oncofiles.persistent_oauth import (
+        client_name_refusal,
+        normalize_redirect_uri,
+        redirect_uri_allowed,
+    )
 
     provider = auth
     if provider is None or not hasattr(provider, "get_client"):
@@ -9105,8 +9125,10 @@ async def _consent_client(params: dict[str, str]):
         return None, "", "invalid_redirect_uri"
     if wanted not in registered:
         return None, "", "redirect_uri_not_registered"
-    if not redirect_host_allowed(wanted):
-        return None, "", "redirect_host_not_allowed"
+    if not redirect_uri_allowed(wanted):
+        return None, "", "redirect_uri_not_allowed"
+    if client_name_refusal(client.client_name, client.redirect_uris):
+        return None, "", "client_name_reserved"
     return client, wanted, ""
 
 
@@ -9161,10 +9183,16 @@ async def _send_authorize_to_sign_in(qs: str, send) -> None:
 def _consent_page(client, redirect_uri: str, account: str, qs: str, nonce: str) -> bytes:
     from html import escape
 
-    from oncofiles.persistent_oauth import redirect_host_for_log
+    from oncofiles.persistent_oauth import is_loopback_redirect
 
     name = escape((client.client_name or client.client_id or "?")[:120])
-    host = escape(redirect_host_for_log(redirect_uri))
+    # The full callback URI for a web client (the host alone is ambiguous on
+    # shared vendor hosts); loopback is a local app on this computer.
+    if is_loopback_redirect(redirect_uri):
+        target = "an app on this computer / aplikácia na tomto počítači"
+    else:
+        target = redirect_uri
+    target = escape(target)
     who = escape(account)
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -9186,8 +9214,9 @@ Allow it only if you started this connection yourself.</p>
 <p class="sk" lang="sk">Aplikácia žiada prístup k vašim záznamom v Oncofiles pod týmto účtom.
 Povoľte to, len ak ste pripojenie spustili vy.</p>
 <dl>
-<dt>Application / Aplikácia</dt><dd>{name}</dd>
-<dt>Returns to / Vráti sa na</dt><dd>{host}</dd>
+<dt>Application name, as supplied by the app / Názov, ktorý uvádza aplikácia</dt>
+<dd>&ldquo;{name}&rdquo;</dd>
+<dt>Returns to / Vráti sa na</dt><dd><code>{target}</code></dd>
 <dt>Your account / Váš účet</dt><dd>{who}</dd>
 </dl>
 <form method="post" action="{CONSENT_PATH}">
@@ -9227,9 +9256,9 @@ class MCPAuthorizeEmailCaptureMiddleware:
       so our parse and FastMCP's never disagree. Without a valid dashboard
       session: 302 to ``/dashboard?next=<this URL>`` (the sign-in page comes
       back here). With a session: the client must be registered, the
-      redirect_uri registered for it and its host on the allowlist
-      (``config.MCP_OAUTH_REDIRECT_HOSTS``); then a server-rendered consent
-      page shows the client name, the redirect host and the account. GET
+      redirect_uri registered for it and on the exact allowlist
+      (``config.MCP_OAUTH_REDIRECT_URIS``); then a server-rendered consent
+      page shows the client name, the redirect URI and the account. GET
       never binds and never reaches FastMCP.
     - **POST /authorize/consent**: the page's form. Session again, the same
       checks, and a single-use CSRF nonce (HMAC with the #502 purpose key
@@ -9255,6 +9284,10 @@ class MCPAuthorizeEmailCaptureMiddleware:
         method = scope.get("method")
         if path == "/authorize" and method == "GET":
             await self._authorize_get(scope, receive, send)
+        elif path in ("/authorize", CONSENT_PATH) and method not in ("GET", "POST"):
+            # HEAD (and anything else) never reaches FastMCP's handler.
+            logger.info("MCP /authorize refused: code=method_not_allowed")
+            await _send_authorize_refusal(send, "method_not_allowed", status=405)
         elif path == "/authorize" and method == "POST":
             from oncofiles.persistent_oauth import unbound_tokens_allowed
 
@@ -9508,11 +9541,6 @@ def main() -> None:
             port=MCP_PORT,
             stateless_http=True,  # no server-side sessions — survives Railway deploys (#229)
             middleware=[
-                # #478: must run BEFORE FastMCP's AuthorizationHandler can
-                # issue the OAuth code — the middleware stashes the signed-in
-                # user's email by code_challenge so exchange_authorization_code
-                # can bind it to the minted token.
-                Middleware(MCPAuthorizeEmailCaptureMiddleware),
                 Middleware(SecurityHeadersMiddleware),
                 Middleware(
                     CORSMiddleware,
@@ -9530,6 +9558,12 @@ def main() -> None:
                 # HMAC-only (no DB) and silent (log=False), so forged sessions can
                 # neither key a victim's bucket nor flood the logs.
                 Middleware(RateLimitMiddleware, session_verifier=_quiet_session_verifier),
+                # #478/#898: consent + binding for /authorize. INSIDE the rate
+                # limiter (auth class, incl. /authorize/consent), so its early
+                # returns (consent page, refusals) are throttled too, and still
+                # in front of FastMCP's AuthorizationHandler, which only ever
+                # sees the internal forward after a valid consent POST.
+                Middleware(MCPAuthorizeEmailCaptureMiddleware),
                 # #584: non-JSON DCR body on POST /register → 400, not 500.
                 # Inside the rate limiter (Wave A integration), so /register
                 # probes with junk bodies still count against the auth bucket
