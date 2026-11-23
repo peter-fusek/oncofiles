@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import time
 from collections import OrderedDict
@@ -319,22 +320,30 @@ def redirect_uri_allowed(uri: object) -> bool:
     return key in allowed
 
 
+CLIENT_NAME_MAX_LEN = 64
+_CLIENT_NAME_RE = re.compile(r"[A-Za-z0-9 .,:;()&'+_/-]{1,64}")
+
+
 def client_name_refusal(client_name: object, redirect_uris) -> str:
     """'' when the client_name may be shown, else an error code (#898).
 
-    A name containing a reserved first-party word (Claude, Anthropic, ChatGPT,
-    OpenAI, Oncofiles; letters compared case-insensitively with everything
-    but letters removed) is allowed only when every redirect URI of the
-    client is that vendor's exact callback.
+    1. Only printable ASCII from a small set (letters, digits, space and
+       basic punctuation), at most ``CLIENT_NAME_MAX_LEN`` characters:
+       anything else is ``client_name_invalid``. This shuts out confusables
+       (a Cyrillic "С" in "Сlaude"), invisible and bidi characters.
+    2. A name containing a reserved first-party word (Claude, Anthropic,
+       ChatGPT, OpenAI, Oncofiles; letters compared case-insensitively with
+       everything but letters removed) is allowed only when every redirect
+       URI of the client is that vendor's exact callback.
     """
-    import unicodedata
-
     from oncofiles import config
 
-    if not client_name:
+    if client_name is None or client_name == "":
         return ""
-    folded = unicodedata.normalize("NFKD", str(client_name)).casefold()
-    letters = "".join(c for c in folded if c.isalpha() and c.isascii())
+    name = str(client_name)
+    if not _CLIENT_NAME_RE.fullmatch(name):
+        return "client_name_invalid"
+    letters = "".join(c for c in name.lower() if c.isalpha())
     uris = [_exact_redirect_key(u) for u in (redirect_uris or [])]
     for word, vendor_uris in config.MCP_OAUTH_RESERVED_CLIENT_NAMES.items():
         if word in letters:
@@ -813,11 +822,13 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                     "invalid_redirect_uri",
                     "redirect_uri is not allowed on this server",
                 )
-        if client_name_refusal(client_info.client_name, client_info.redirect_uris):
-            logger.info("MCP OAuth register refused: code=client_name_reserved")
+        name_code = client_name_refusal(client_info.client_name, client_info.redirect_uris)
+        if name_code:
+            logger.info("MCP OAuth register refused: code=%s", name_code)
             raise RegistrationError(
                 "invalid_client_metadata",
-                "client_name names a first party this client is not",
+                "client_name must be plain ASCII (letters, digits, basic punctuation, "
+                "at most 64 characters) and must not name a first party this client is not",
             )
         await super().register_client(client_info)
         await self._persist_client(client_info)
@@ -838,8 +849,9 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                 redirect_host_for_log(params.redirect_uri),
             )
             raise AuthorizeError("access_denied", "redirect_uri is not allowed")
-        if client_name_refusal(client.client_name, client.redirect_uris):
-            logger.info("MCP OAuth authorize refused: code=client_name_reserved")
+        name_code = client_name_refusal(client.client_name, client.redirect_uris)
+        if name_code:
+            logger.info("MCP OAuth authorize refused: code=%s", name_code)
             raise AuthorizeError("access_denied", "client_name is not allowed")
         binding = _consented_binding.get()
         matches = (

@@ -76,9 +76,11 @@ def _default_fail_closed(monkeypatch):
         monkeypatch.setattr(f"{mod}.MCP_BEARER_TOKEN", BEARER)
     _binding_for_code.clear()
     server._consumed_consent_nonces.clear()
+    server._consent_nonces_per_tid.clear()
     yield
     _binding_for_code.clear()
     server._consumed_consent_nonces.clear()
+    server._consent_nonces_per_tid.clear()
 
 
 @pytest.fixture
@@ -225,6 +227,18 @@ LOCAL_CB = "http://localhost:3000/callback"
         ("Official OpenAI", LOCAL_CB, False),
         ("Oncofiles", CLAUDE_CB, False),
         ("oncofiles official", LOCAL_CB, False),
+        # Only plain ASCII (letters, digits, space, basic punctuation), ≤ 64.
+        ("Сlaude", LOCAL_CB, False),  # Cyrillic Es
+        ("Сlaude", CLAUDE_CB, False),
+        ("Clаude", LOCAL_CB, False),  # Cyrillic a
+        ("Clau​de", LOCAL_CB, False),  # zero-width space
+        ("‮edualC", LOCAL_CB, False),  # bidi override
+        ("Ｃlaude", LOCAL_CB, False),  # fullwidth C
+        ("My\ttool", LOCAL_CB, False),
+        ("<b>tool</b>", LOCAL_CB, False),
+        ("a" * 65, LOCAL_CB, False),
+        ("a" * 64, LOCAL_CB, True),
+        ("Zotero MCP (v2.1) - helper/beta", LOCAL_CB, True),
     ],
 )
 async def test_reserved_client_names(odb, name, redirect, ok):
@@ -985,22 +999,58 @@ def test_consumed_nonce_prune_is_front_only():
     from oncofiles import server
 
     now = int(server.time.time())
-    server._consumed_consent_nonces["old-a"] = now - 10
-    server._consumed_consent_nonces["old-b"] = now - 5
-    for i in range(20):
-        server._consumed_consent_nonces[f"live-{i}"] = now + 100
+    server._consumed_consent_nonces["old-a"] = (now - 10, "tid-x")
+    server._consumed_consent_nonces["old-b"] = (now - 5, "tid-x")
+    server._consent_nonces_per_tid["tid-x"] = 2
+    live = 20
+    for i in range(live):
+        server._consumed_consent_nonces[f"live-{i}"] = (now + 100, "tid-y")
+    server._consent_nonces_per_tid["tid-y"] = live
     server._prune_consent_nonces(now)
     assert list(server._consumed_consent_nonces)[:1] == ["live-0"]
-    assert len(server._consumed_consent_nonces) == 20
+    assert len(server._consumed_consent_nonces) == live
+    assert "tid-x" not in server._consent_nonces_per_tid  # counter follows the prune
+    assert server._consent_nonces_per_tid["tid-y"] == live
 
 
-def _mk_nonce(challenge):
+def test_per_session_cap_blocks_only_that_session(monkeypatch):
+    """One heavy session gets consent_busy; another session still consents."""
+    from oncofiles import server
+
+    monkeypatch.setattr(server, "CONSENT_NONCE_PER_TID", 2)
+    assert _chk(_mk_nonce("chal-a", tid="tid-heavy"), "chal-a", tid="tid-heavy") == ""
+    assert _chk(_mk_nonce("chal-b", tid="tid-heavy"), "chal-b", tid="tid-heavy") == ""
+    assert _chk(_mk_nonce("chal-c", tid="tid-heavy"), "chal-c", tid="tid-heavy") == "consent_busy"
+    assert _chk(_mk_nonce("chal-d", tid="tid-other"), "chal-d", tid="tid-other") == ""
+    assert server._consent_nonces_per_tid == {"tid-heavy": 2, "tid-other": 1}
+
+
+def test_per_session_cap_frees_up_after_expiry(monkeypatch):
+    from oncofiles import server
+
+    monkeypatch.setattr(server, "CONSENT_NONCE_PER_TID", 1)
+    assert _chk(_mk_nonce("chal-a"), "chal-a") == ""
+    assert _chk(_mk_nonce("chal-b"), "chal-b") == "consent_busy"
+    # Age the consumed entry past its expiry: the next check prunes it.
+    nid, (exp, tid) = next(iter(server._consumed_consent_nonces.items()))
+    server._consumed_consent_nonces[nid] = (exp - server.CONSENT_NONCE_TTL_S - 10, tid)
+    assert _chk(_mk_nonce("chal-c"), "chal-c") == ""
+
+
+def test_global_ceiling_is_far_above_the_per_session_cap():
+    from oncofiles import server
+
+    assert server.CONSENT_NONCE_PER_TID <= 20
+    assert server.CONSENT_NONCE_CAP >= 50_000
+
+
+def _mk_nonce(challenge, tid="tid898"):
     from oncofiles.server import _make_consent_nonce
 
-    return _make_consent_nonce(CAREGIVER, "tid898", CLIENT_ID, challenge, REDIRECT)
+    return _make_consent_nonce(CAREGIVER, tid, CLIENT_ID, challenge, REDIRECT)
 
 
-def _chk(nonce, challenge):
+def _chk(nonce, challenge, tid="tid898"):
     from oncofiles.server import _check_consent_nonce
 
-    return _check_consent_nonce(nonce, CAREGIVER, "tid898", CLIENT_ID, challenge, REDIRECT)
+    return _check_consent_nonce(nonce, CAREGIVER, tid, CLIENT_ID, challenge, REDIRECT)

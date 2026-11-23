@@ -8999,21 +8999,31 @@ _AUTHORIZE_REQUIRED_PARAMS = ("client_id", "code_challenge", "redirect_uri", "re
 CONSENT_PATH = "/authorize/consent"
 CONSENT_NONCE_TTL_S = 300
 CONSENT_BODY_MAX = 8192
-# nonce id → expiry (unix s), in insertion order. Every nonce gets the same
-# TTL, so insertion order is (almost) expiry order: pruning pops expired ids
-# from the front and stops at the first live one (no full scan). The map is
-# capped; at the cap new consents are REFUSED rather than evicting a live id,
-# because evicting a consumed nonce would make it replayable.
-_consumed_consent_nonces: OrderedDict[str, int] = OrderedDict()
-CONSENT_NONCE_CAP = 10_000
+# nonce id → (expiry unix s, session tid), in insertion order. Every nonce gets
+# the same TTL, so insertion order is (almost) expiry order: pruning pops
+# expired ids from the front and stops at the first live one (no full scan).
+# Caps never evict a live id (that would make a consumed nonce replayable);
+# they refuse new consents instead:
+# - per session tid: CONSENT_NONCE_PER_TID live consumed nonces, so one heavy
+#   session only blocks itself (``consent_busy`` for that tid);
+# - global: CONSENT_NONCE_CAP, a memory ceiling far above normal use.
+_consumed_consent_nonces: OrderedDict[str, tuple[int, str]] = OrderedDict()
+_consent_nonces_per_tid: dict[str, int] = {}
+CONSENT_NONCE_PER_TID = 20
+CONSENT_NONCE_CAP = 50_000
 
 
 def _prune_consent_nonces(now: int) -> None:
     while _consumed_consent_nonces:
-        _, exp = next(iter(_consumed_consent_nonces.items()))
+        _, (exp, tid) = next(iter(_consumed_consent_nonces.items()))
         if exp >= now:
             break
         _consumed_consent_nonces.popitem(last=False)
+        left = _consent_nonces_per_tid.get(tid, 1) - 1
+        if left <= 0:
+            _consent_nonces_per_tid.pop(tid, None)
+        else:
+            _consent_nonces_per_tid[tid] = left
 
 
 def _authorize_params(qs: str) -> tuple[dict[str, str] | None, str]:
@@ -9098,9 +9108,12 @@ def _check_consent_nonce(
     _prune_consent_nonces(now)
     if nid in _consumed_consent_nonces:
         return "nonce_replayed"
+    if _consent_nonces_per_tid.get(tid, 0) >= CONSENT_NONCE_PER_TID:
+        return "consent_busy"
     if len(_consumed_consent_nonces) >= CONSENT_NONCE_CAP:
         return "consent_busy"
-    _consumed_consent_nonces[nid] = exp
+    _consumed_consent_nonces[nid] = (exp, tid)
+    _consent_nonces_per_tid[tid] = _consent_nonces_per_tid.get(tid, 0) + 1
     return ""
 
 
@@ -9127,8 +9140,9 @@ async def _consent_client(params: dict[str, str]):
         return None, "", "redirect_uri_not_registered"
     if not redirect_uri_allowed(wanted):
         return None, "", "redirect_uri_not_allowed"
-    if client_name_refusal(client.client_name, client.redirect_uris):
-        return None, "", "client_name_reserved"
+    name_code = client_name_refusal(client.client_name, client.redirect_uris)
+    if name_code:
+        return None, "", name_code
     return client, wanted, ""
 
 
