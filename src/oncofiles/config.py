@@ -281,6 +281,16 @@ DOC_QUERY_LIMIT: int = max(MAX_DOCUMENTS_PER_PATIENT, 10_000)
 # pair and starts a new window, so an active client never hits it.
 MCP_REFRESH_TOKEN_TTL_DAYS: int = int(os.environ.get("MCP_REFRESH_TOKEN_TTL_DAYS", "60"))
 
+# #898: an MCP OAuth token is only ever issued to a caller whose Google
+# account was bound at /authorize (dashboard session cookie). GET /authorize
+# without a session redirects to the sign-in page, and the code exchange
+# refuses a code that carries no bound e-mail. Only a single-user / self-hosted
+# deployment without Google sign-in may opt out (default off): an unbound token
+# then resolves to the no-access sentinel exactly as before #898.
+MCP_OAUTH_ALLOW_UNBOUND: bool = os.environ.get(
+    "MCP_OAUTH_ALLOW_UNBOUND", "false"
+).strip().lower() in ("true", "1", "yes")
+
 # Sync scheduler (v1.0)
 SYNC_INTERVAL_MINUTES: int = int(os.environ.get("SYNC_INTERVAL_MINUTES", "5"))
 SYNC_ENABLED: bool = os.environ.get("SYNC_ENABLED", "true").lower() in ("true", "1", "yes")

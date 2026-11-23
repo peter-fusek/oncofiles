@@ -176,7 +176,12 @@
     var currentPatientId = localStorage.getItem('oncofiles_patient_id') || '';
     var patientsCache = [];
 
-    // ── Init ─────────────────────────────────────────────────────────────
+    /** #898: the same-origin /authorize URL to return to after sign-in, or ''.
+        Declared before init() runs, so its initializer never resets it. */
+    var authorizeNext = '';
+    var AUTHORIZE_NEXT_MAX_LEN = 4096;
+
+    // ── Init─────────────────────────────────────────────────────────────
 
     (function init() {
       // #500: bearer tokens MUST NOT be accepted from URL query params.
@@ -204,12 +209,34 @@
       TOKEN = sessionStorage.getItem('oncofiles_token') || '';
       authMode = sessionStorage.getItem('oncofiles_auth_mode') || '';
 
+      // #898: /authorize without a session cookie sends the browser here with
+      // ?next=<that /authorize URL>. Always sign in (the cookie is what was
+      // missing, a token in sessionStorage does not set it), then go back.
+      authorizeNext = safeAuthorizeNext(params.get('next'));
+      if (authorizeNext) {
+        var note = document.getElementById('auth-connect-note');
+        if (note) note.style.display = 'block';
+        initGoogleSignIn();
+        return;
+      }
+
       if (TOKEN && authMode) {
         showDashboard();
       } else {
         initGoogleSignIn();
       }
     })();
+
+    /** Mirrors server._safe_authorize_next: only /authorize or /authorize?..., printable ASCII, no \ or #. */
+    function safeAuthorizeNext(value) {
+      if (typeof value !== 'string' || !value || value.length > AUTHORIZE_NEXT_MAX_LEN) return '';
+      if (value !== '/authorize' && value.indexOf('/authorize?') !== 0) return '';
+      for (var i = 0; i < value.length; i++) {
+        var c = value.charCodeAt(i);
+        if (c <= 0x20 || c >= 0x7f || value[i] === '\\' || value[i] === '#') return '';
+      }
+      return value;
+    }
 
     function initGoogleSignIn() {
       document.getElementById('auth-gate').style.display = 'flex';
@@ -268,6 +295,9 @@
           sessionStorage.setItem('oncofiles_auth_mode', 'session');
           sessionStorage.setItem('oncofiles_email', data.email || '');
           sessionStorage.setItem('oncofiles_name', data.name || '');
+          // #898: the session cookie is set now; finish the connector's OAuth flow.
+          var back = safeAuthorizeNext(authorizeNext);
+          if (back) { window.location.replace(back); return; }
           showDashboard();
         })
         .catch(function(e) {

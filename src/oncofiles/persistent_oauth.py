@@ -169,6 +169,22 @@ def pop_email_for_challenge(code_challenge: str) -> str | None:
     return email
 
 
+UNBOUND_REFUSAL_MESSAGE = (
+    "Sign in at https://oncofiles.com/dashboard with your Google account first, then connect again."
+)
+
+
+def unbound_tokens_allowed() -> bool:
+    """#898 opt-out: may an MCP OAuth token be issued without a bound email?
+
+    Read at call time so tests (and a restart with a changed env) see the
+    current value. Default False: fail closed.
+    """
+    from oncofiles import config
+
+    return bool(config.MCP_OAUTH_ALLOW_UNBOUND)
+
+
 def _prune_email_stash() -> None:
     now = time.monotonic()
     stale = [k for k, (_, t) in _email_for_challenge.items() if now - t > _EMAIL_STASH_TTL_S]
@@ -634,11 +650,17 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         if client.client_id is None:
             raise TokenError("invalid_client", "Client ID is required")
 
-        result = self._issue_token_pair(client.client_id, authorization_code.scopes)
-        # #478: pop the email bound at /authorize time (if any) and persist
-        # it alongside the new token rows. None → unsigned-in OAuth caller,
-        # sentinel behavior preserved.
+        # #478: pop the email bound at /authorize time and persist it alongside
+        # the new token rows. #898: no bound email → refuse BEFORE anything is
+        # issued or written (the code is already consumed above). An unbound
+        # token can never see a patient in a multi-patient deployment, so
+        # issuing it only hides the real problem (no dashboard sign-in).
         user_email = pop_email_for_challenge(authorization_code.code_challenge)
+        if not user_email and not unbound_tokens_allowed():
+            logger.info("MCP OAuth code exchange refused: no signed-in account bound (#898)")
+            raise TokenError("invalid_grant", UNBOUND_REFUSAL_MESSAGE)
+
+        result = self._issue_token_pair(client.client_id, authorization_code.scopes)
         await self._persist_token_pair(
             token_digest(result.access_token),
             token_digest(result.refresh_token) if result.refresh_token else None,

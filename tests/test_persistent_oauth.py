@@ -8,6 +8,14 @@ from oncofiles.database import Database
 from oncofiles.persistent_oauth import PersistentOAuthProvider, token_digest
 
 
+@pytest.fixture(autouse=True)
+def _allow_unbound(monkeypatch):
+    """These tests mint tokens without a bound email (persistence and the
+    unbound → sentinel isolation path); since #898 that needs the single-user
+    opt-out. The default refusal is locked in tests/test_898_oauth_unbound_token.py."""
+    monkeypatch.setattr("oncofiles.config.MCP_OAUTH_ALLOW_UNBOUND", True)
+
+
 @pytest.fixture
 async def db():
     database = Database(":memory:")

@@ -28,6 +28,14 @@ CLIENT_ID = "storage-test-client"
 EMAIL = "caregiver-storage@example.com"
 
 
+@pytest.fixture(autouse=True)
+def _allow_unbound(monkeypatch):
+    """Storage tests also mint tokens without a bound email; since #898 that
+    needs the single-user opt-out. The default refusal is locked in
+    tests/test_898_oauth_unbound_token.py."""
+    monkeypatch.setattr("oncofiles.config.MCP_OAUTH_ALLOW_UNBOUND", True)
+
+
 @pytest.fixture
 async def db():
     database = Database(":memory:")

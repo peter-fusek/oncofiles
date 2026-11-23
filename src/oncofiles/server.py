@@ -8959,6 +8959,86 @@ from oncofiles.tools.conversations import (  # noqa: E402, F401
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
+# #898: the one validator for the `next` URL that /authorize hands the sign-in
+# page (dashboard.js `safeAuthorizeNext` mirrors it).
+AUTHORIZE_NEXT_MAX_LEN = 4096
+
+
+def _safe_authorize_next(value: object) -> str | None:
+    """Return ``value`` when it is a same-origin ``/authorize`` URL, else None.
+
+    Accepted: exactly ``/authorize`` or ``/authorize?<query>``, at most
+    ``AUTHORIZE_NEXT_MAX_LEN`` characters, printable ASCII only (no backslash,
+    whitespace, control characters or fragment). Anything else (another
+    path, an absolute or protocol-relative URL) is refused, so the sign-in
+    page can never become an open redirect.
+    """
+    if not isinstance(value, str) or not value or len(value) > AUTHORIZE_NEXT_MAX_LEN:
+        return None
+    if value != "/authorize" and not value.startswith("/authorize?"):
+        return None
+    if any(c in "\\#" or ord(c) <= 0x20 or ord(c) >= 0x7F for c in value):
+        return None
+    return value
+
+
+def _session_email_from_scope(scope) -> str | None:
+    """The verified dashboard-session account of an ASGI request, or None."""
+    from urllib.parse import unquote as _urlunquote
+
+    for name, value in scope.get("headers", []):
+        if name.decode("latin-1").lower() != "cookie":
+            continue
+        cookie_header = value.decode("latin-1", errors="replace")
+        for pair in cookie_header.split(";"):
+            if "=" not in pair:
+                continue
+            cname, _, cvalue = pair.strip().partition("=")
+            if cname == "oncofiles_session":
+                # URL-decode: /dashboard/verify URL-encodes the token so
+                # SimpleCookie never wraps it in double quotes ('@' is outside
+                # SimpleCookie's legal-value char set).
+                found = _verify_session_token(_urlunquote(cvalue.strip()), log=False)
+                if found:
+                    return found
+    return None
+
+
+async def _send_authorize_to_sign_in(qs: str, send) -> None:
+    """#898: answer GET /authorize without a session: 302 to sign-in, or 400."""
+    target = _safe_authorize_next("/authorize" + (f"?{qs}" if qs else ""))
+    if target is None:
+        logger.info("MCP /authorize refused: no session and the URL is not a safe next")
+        body = b"Sign in at https://oncofiles.com/dashboard first, then connect again."
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 400,
+                "headers": [
+                    (b"content-type", b"text/plain; charset=utf-8"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                    (b"cache-control", b"no-store"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+        return
+    logger.info("MCP /authorize: no session, redirecting to sign-in (#898)")
+    location = "/dashboard?next=" + quote(target, safe="")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 302,
+            "headers": [
+                (b"location", location.encode("ascii")),
+                (b"content-length", b"0"),
+                (b"cache-control", b"no-store"),
+                (b"referrer-policy", b"no-referrer"),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": b""})
+
 
 class MCPAuthorizeEmailCaptureMiddleware:
     """Read the oncofiles_session cookie on /authorize requests and stash the
@@ -8972,10 +9052,16 @@ class MCPAuthorizeEmailCaptureMiddleware:
     ``PersistentOAuthProvider.exchange_authorization_code`` reads at code
     exchange time.
 
-    Scope: ONLY /authorize GET requests with an oncofiles_session cookie.
-    Unsigned-in users pass through unchanged — their MCP token row gets a
-    NULL user_email and ``_resolve_oauth_patient`` keeps the post-hot-fix
-    sentinel behavior. No regression risk.
+    Scope: ONLY GET /authorize.
+
+    #898: a browser WITHOUT a valid session is redirected (302) to
+    ``/dashboard?next=<this /authorize URL>``; the sign-in page returns it to
+    that exact URL after Google sign-in, now carrying the cookie. Before #898
+    it was passed through and FastMCP minted a token with no email, which can
+    never see a patient and hid the real problem. The code exchange refuses an
+    unbound code as well (defense in depth, also covers POST /authorize).
+    ``MCP_OAUTH_ALLOW_UNBOUND=true`` (single-user deployments without Google
+    sign-in) restores the old pass-through.
     """
 
     def __init__(self, app):
@@ -8990,48 +9076,37 @@ class MCPAuthorizeEmailCaptureMiddleware:
         if path != "/authorize" or method != "GET":
             await self.app(scope, receive, send)
             return
+        from oncofiles.persistent_oauth import stash_email_for_challenge, unbound_tokens_allowed
+
         try:
             from urllib.parse import parse_qs
-            from urllib.parse import unquote as _urlunquote
 
             qs = scope.get("query_string", b"").decode("latin-1", errors="replace")
-            parsed = parse_qs(qs)
-            code_challenges = parsed.get("code_challenge", [])
-            if not code_challenges:
-                await self.app(scope, receive, send)
-                return
-            code_challenge = code_challenges[0]
-
-            email = None
-            for name, value in scope.get("headers", []):
-                if name.decode("latin-1").lower() != "cookie":
-                    continue
-                cookie_header = value.decode("latin-1", errors="replace")
-                for pair in cookie_header.split(";"):
-                    if "=" not in pair:
-                        continue
-                    cname, _, cvalue = pair.strip().partition("=")
-                    if cname == "oncofiles_session":
-                        # URL-decode: /dashboard/verify URL-encodes the token so
-                        # SimpleCookie never wraps it in double quotes (@ in email
-                        # addresses is outside SimpleCookie's legal-value char set).
-                        email = _verify_session_token(_urlunquote(cvalue.strip()))
-                        break
-                if email:
-                    break
-
-            if email:
-                from oncofiles.persistent_oauth import stash_email_for_challenge
-
-                stash_email_for_challenge(code_challenge, email)
-                logger.info("MCP /authorize: bound email to code_challenge (email=%s)", email)
-            else:
-                logger.debug("MCP /authorize: no session cookie — email will not be bound")
+            code_challenges = parse_qs(qs).get("code_challenge", [])
+            email = _session_email_from_scope(scope)
         except Exception:
-            # Never block the /authorize flow on our own bug — fail open to
-            # the post-hot-fix sentinel behavior.
+            # The code exchange still refuses a code without a bound email, so
+            # passing through here can never mint an unbound token (#898).
             logger.warning("email-capture middleware failed", exc_info=True)
-        await self.app(scope, receive, send)
+            await self.app(scope, receive, send)
+            return
+
+        if email:
+            if code_challenges:
+                stash_email_for_challenge(code_challenges[0], email)
+                logger.info(
+                    "MCP /authorize: bound the signed-in account to the flow caller=%s",
+                    _acl_caller_log_id(email),
+                )
+            await self.app(scope, receive, send)
+            return
+
+        if unbound_tokens_allowed():
+            logger.debug("MCP /authorize: no session, unbound tokens allowed by env")
+            await self.app(scope, receive, send)
+            return
+
+        await _send_authorize_to_sign_in(qs, send)
 
 
 class SecurityHeadersMiddleware:
