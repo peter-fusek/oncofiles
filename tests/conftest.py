@@ -65,8 +65,11 @@ CURATED_CLEARED = (
     "_empty_streak", "_probe_stats", "_import_done", "_onboarding", "_startup_index_stats",
     "_reocr_jobs", "_inbox_snapshots",
 )  # fmt: skip
-CURATED_SCALARS = {"_last_probe_at": None, "_onboarding_active": None, "_round_no": 0}
-CURATED_COUNTERS = ("_dry_runs",)  # dict of counters: every value back to zero
+CURATED_SCALARS = {
+    "_last_probe_at": None, "_onboarding_active": None, "_round_no": 0,
+    "_nightly_retry": None, "_nightly_retry_outcome": None,
+}  # fmt: skip
+CURATED_COUNTERS = ("_dry_runs", "_nightly_retry_counts")  # every value back to zero
 
 
 def reset_curated_state() -> None:

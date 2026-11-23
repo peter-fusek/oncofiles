@@ -39,6 +39,7 @@ from datetime import UTC, datetime, timedelta
 from fastmcp import Context
 
 from oncofiles.curated.llm_extract_call import DATE_NULL_KEYS
+from oncofiles.network_errors import NETWORK_UNAVAILABLE
 from oncofiles.secrets_keys import caller_email_hash
 from oncofiles.tools._helpers import _caller_email, _get_db, _resolve_patient_id
 
@@ -343,6 +344,20 @@ def _budget_gate(pid: str, pages_base: int):
 # ── core ──────────────────────────────────────────────────────────────
 
 
+def _network_unavailable_error() -> dict:
+    """#979: Google could not be reached (WAN/DNS outage). Transient: the
+    connection is fine, so the wording never says "not connected"."""
+    return {
+        "error": "Google could not be reached (network unavailable); will retry",
+        "code": NETWORK_UNAVAILABLE,
+        "deferred": True,
+    }
+
+
+def _is_network_deferred(report: dict) -> bool:
+    return report.get("code") == NETWORK_UNAVAILABLE
+
+
 async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_actions: int):
     """Validate and build what a run needs. Returns (error_dict | None, ctx)."""
     from oncofiles.curated import llm
@@ -357,13 +372,20 @@ async def _prepare(db, pid: str, *, dry_run: bool, max_docs: int | None, max_act
         return {"error": f"local LLM refused: {host_refused}"}, None
     if not dry_run and (reason := await preview_gate(db, pid)):
         return {"error": f"real run refused: {reason}"}, None
+    from oncofiles.curated_folder import detection_error
+    from oncofiles.server import patient_client_unavailable_reason
+
     clients = await _create_patient_clients(db, pid)
     if not clients or clients[0] is None:
+        if patient_client_unavailable_reason(pid) == NETWORK_UNAVAILABLE:
+            return _network_unavailable_error(), None  # #979: transient, not a disconnect
         return {
             "error": "Google Drive not connected for this patient (or integration disabled)"
         }, None
     gdrive, folder_id = clients[0], clients[3]
     reason = await asyncio.to_thread(curated_reason, gdrive, folder_id, use_cache=False)
+    if reason != "is a curated folder" and detection_error(folder_id) == NETWORK_UNAVAILABLE:
+        return _network_unavailable_error(), None
     if reason != "is a curated folder":
         return {
             "error": f"patient folder is not a curated root ({reason or 'no README contract'})"
@@ -1293,6 +1315,153 @@ async def _startup_index(db, pending: set[str]) -> None:
     _startup_index_stats["pending"] = len(pending)
 
 
+# ── nightly sweep + same-night retry on a network outage (#979) ───────
+#
+# A WAN/DNS outage during the sweep makes token refresh / Drive detection fail
+# with ``network_unavailable`` (``_network_unavailable_error``). Such a patient
+# is DEFERRED, not "not connected": the sweep is retried for the deferred
+# patients only, first after NIGHTLY_RETRY_FIRST_S, then every
+# NIGHTLY_RETRY_MAX_INTERVAL_S, at most NIGHTLY_RETRY_MAX_ATTEMPTS times, and
+# an attempt STARTS only before NIGHTLY_RETRY_CUTOFF local time (the 06:00
+# backup window must stay free). Then the next night / continuous rounds take
+# over. Only ``network_unavailable`` defers; every other outcome is unchanged.
+# Daily mode only: with CURATED_NIGHTLY_HOUR=every the next hourly slot is the
+# retry. Counts on operator /readiness only (``nightly_retry_stats``).
+NIGHTLY_RETRY_FIRST_S = 15 * 60
+NIGHTLY_RETRY_MAX_INTERVAL_S = 30 * 60
+NIGHTLY_RETRY_MAX_ATTEMPTS = 8
+NIGHTLY_RETRY_CUTOFF = (5, 45)  # local (Europe/Bratislava) hour, minute
+
+_nightly_retry: dict | None = None  # the pending retry of this night, or None
+_nightly_retry_outcome: str | None = None  # deferred | recovered | gave_up
+_nightly_retry_counts: dict[str, int] = {
+    "deferred_total": 0,  # patient deferrals (network_unavailable) since start
+    "retries_total": 0,  # retry sweeps run
+    "recovered_total": 0,  # deferred patients a retry got through
+    "gave_up_total": 0,  # deferred patients left for the next night
+}
+
+
+def nightly_retry_stats() -> dict:
+    """Operator /readiness view (#979): codes, counts and times only."""
+    r = _nightly_retry
+    pending = None
+    if r is not None:
+        pending = {
+            "code": NETWORK_UNAVAILABLE,
+            "deferred": len(r["pids"]),
+            "attempts": r["attempts"],
+            "next_at": r["next_at"].isoformat(timespec="seconds"),
+            "deadline": r["deadline"].isoformat(timespec="seconds"),
+        }
+    return {**_nightly_retry_counts, "last_outcome": _nightly_retry_outcome, "pending": pending}
+
+
+def _end_nightly_retry(outcome: str | None) -> None:
+    global _nightly_retry, _nightly_retry_outcome
+    _nightly_retry = None
+    if outcome is not None:
+        _nightly_retry_outcome = outcome
+
+
+def _retry_deadline(now: datetime) -> datetime:
+    """The first NIGHTLY_RETRY_CUTOFF (local) strictly after ``now``."""
+    h, m = NIGHTLY_RETRY_CUTOFF
+    cut = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    return cut if cut > now else cut + timedelta(days=1)
+
+
+def _schedule_nightly_retry(slot: str, deferred: set[str], now: datetime, *, attempted: bool):
+    """Book (or drop) the next retry after a sweep (``attempted`` = it was one)."""
+    global _nightly_retry, _nightly_retry_outcome
+    c = _nightly_retry_counts
+    r = _nightly_retry if attempted else None
+    if r is not None:
+        r["attempts"] += 1
+        c["retries_total"] += 1
+        c["recovered_total"] += len(set(r["pids"]) - deferred)
+    if not deferred:
+        if r is not None:
+            logger.info("curated nightly retry: all deferred patients done")
+        _end_nightly_retry("recovered" if r is not None else None)
+        return
+    c["deferred_total"] += len(deferred)
+    if r is None:
+        r = {"slot": slot, "pids": [], "attempts": 0, "deadline": _retry_deadline(now)}
+    delay = min(NIGHTLY_RETRY_FIRST_S * 2 ** r["attempts"], NIGHTLY_RETRY_MAX_INTERVAL_S)
+    next_at = now + timedelta(seconds=delay)
+    if r["attempts"] >= NIGHTLY_RETRY_MAX_ATTEMPTS or next_at >= r["deadline"]:
+        c["gave_up_total"] += len(deferred)
+        _end_nightly_retry("gave_up")
+        logger.warning(
+            "curated nightly: %d patient(s) still %s after %d retr(ies); "
+            "left for continuous rounds / the next night",
+            len(deferred),
+            NETWORK_UNAVAILABLE,
+            r["attempts"],
+        )
+        return
+    r.update(pids=sorted(deferred), next_at=next_at)
+    _nightly_retry, _nightly_retry_outcome = r, "deferred"
+    logger.info(
+        "curated nightly: %d patient(s) deferred (%s), retry %d in %d min",
+        len(deferred),
+        NETWORK_UNAVAILABLE,
+        r["attempts"] + 1,
+        delay // 60,
+    )
+
+
+def _due_nightly_retry(now: datetime) -> list[str] | None:
+    """Patients of a retry that is due now, or None."""
+    r = _nightly_retry
+    if r is None or now < r["next_at"]:
+        return None
+    if now >= r["deadline"]:  # the loop was late (a long round): never start past the cutoff
+        _nightly_retry_counts["gave_up_total"] += len(r["pids"])
+        _end_nightly_retry("gave_up")
+        logger.warning(
+            "curated nightly: retry for %d patient(s) dropped at the cutoff (%s)",
+            len(r["pids"]),
+            NETWORK_UNAVAILABLE,
+        )
+        return None
+    return list(r["pids"])
+
+
+async def _nightly_sweep(db, pids: list[str], *, max_runs: int, reuse_preview: bool) -> set[str]:
+    """The full nightly sequence for ``pids``; returns the patients deferred
+    because Google could not be reached (``network_unavailable``)."""
+    deferred: set[str] = set()
+    for pid in pids:
+        if _stopping.is_set():
+            break
+        if reason := run_block_reason(pid) or await _scheduling_reason(db, pid):
+            logger.info("curated nightly %s: skipped (%s)", pid, reason)
+            continue
+        reports = await nightly_for_patient(
+            db,
+            pid,
+            max_real_runs=max_runs,
+            reuse_preview=reuse_preview,
+            skip_if_busy=True,
+        )
+        if any(_is_network_deferred(r) for r in reports):
+            deferred.add(pid)  # nothing was done: not "ok", not "disconnected"
+            logger.info("curated nightly %s: deferred (%s)", pid, NETWORK_UNAVAILABLE)
+            continue
+        _note_held(pid, reports)
+        _note_import_progress(pid, reports)
+        if not any(r.get("blocked") for r in reports):
+            _watch.pop(pid, None)  # the sweep retried everything
+        logger.info(
+            "curated nightly %s: %s",
+            pid,
+            [(r.get("dry_run"), r.get("status") or r.get("error")) for r in reports],
+        )
+    return deferred
+
+
 async def curated_nightly_loop(
     db,
     *,
@@ -1306,7 +1475,8 @@ async def curated_nightly_loop(
       files are processed minutes after they land (``continuous_tick``).
     * Nightly sweep once per local night at CURATED_NIGHTLY_HOUR (full budget,
       also retries what continuous mode parked). ``CURATED_NIGHTLY_HOUR=every``
-      makes the sweep hourly.
+      makes the sweep hourly. A patient Google could not be reached for
+      (``network_unavailable``, #979) is retried later the same night.
 
     Probes start ``probe_delay_s`` after boot; runs, the nightly sweep and the
     startup index wait ``startup_grace_s`` (rolling deploy overlap). One run
@@ -1343,28 +1513,21 @@ async def curated_nightly_loop(
             due = hour is None or now.hour == hour
             if enabled and due and last_night != slot and not in_grace:
                 last_night = slot
-                for pid in await db.list_curated_nightly_patients():
-                    if _stopping.is_set():
-                        break
-                    if reason := run_block_reason(pid) or await _scheduling_reason(db, pid):
-                        logger.info("curated nightly %s: skipped (%s)", pid, reason)
-                        continue
-                    reports = await nightly_for_patient(
-                        db,
-                        pid,
-                        max_real_runs=max_runs,
-                        reuse_preview=hour is None,
-                        skip_if_busy=True,
-                    )
-                    _note_held(pid, reports)
-                    _note_import_progress(pid, reports)
-                    if not any(r.get("blocked") for r in reports):
-                        _watch.pop(pid, None)  # the sweep retried everything
-                    logger.info(
-                        "curated nightly %s: %s",
-                        pid,
-                        [(r.get("dry_run"), r.get("status") or r.get("error")) for r in reports],
-                    )
+                _end_nightly_retry(None)  # a new night starts clean
+                deferred = await _nightly_sweep(
+                    db,
+                    await db.list_curated_nightly_patients(),
+                    max_runs=max_runs,
+                    reuse_preview=hour is None,
+                )
+                if hour is not None:  # hourly mode: the next slot is the retry
+                    _schedule_nightly_retry(slot, deferred, now, attempted=False)
+            elif enabled and (pids := _due_nightly_retry(now)) is not None and not in_grace:
+                enrolled = set(await db.list_curated_nightly_patients())
+                deferred = await _nightly_sweep(
+                    db, [p for p in pids if p in enrolled], max_runs=max_runs, reuse_preview=False
+                )
+                _schedule_nightly_retry(slot, deferred, now, attempted=True)
             elif enabled and cont:
                 # #855: one fair round; while turns move work, the next round
                 # starts after a short pause instead of a full poll interval.
