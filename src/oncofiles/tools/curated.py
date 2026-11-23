@@ -4720,7 +4720,8 @@ async def _classify_scorecard_job(
             "totals": totals,
             "compared_to": {"row_id": prev["id"], "label": prev_report.get("label"),
                             "finished_at": prev.get("finished_at")} if prev else None,
-            **csc.compare(prev_report if prev else None, versions, totals),
+            **csc.compare(prev_report if prev else None, versions, totals,
+                          csc.per_document(cards)),
             "documents": cards,
         })  # fmt: skip
     except Exception as exc:
@@ -4759,7 +4760,8 @@ async def curated_classify_scorecard(
     Nothing is filed, renamed, written to Drive or stored as a fact; the
     README is only read. The only write is a summary row (trigger
     ``scorecard``, report ``kind: classification``: label, settings, versions,
-    totals) that never counts as a curated run or preview. The report (poll
+    totals and ``per_document`` rows of ids and codes only) that never counts
+    as a curated run or preview. The report (poll
     curated_reocr_status, kind ``classify_scorecard``) has per document its
     runs: review yes/no, review reason codes, agreement of doc type / date /
     institution with the currently filed name, truncation, retry, seconds,
@@ -4767,7 +4769,9 @@ async def curated_classify_scorecard(
     histogram, agreement %, truncations, p50/p95 seconds, and with
     ``repeat`` ≥ 2 the share of documents whose runs all agreed. ``delta``
     against the previous ok classification scorecard (or the newest whose
-    label starts with ``compare_to_label``), with ``regressions``. Never a
+    label starts with ``compare_to_label``), with ``regressions``, and
+    ``per_document_delta``: documents whose review state or doc type
+    agreement flipped (counts and ids). Never a
     filename, value or text. The age rule of new scans is not applied
     (filed documents are old by nature).
 

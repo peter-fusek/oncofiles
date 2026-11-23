@@ -1096,6 +1096,8 @@
     var qPreviewInFlight = null;
     var qPreviewBusy = false;
     var qPreviewGen = 0;               // bumped when the patient changes
+    var qPreviewRetries = new Map();   // key -> 429 answers so far
+    var Q_BUSY_RETRIES = 3;
     var qObserver = null;
     var qLook = null;                  // {itemId, n} while the quick look shows a quarantined file
 
@@ -1228,6 +1230,11 @@
         headers: { 'Authorization': authHeader() }
       });
       if (resp.status === 401) { logout(); return null; }
+      if (resp.status === 429) {
+        // a render of this patient still runs (one per patient): ask again later
+        var wait = parseInt(resp.headers.get('Retry-After') || '2', 10);
+        return { busy: Math.min(Math.max(isFinite(wait) ? wait : 2, 1), 30) };
+      }
       if (!resp.ok) return null;  // 415 no safe preview, 409 / 422 refused: the mark stays
       if ((resp.headers.get('Content-Type') || '').indexOf('image/jpeg') !== 0) return null;
       var blob = await resp.blob();
@@ -1258,6 +1265,22 @@
       catch (e) { entry = null; }
       qPreviewBusy = false;
       qPreviewInFlight = null;
+      if (entry && entry.busy) {
+        // 429 preview_busy: not "no preview"; try the same key again after
+        // Retry-After, at most Q_BUSY_RETRIES times, then keep the mark
+        var tries = (qPreviewRetries.get(key) || 0) + 1;
+        qPreviewRetries.set(key, tries);
+        if (tries <= Q_BUSY_RETRIES && gen === qPreviewGen) {
+          setTimeout(function () {
+            if (gen !== qPreviewGen) return;
+            if (parts[2] === 'large') { if (qPreviewLargeWanted === null) qPreviewLargeWanted = key; }
+            else if (qPreviewWanted.indexOf(key) === -1) qPreviewWanted.unshift(key);
+            pumpQuarantinePreviews();
+          }, entry.busy * 1000);
+          return;
+        }
+        entry = null;
+      }
       if (gen === qPreviewGen) {
         qPreviewCache.set(key, entry);
         applyQuarantinePreview(key);

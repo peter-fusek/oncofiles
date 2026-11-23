@@ -4835,8 +4835,14 @@ def _patient_not_found() -> JSONResponse:
     Byte-identical for both cases (status, body, headers), so a non-admin
     caller cannot probe which patient ids or slugs exist. Logs and the #868
     audit may tell the cases apart; responses never do.
+
+    ``Cache-Control: no-store`` (#976 follow-up): a refusal is per caller
+    and per moment (a caregiver may be added a minute later), so no browser
+    or proxy may keep it. The same header on every case keeps it identical.
     """
-    return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(
+        {"error": "not_found"}, status_code=404, headers={"Cache-Control": "no-store"}
+    )
 
 
 def _check_dashboard_auth(request: Request) -> JSONResponse | None:
@@ -7551,7 +7557,9 @@ async def api_inbound_quarantine_preview(request: Request) -> Response:
     or unknown item id is the same 404. 200 = a re-encoded JPEG (never the
     original bytes); 415 = no safe preview for this type (the card shows the
     type mark); 409 = the file fails its manifest sha256; 422 = rendering
-    failed or timed out. Always ``Cache-Control: no-store``.
+    failed or timed out; 429 ``preview_busy`` + ``Retry-After`` = a render of
+    this patient is still running (one per patient). Always
+    ``Cache-Control: no-store``.
     """
     err = _check_dashboard_auth(request)
     if err:
@@ -7581,6 +7589,9 @@ async def api_inbound_quarantine_preview(request: Request) -> Response:
     except quarantine_preview.PreviewRefusedError as refused:
         if refused.code == quarantine_preview.NOT_FOUND:
             return _patient_not_found()
+        if refused.code == quarantine_preview.BUSY:
+            headers["Retry-After"] = str(quarantine_preview.BUSY_RETRY_AFTER_S)
+            return JSONResponse({"error": refused.code}, status_code=429, headers=headers)
         status = {
             quarantine_preview.UNSUPPORTED: 415,
             quarantine_preview.INTEGRITY: 409,

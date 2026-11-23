@@ -450,6 +450,16 @@ def _assert_identical(r1, r2):
     assert r1.body == r2.body
     assert r1.headers.get("content-type") == r2.headers.get("content-type")
     assert sorted(r1.raw_headers) == sorted(r2.raw_headers)
+    # #976 follow-up: the shared refusal is never cached, in both cases
+    assert r1.headers.get("cache-control") == r2.headers.get("cache-control") == "no-store"
+
+
+def test_patient_not_found_is_no_store_and_unchanged_otherwise():
+    resp = server._patient_not_found()
+    assert resp.status_code == 404
+    assert resp.body == b'{"error":"not_found"}'
+    assert resp.headers["cache-control"] == "no-store"
+    assert sorted(resp.raw_headers) == sorted(server._patient_not_found().raw_headers)
 
 
 @pytest.mark.parametrize("route", ["api_patient_context", "api_patient_budget"])

@@ -26,8 +26,15 @@ ONLY path from a quarantined file to anything but the approve path
   the pixel count of a photo and of every image on page 1, encrypted PDFs
   refused) draws page 1 at most ``SIZES_PX`` wide (thumb 320, large 1600) and
   re-encodes it as JPEG; an answer over ``MAX_OUTPUT_BYTES`` is dropped. One
-  render at a time per process (``RENDER_CONCURRENCY``, the slot is released
-  when the worker thread ends), ``RENDER_TIMEOUT_S`` per request. Decryption
+  render at a time per process (``RENDER_CONCURRENCY``) and, for fairness, at
+  most one in flight per patient (``_PatientSlot``): a second
+  request for a patient whose render still runs is refused at once
+  (``BUSY`` → 429 ``preview_busy`` + ``Retry-After: BUSY_RETRY_AFTER_S``)
+  instead of queueing for the one global slot, so one patient's burst cannot
+  hold every other patient's card behind it. Both slots are released when
+  the worker THREAD ends (``doc_thumbnails._bounded`` done-callback), also
+  after a timeout or an exception, never earlier; ``RENDER_TIMEOUT_S`` per
+  request. Decryption
   and rendering run in a worker thread; the only DB call (the item row) runs
   on the event loop before it.
 * **No copies.** Nothing is cached, stored or indexed; no model, no OCR.
@@ -55,6 +62,7 @@ MAX_INPUT_BYTES = 25 * 1024 * 1024  # the #935 per-file cap of the filing path
 MAX_OUTPUT_BYTES = {"thumb": 256 * 1024, "large": 4 * 1024 * 1024}
 RENDER_TIMEOUT_S = 15.0
 RENDER_CONCURRENCY = 1
+BUSY_RETRY_AFTER_S = 2
 SHOWN_STATES = ("pending", "rejected", "expired")
 
 # result codes (the route maps them to statuses)
@@ -63,6 +71,7 @@ UNSUPPORTED = "unsupported"
 INTEGRITY = "integrity"
 FAILED = "render_failed"
 TIMEOUT = "timeout"
+BUSY = "preview_busy"
 
 
 class PreviewRefusedError(Exception):
@@ -73,17 +82,46 @@ class PreviewRefusedError(Exception):
         self.code = code
 
 
-_sems: dict[str, tuple[Any, asyncio.Semaphore]] = {}
+_sems: dict[str, tuple[Any, asyncio.Semaphore, set[str]]] = {}
 
 
-def _semaphore() -> asyncio.Semaphore:
-    """One render slot per running event loop."""
+def _loop_state() -> tuple[asyncio.Semaphore, set[str]]:
+    """The global render slot and the patients in flight, per running loop."""
     loop = asyncio.get_running_loop()
     held = _sems.get("current")
     if held is None or held[0] is not loop:
-        held = (loop, asyncio.Semaphore(RENDER_CONCURRENCY))
+        held = (loop, asyncio.Semaphore(RENDER_CONCURRENCY), set())
         _sems["current"] = held
-    return held[1]
+    return held[1], held[2]
+
+
+class _PatientSlot:
+    """At most one in-flight render per patient, shaped like a semaphore for
+    ``doc_thumbnails._bounded`` (``acquire`` / ``release``), so it is released
+    by the same done-callback as the global slot: when the worker thread
+    ends, or at once when the request gives up before the thread starts.
+
+    ``acquire`` never waits: the check and the mark happen in one step on the
+    event loop (no ``await`` between them), and a held slot raises ``BUSY``.
+    """
+
+    def __init__(self, in_flight: set[str], patient_id: str) -> None:
+        self._in_flight = in_flight
+        self._patient_id = patient_id
+
+    async def acquire(self) -> bool:
+        if self._patient_id in self._in_flight:
+            raise PreviewRefusedError(BUSY)
+        self._in_flight.add(self._patient_id)
+        return True
+
+    def release(self) -> None:
+        self._in_flight.discard(self._patient_id)
+
+
+def patient_busy(patient_id: str) -> bool:
+    """True while a render of this patient holds its slot (tests, telemetry)."""
+    return patient_id in _loop_state()[1]
 
 
 def parse_size(raw: str | None) -> str | None:
@@ -164,10 +202,12 @@ async def render(db, patient_id: str, item_id: int, index: int, size: str) -> by
             size,
         )
         loop = asyncio.get_running_loop()
+        global_sem, in_flight = _loop_state()
+        # the patient's slot first: a busy patient is refused before it would
+        # wait for (and hold back others at) the global slot
+        slots = (_PatientSlot(in_flight, patient_id), global_sem)
         try:
-            return await doc_thumbnails._bounded(
-                (_semaphore(),), job, loop.time() + RENDER_TIMEOUT_S
-            )
+            return await doc_thumbnails._bounded(slots, job, loop.time() + RENDER_TIMEOUT_S)
         except TimeoutError as exc:
             raise PreviewRefusedError(TIMEOUT) from exc
     except PreviewRefusedError as exc:

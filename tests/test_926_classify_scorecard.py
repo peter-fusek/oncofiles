@@ -248,8 +248,31 @@ async def test_scorecard_counts_only_and_writes_nothing_but_its_row(seeded, scor
     assert row["dry_run"] and row["status"] == "ok"
     stored = json.loads(row["report_json"])
     assert set(stored) <= {"kind", "scorecard", "label", "settings", "versions", "totals",
-                           "dry_run"}  # fmt: skip
+                           "dry_run", "per_document"}  # fmt: skip
     assert stored["kind"] == "classification"
+    # per-document rows: ids and codes only, never text, filenames, dates or values
+    rows = stored["per_document"]
+    assert [r["document_id"] for r in rows] == [DOC_A, DOC_B, DOC_C]
+    for r in rows:
+        assert set(r) == {"document_id", "category", "result", "runs"}
+        assert r["category"] == "report" and r["result"] == "classified"
+        assert len(r["runs"]) == REPEAT
+        for run in r["runs"]:
+            assert set(run) == {"review", "reasons", "agree"}
+            assert isinstance(run["review"], bool)
+            assert set(run["agree"]) == set(csc.AGREEMENT_FIELDS)
+            assert set(run["agree"].values()) <= set(csc.AGREE_CODES)
+            assert all(csc._CODE.fullmatch(code) for code in run["reasons"])
+    assert rows[2]["runs"][0] == {"review": True, "reasons": ["no_date"],
+                                  "agree": dict.fromkeys(csc.AGREEMENT_FIELDS,
+                                                         "not_comparable")}  # fmt: skip
+    rows_dump = json.dumps(rows, ensure_ascii=False)
+    for needle in ("Lúčnica", "Lucnica", "Javor", "SECRET", "JanaNovakova", "2027-", "202703",
+                   "kontrola_scan", "seconds", "tokens", "finish", "filename"):  # fmt: skip
+        assert needle not in rows_dump, needle
+    for needle in ("Lúčnica", "Lucnica", "Javor", "SECRET", "JanaNovakova", "2027-", "202703",
+                   "kontrola_scan"):  # fmt: skip
+        assert needle not in row["report_json"], needle
     # an extraction scorecard never takes a classification row as its baseline
     assert await db.get_last_scorecard(patient_id=PATIENT_A_UUID) is None
     last = await db.get_last_scorecard(patient_id=PATIENT_A_UUID, kind="classification")
@@ -276,6 +299,106 @@ async def test_second_scorecard_compares_with_the_first(seeded, scorecard_env):
     assert report["definition_changed"] == {}
     assert report["delta"]["metrics"]["review.pct_review"]["change"] == 0
     assert report["delta"]["regressions"] == []
+    per_doc = report["per_document_delta"]
+    assert per_doc["comparable"] is True and per_doc["documents_compared"] == 3
+    assert per_doc["review"]["flipped"] == per_doc["doc_type"]["flipped"] == 0
+    assert per_doc["only_in_baseline"] == per_doc["only_in_current"] == 0
+
+
+def _row(doc_id, *runs, result="classified"):
+    return {"document_id": doc_id, "category": "labs", "result": result,
+            "runs": [{"review": rv, "reasons": ["no_date"] if rv else [],
+                      "agree": {"doc_type": dt, "date": "agree", "institution": "agree"}}
+                     for rv, dt in runs]}  # fmt: skip
+
+
+F_A, F_B, F_C, F_D, F_E, F_F, F_G = (
+    92701,
+    92702,
+    92703,
+    92704,
+    92705,
+    92706,
+    92707,
+)  # synthetic document ids
+
+
+def test_diff_documents_counts_review_and_doc_type_flips():
+    base = [
+        _row(F_A, (False, "agree")),
+        _row(F_B, (True, "differ")),
+        _row(F_C, (False, "agree"), (True, "agree")),  # mixed review
+        _row(F_D, (False, "agree")),
+        _row(F_E, (False, "agree")),  # only in the baseline
+        _row(F_F, result="skipped"),
+    ]
+    cur = [
+        _row(F_A, (True, "differ")),  # to review, from agree
+        _row(F_B, (False, "agree")),  # to no review, to agree
+        _row(F_C, (True, "agree"), (True, "agree")),  # mixed → review: flipped, neither way
+        _row(F_D, (False, "agree")),  # unchanged
+        _row(F_F, (False, "agree")),  # skipped in the baseline: not compared
+        _row(F_G, (False, "agree")),  # only in the current
+    ]
+    out = csc.diff_documents(base, cur)
+    assert out["comparable"] is True
+    assert out["documents_compared"] == 4
+    assert out["only_in_baseline"] == 1 and out["only_in_current"] == 1
+    review, doc_type = out["review"], out["doc_type"]
+    assert review["document_ids"] == [F_A, F_B, F_C] and review["flipped"] == len([F_A, F_B, F_C])
+    assert review["to_review"] == review["to_no_review"] == len([F_A])
+    assert doc_type["document_ids"] == [F_A, F_B] and doc_type["flipped"] == len([F_A, F_B])
+    assert doc_type["to_agree"] == doc_type["from_agree"] == len([F_B])
+    # pure: inputs untouched, ids and counts only
+    assert base[0]["runs"][0]["review"] is False
+    assert set(json.dumps(out)) <= set('{}[]":, _0123456789abcdefghijklmnopqrstuvwxyz')
+
+
+def test_diff_documents_without_rows_in_the_baseline_is_not_comparable():
+    assert csc.diff_documents(None, [_row(1, (False, "agree"))]) == {
+        "comparable": False, "reason": "per_document_missing"}  # fmt: skip
+    versions = csc.versions(sampling="legacy")
+    out = csc.compare({"versions": versions, "totals": {}}, versions, {}, [])
+    assert out["per_document_delta"]["comparable"] is False
+    out = csc.compare({"versions": versions, "totals": {}, "per_document": []}, versions, {}, [])
+    assert out["per_document_delta"]["documents_compared"] == 0
+    assert csc.compare(None, versions, {}, [])["per_document_delta"] is None
+
+
+def test_per_document_keeps_ids_and_codes_only():
+    cards = [
+        csc.card(
+            12,
+            "report",
+            [
+                {
+                    "review": True,
+                    "reasons": ["no_date", "bad code with spaces 2027-03-14"],
+                    "agree": {"doc_type": "agree", "date": "2027-03-14", "institution": "differ"},
+                    "seconds": 4.2,
+                    "completion_tokens": 300,
+                    "error_kind": None,
+                    "outcome": ("Report", "20270314", "Lucnica", True),
+                }
+            ],
+        ),
+        csc.skipped_card(11, "Labs 2027-03-14", "raw_genotype_excluded"),
+        {"document_id": "not-an-int", "runs": []},
+    ]
+    rows = csc.per_document(cards)
+    assert rows == [
+        {"document_id": 11, "category": None, "result": "skipped",
+         "reason": "raw_genotype_excluded", "runs": []},
+        {"document_id": 12, "category": "report", "result": "classified",
+         "runs": [{"review": True, "reasons": ["no_date"],
+                   "agree": {"doc_type": "agree", "date": "missing",
+                             "institution": "differ"}}]},
+    ]  # fmt: skip
+    persisted = csc.persisted({"kind": "classification", "totals": {}, "documents": cards})
+    assert persisted["per_document"] == rows
+    dumped = json.dumps(persisted)
+    for needle in ("2027", "Lucnica", "seconds", "tokens", "outcome"):
+        assert needle not in dumped, needle
 
 
 def test_compare_withholds_the_delta_across_scorecard_versions():

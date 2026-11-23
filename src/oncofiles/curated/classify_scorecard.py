@@ -24,6 +24,12 @@ Metrics:
 * ``metadata_unverified``: the ``verify_metadata`` codes (written to the
   sidecar under ``CURATED_CLASSIFY_PROMPT=v2``; under v1 computed for the
   comparison only).
+
+The persisted row also keeps ``per_document`` (ids and codes only) so two
+scorecards can be diffed per document (``diff_documents``, exposed as
+``per_document_delta`` by ``compare``). Adding it changed no total, so
+``SCORECARD_VERSION`` stays: a bump would only withhold the delta against
+every earlier baseline although their numbers mean the same.
 """
 
 from __future__ import annotations
@@ -283,19 +289,129 @@ def versions(*, sampling: str, prompt_variant: str | None = None) -> dict:
     }
 
 
-def compare(baseline: dict | None, current_versions: dict, current_totals: dict) -> dict:
+# ── per-document rows (#926 / #942 infra follow-up) ─────────────────────
+# The persisted report keeps, per document, only its id, its category code and
+# per run the review flag, the review reason codes and the agreement code per
+# field, so two scorecards can be diffed document by document. Never a
+# filename, a date, a value or any text.
+
+AGREE_CODES = ("agree", "differ", "missing", "not_comparable")
+
+
+def _code(value) -> str | None:
+    return value if isinstance(value, str) and _CODE.fullmatch(value) else None
+
+
+def _doc_row(c: dict) -> dict | None:
+    try:
+        doc_id = int(c.get("document_id"))
+    except (TypeError, ValueError):
+        return None
+    row: dict = {"document_id": doc_id, "category": _code(c.get("category")),
+                 "result": "skipped" if c.get("result") == "skipped" else "classified"}  # fmt: skip
+    if row["result"] == "skipped":
+        row["reason"] = _code(c.get("reason")) or "other"
+    runs = []
+    for r in c.get("runs") or []:
+        agree = r.get("agree") if isinstance(r.get("agree"), dict) else {}
+        runs.append({
+            "review": bool(r.get("review")),
+            "reasons": sorted({code for code in (_code(x) for x in r.get("reasons") or [])
+                               if code}),
+            "agree": {f: agree.get(f) if agree.get(f) in AGREE_CODES else "missing"
+                      for f in AGREEMENT_FIELDS},
+        })  # fmt: skip
+    row["runs"] = runs
+    return row
+
+
+def per_document(cards: list[dict]) -> list[dict]:
+    """The compact per-document rows of the cards (ids and codes only),
+    ordered by document id."""
+    rows = [row for row in (_doc_row(c) for c in cards or [] if isinstance(c, dict)) if row]
+    return sorted(rows, key=lambda r: r["document_id"])
+
+
+def _review_state(runs: list[dict]) -> str:
+    flags = {bool(r.get("review")) for r in runs}
+    return "mixed" if len(flags) > 1 else ("review" if flags == {True} else "no_review")
+
+
+def _agree_state(runs: list[dict], field: str) -> str:
+    codes = {(r.get("agree") or {}).get(field, "missing") for r in runs}
+    return codes.pop() if len(codes) == 1 else "mixed"
+
+
+def diff_documents(baseline_rows, current_rows) -> dict:
+    """Per-document diff of two persisted ``per_document`` lists (pure).
+
+    A document counts only when it was classified (not skipped) in both. Its
+    state per scorecard: review = ``review`` / ``no_review`` / ``mixed`` (runs
+    disagreed); doc type agreement = the one code of all runs, else
+    ``mixed``. A flip is a state change. Counts and document ids only."""
+    if not isinstance(baseline_rows, list) or not isinstance(current_rows, list):
+        return {"comparable": False, "reason": "per_document_missing"}
+
+    def index(rows):
+        return {r["document_id"]: r for r in rows
+                if isinstance(r, dict) and isinstance(r.get("document_id"), int)}  # fmt: skip
+
+    old, new = index(baseline_rows), index(current_rows)
+    both = sorted(i for i in set(old) & set(new)
+                  if old[i].get("result") == new[i].get("result") == "classified"
+                  and old[i].get("runs") and new[i].get("runs"))  # fmt: skip
+    review = {"flipped": 0, "to_review": 0, "to_no_review": 0, "document_ids": []}
+    doc_type = {"flipped": 0, "to_agree": 0, "from_agree": 0, "document_ids": []}
+    for i in both:
+        a, b = _review_state(old[i]["runs"]), _review_state(new[i]["runs"])
+        if a != b:
+            review["flipped"] += 1
+            review["document_ids"].append(i)
+            if a == "no_review":
+                review["to_review"] += 1
+            elif b == "no_review":
+                review["to_no_review"] += 1
+        a, b = _agree_state(old[i]["runs"], "doc_type"), _agree_state(new[i]["runs"], "doc_type")
+        if a != b:
+            doc_type["flipped"] += 1
+            doc_type["document_ids"].append(i)
+            if b == "agree":
+                doc_type["to_agree"] += 1
+            elif a == "agree":
+                doc_type["from_agree"] += 1
+    return {
+        "comparable": True,
+        "documents_compared": len(both),
+        "only_in_baseline": len(set(old) - set(new)),
+        "only_in_current": len(set(new) - set(old)),
+        "review": review,
+        "doc_type": doc_type,
+    }
+
+
+def compare(
+    baseline: dict | None,
+    current_versions: dict,
+    current_totals: dict,
+    current_per_document: list[dict] | None = None,
+) -> dict:
     """``delta`` metric by metric against the baseline report. Only a
     different ``scorecard_version`` (what the numbers mean) withholds it; a
     different prompt, sampling or model is exactly what a before/after
-    measures and is listed in ``definition_changed``."""
+    measures and is listed in ``definition_changed``. With the current
+    per-document rows, ``per_document_delta`` diffs them against the
+    baseline's (``diff_documents``; a baseline persisted before the rows
+    existed gives ``comparable: false``)."""
     if not baseline:
-        return {"baseline_comparable": None, "definition_changed": {}, "delta": None}
+        return {"baseline_comparable": None, "definition_changed": {}, "delta": None,
+                "per_document_delta": None}  # fmt: skip
     old = baseline.get("versions") if isinstance(baseline.get("versions"), dict) else {}
     changed = {k: [old.get(k), current_versions.get(k)]
                for k in ("scorecard_version", *INFO_FIELDS)
                if old.get(k) != current_versions.get(k)}  # fmt: skip
     if "scorecard_version" in changed:
-        return {"baseline_comparable": False, "definition_changed": changed, "delta": None}
+        return {"baseline_comparable": False, "definition_changed": changed, "delta": None,
+                "per_document_delta": None}  # fmt: skip
     prev, cur = flatten(baseline.get("totals") or {}), flatten(current_totals)
     metrics = {}
     for key in sorted(set(prev) | set(cur)):
@@ -316,11 +432,21 @@ def compare(baseline: dict | None, current_versions: dict, current_totals: dict)
         "baseline_comparable": True,
         "definition_changed": changed,
         "delta": {"metrics": metrics, "regressions": regressions},
+        "per_document_delta": (
+            diff_documents(baseline.get("per_document"), current_per_document)
+            if current_per_document is not None
+            else None
+        ),
     }
 
 
 def persisted(report: dict) -> dict:
     """What goes into ``curated_runs.report_json``: kind, label, settings,
-    versions and the totals. No card, no document id list, no text."""
+    versions, the totals and the compact ``per_document`` rows (document id,
+    category code, per run review flag / reason codes / agreement codes).
+    No full card, no filename, no date, no value, no text."""
     keys = ("kind", "scorecard", "label", "settings", "versions", "totals", "dry_run")
-    return {k: report[k] for k in keys if k in report}
+    out = {k: report[k] for k in keys if k in report}
+    if "documents" in report:
+        out["per_document"] = per_document(report.get("documents") or [])
+    return out
