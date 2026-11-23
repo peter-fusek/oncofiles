@@ -8,6 +8,14 @@ from oncofiles.database import Database
 from oncofiles.persistent_oauth import PersistentOAuthProvider, token_digest
 
 
+@pytest.fixture(autouse=True)
+def _allow_unbound(monkeypatch):
+    """These tests mint tokens without a bound email (persistence and the
+    unbound → sentinel isolation path); since #898 that needs the single-user
+    opt-out. The default refusal is locked in tests/test_898_oauth_unbound_token.py."""
+    monkeypatch.setattr("oncofiles.config.MCP_OAUTH_ALLOW_UNBOUND", True)
+
+
 @pytest.fixture
 async def db():
     database = Database(":memory:")
@@ -464,7 +472,7 @@ async def _mint_oauth_token_with_email(provider, email, client_id="test-client",
     the /token exchange."""
     from mcp.server.auth.provider import AuthorizationParams
 
-    from oncofiles.persistent_oauth import stash_email_for_challenge
+    from oncofiles.persistent_oauth import consented_binding
 
     client = _make_client_info(client_id=client_id)
     await provider.register_client(client)
@@ -476,8 +484,9 @@ async def _mint_oauth_token_with_email(provider, email, client_id="test-client",
         redirect_uri="http://localhost:3000/callback",
         redirect_uri_provided_explicitly=True,
     )
-    stash_email_for_challenge(challenge, email)
-    redirect_uri = await provider.authorize(client, params)
+    # #898: the consent POST binds the account for exactly this tuple.
+    with consented_binding(email, client_id, challenge, "http://localhost:3000/callback"):
+        redirect_uri = await provider.authorize(client, params)
     from urllib.parse import parse_qs, urlparse
 
     code = parse_qs(urlparse(redirect_uri).query)["code"][0]
@@ -676,9 +685,9 @@ async def test_email_stash_ttl_expires(db, provider):
     from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
     from oncofiles.persistent_oauth import (
         _EMAIL_STASH_TTL_S,
-        _email_for_challenge,
+        _binding_for_code,
         _verified_patient_id,
-        stash_email_for_challenge,
+        consented_binding,
     )
 
     pid = "22222222-2222-4222-8222-222222222222"
@@ -689,13 +698,6 @@ async def test_email_stash_ttl_expires(db, provider):
         display_name="TTL Patient",
         caregiver_email="ttl@example.com",
     )
-    # Stash with a timestamp that's guaranteed to be older than the TTL
-    stash_email_for_challenge("chal_ttl", "ttl@example.com")
-    email, _ = _email_for_challenge["chal_ttl"]
-    ancient = _time.monotonic() - (_EMAIL_STASH_TTL_S + 1)
-    _email_for_challenge["chal_ttl"] = (email, ancient)
-
-    # Now drive the flow — the pop must return None and resolution must sentinel
     from mcp.server.auth.provider import AuthorizationParams
 
     client = _make_client_info(client_id="test-ttl")
@@ -708,10 +710,17 @@ async def test_email_stash_ttl_expires(db, provider):
         redirect_uri="http://localhost:3000/callback",
         redirect_uri_provided_explicitly=True,
     )
-    redirect_uri = await provider.authorize(client, params)
+    with consented_binding(
+        "ttl@example.com", "test-ttl", "chal_ttl", "http://localhost:3000/callback"
+    ):
+        redirect_uri = await provider.authorize(client, params)
     from urllib.parse import parse_qs, urlparse
 
     code = parse_qs(urlparse(redirect_uri).query)["code"][0]
+    # Age the binding past the TTL: the pop must return None and (with the
+    # opt-out on in this module) resolution must sentinel.
+    binding, _ = _binding_for_code[code]
+    _binding_for_code[code] = (binding, _time.monotonic() - (_EMAIL_STASH_TTL_S + 1))
     auth_code = await provider.load_authorization_code(client, code)
     token = await provider.exchange_authorization_code(client, auth_code)
 

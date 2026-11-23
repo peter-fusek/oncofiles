@@ -281,6 +281,56 @@ DOC_QUERY_LIMIT: int = max(MAX_DOCUMENTS_PER_PATIENT, 10_000)
 # pair and starts a new window, so an active client never hits it.
 MCP_REFRESH_TOKEN_TTL_DAYS: int = int(os.environ.get("MCP_REFRESH_TOKEN_TTL_DAYS", "60"))
 
+# #898: an MCP OAuth token is only ever issued to a caller whose Google
+# account was bound at /authorize (dashboard session cookie). GET /authorize
+# without a session redirects to the sign-in page, and the code exchange
+# refuses a code that carries no bound e-mail. Only a single-user / self-hosted
+# deployment without Google sign-in may opt out (default off): an unbound token
+# then resolves to the no-access sentinel exactly as before #898.
+MCP_OAUTH_ALLOW_UNBOUND: bool = os.environ.get(
+    "MCP_OAUTH_ALLOW_UNBOUND", "false"
+).strip().lower() in ("true", "1", "yes")
+
+# #898 security review: an MCP OAuth client may register / be authorized only
+# with one of these EXACT redirect URIs (scheme + host + default port + path,
+# no query, no fragment). The vendor hosts are shared and multi-tenant (e.g.
+# chatgpt.com also serves custom-GPT action callbacks that any GPT creator
+# controls), so a host match is not enough: only the vendors' own MCP
+# connector callbacks are listed. Loopback (localhost / 127.0.0.1 / ::1,
+# http or https, any port, any path) stays open for desktop and CLI clients.
+# MCP_OAUTH_EXTRA_REDIRECT_URIS (comma list of exact URIs) adds more at runtime.
+MCP_OAUTH_REDIRECT_URIS: tuple[str, ...] = (
+    "https://claude.ai/api/mcp/auth_callback",
+    "https://claude.com/api/mcp/auth_callback",
+    "https://chatgpt.com/connector_platform_oauth_redirect",
+    "https://chat.openai.com/connector_platform_oauth_redirect",
+)
+MCP_OAUTH_EXTRA_REDIRECT_URIS: tuple[str, ...] = tuple(
+    u.strip() for u in os.environ.get("MCP_OAUTH_EXTRA_REDIRECT_URIS", "").split(",") if u.strip()
+)
+# First-party names a client_name may contain only when ALL its redirect URIs
+# are that vendor's exact callbacks (anti-impersonation on the consent page).
+# "oncofiles" belongs to no client.
+MCP_OAUTH_RESERVED_CLIENT_NAMES: dict[str, tuple[str, ...]] = {
+    "claude": (
+        "https://claude.ai/api/mcp/auth_callback",
+        "https://claude.com/api/mcp/auth_callback",
+    ),
+    "anthropic": (
+        "https://claude.ai/api/mcp/auth_callback",
+        "https://claude.com/api/mcp/auth_callback",
+    ),
+    "chatgpt": (
+        "https://chatgpt.com/connector_platform_oauth_redirect",
+        "https://chat.openai.com/connector_platform_oauth_redirect",
+    ),
+    "openai": (
+        "https://chatgpt.com/connector_platform_oauth_redirect",
+        "https://chat.openai.com/connector_platform_oauth_redirect",
+    ),
+    "oncofiles": (),
+}
+
 # Sync scheduler (v1.0)
 SYNC_INTERVAL_MINUTES: int = int(os.environ.get("SYNC_INTERVAL_MINUTES", "5"))
 SYNC_ENABLED: bool = os.environ.get("SYNC_ENABLED", "true").lower() in ("true", "1", "yes")

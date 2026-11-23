@@ -19,13 +19,21 @@ from oncofiles.database import Database
 from oncofiles.persistent_oauth import (
     PersistentOAuthProvider,
     _verified_caller_email,
+    consented_binding,
     delete_expired_oauth_tokens,
-    stash_email_for_challenge,
     token_digest,
 )
 
 CLIENT_ID = "storage-test-client"
 EMAIL = "caregiver-storage@example.com"
+
+
+@pytest.fixture(autouse=True)
+def _allow_unbound(monkeypatch):
+    """Storage tests also mint tokens without a bound email; since #898 that
+    needs the single-user opt-out. The default refusal is locked in
+    tests/test_898_oauth_unbound_token.py."""
+    monkeypatch.setattr("oncofiles.config.MCP_OAUTH_ALLOW_UNBOUND", True)
 
 
 @pytest.fixture
@@ -55,8 +63,6 @@ def _client() -> OAuthClientInformationFull:
 
 
 async def _mint(provider: PersistentOAuthProvider, *, challenge="chal-storage", email=None):
-    if email:
-        stash_email_for_challenge(challenge, email)
     client = await provider.get_client(CLIENT_ID)
     params = AuthorizationParams(
         state="s",
@@ -66,7 +72,11 @@ async def _mint(provider: PersistentOAuthProvider, *, challenge="chal-storage", 
         redirect_uri="http://localhost:3000/callback",
         redirect_uri_provided_explicitly=True,
     )
-    redirect = await provider.authorize(client, params)
+    if email:
+        with consented_binding(email, CLIENT_ID, challenge, "http://localhost:3000/callback"):
+            redirect = await provider.authorize(client, params)
+    else:
+        redirect = await provider.authorize(client, params)
     code = parse_qs(urlparse(redirect).query)["code"][0]
     auth_code = await provider.load_authorization_code(client, code)
     return await provider.exchange_authorization_code(client, auth_code)

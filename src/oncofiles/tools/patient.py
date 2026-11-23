@@ -291,7 +291,15 @@ async def whoami(ctx: Context) -> str:
         "bound_patient": {"slug": bound.slug, "name": bound.display_name} if bound else None,
         "patients": [{"slug": p.slug, "name": p.display_name} for p in patients],
     }
-    if not patients:
+    if auth_method == "oauth" and not result["email"]:
+        # #898: a connection made before the fix (or with the single-user
+        # opt-out) carries no signed-in account and can never see a patient.
+        result["guidance"] = (
+            "This connection is not linked to a signed-in account. Sign in at "
+            "https://oncofiles.com/dashboard with your Google account, then "
+            "disconnect and reconnect the Oncofiles connector."
+        )
+    elif not patients:
         result["guidance"] = (
             "No patients are linked to this identity. Sign in at "
             "https://oncofiles.com/dashboard with the Google account that is the "
