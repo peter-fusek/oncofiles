@@ -159,15 +159,39 @@ def curated_reason(gdrive, folder_id: str, *, use_cache: bool = True) -> str | N
             return hit[0]
     try:
         reason = _detect(gdrive, folder_id)
-    except Exception:
-        logger.warning(
-            "curated-folder detection failed for %s — treating as curated (fail closed)",
-            folder_id,
-            exc_info=True,
-        )
-        return "curated-folder detection failed (fail closed)"  # not cached
+    except Exception as exc:
+        from oncofiles.network_errors import NETWORK_UNAVAILABLE, is_network_unavailable
+
+        if is_network_unavailable(exc):  # #979: still fails closed, but say why
+            _detect_errors[folder_id] = NETWORK_UNAVAILABLE
+            logger.warning(
+                "curated-folder detection for %s: %s (%s) — treating as curated (fail closed)",
+                folder_id,
+                NETWORK_UNAVAILABLE,
+                type(exc).__name__,
+            )
+        else:
+            _detect_errors[folder_id] = "detection_failed"
+            logger.warning(
+                "curated-folder detection failed for %s — treating as curated (fail closed)",
+                folder_id,
+                exc_info=True,
+            )
+        return DETECTION_FAILED  # not cached
+    _detect_errors.pop(folder_id, None)
     _cache[folder_id] = (reason, now)
     return reason
+
+
+DETECTION_FAILED = "curated-folder detection failed (fail closed)"
+# #979: code of the last failed detection per folder id (``network_unavailable``
+# | ``detection_failed``); popped on the next successful detection.
+_detect_errors: dict[str, str] = {}
+
+
+def detection_error(folder_id: str) -> str | None:
+    """Code of the last failed detection of ``folder_id``, or None."""
+    return _detect_errors.get(folder_id)
 
 
 def is_curated_folder(gdrive, folder_id: str, *, use_cache: bool = True) -> bool:

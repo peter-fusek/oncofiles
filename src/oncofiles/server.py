@@ -58,6 +58,7 @@ from oncofiles.memory import (
     is_memory_pressure,
     periodic_memory_check,
 )
+from oncofiles.network_errors import NETWORK_UNAVAILABLE, is_network_unavailable
 from oncofiles.secrets_keys import dashboard_session_key
 
 logger = logging.getLogger(__name__)
@@ -499,6 +500,33 @@ def _is_invalid_grant(exc: BaseException) -> bool:
 # on /health (counts) and /readiness (detail).
 _hard_auth_failures: dict[tuple[str, str], dict[str, str]] = {}
 
+# #979: why the LAST _create_patient_clients call for a patient returned None
+# after loading a token (``network_unavailable`` | ``refresh_failed``); cleared
+# when a client is built, when the patient has no token and under the kill
+# switch. Transient by design: never feeds needs_reauth or _hard_auth_failures.
+# Counts per patient (operator /readiness only, never /health).
+_client_unavailable: dict[str, str] = {}
+_network_unavailable_stats: dict[str, dict] = {}
+
+
+def _note_client_unavailable(patient_id: str, code: str) -> None:
+    _client_unavailable[patient_id] = code
+    if code == NETWORK_UNAVAILABLE:
+        st = _network_unavailable_stats.setdefault(patient_id, {"count": 0, "last_at": None})
+        st["count"] += 1
+        st["last_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def patient_client_unavailable_reason(patient_id: str) -> str | None:
+    """Code of the last failed client build for this patient, or None (#979)."""
+    return _client_unavailable.get(patient_id)
+
+
+def network_unavailable_stats() -> dict:
+    """{patient_id: {count, last_at}} since process start (operator-only)."""
+    return {pid: dict(st) for pid, st in _network_unavailable_stats.items()}
+
+
 # #552: cached output of the sync-staleness watchdog. /health is a liveness
 # probe and must never touch the DB, so the hourly `sync_watchdog` job does the
 # querying and parks the result here for the endpoints to read.
@@ -731,6 +759,7 @@ async def _create_patient_clients(
     # and skip cleanly. Deliberately placed before the token load so we do not
     # even attempt a refresh against a dead OAuth client.
     if not GOOGLE_INTEGRATION_ENABLED:
+        _client_unavailable.pop(patient_id, None)  # the kill switch is its own state
         return None
 
     import time as _time
@@ -749,6 +778,7 @@ async def _create_patient_clients(
 
     token = await db.get_oauth_token(patient_id=patient_id)
     if not token or not token.gdrive_folder_id:
+        _client_unavailable.pop(patient_id, None)
         return None
 
     access_token = token.access_token
@@ -762,7 +792,19 @@ async def _create_patient_clients(
             await db.update_oauth_access_token(
                 token.patient_id, token.provider, access_token, new_expiry
             )
-        except Exception:
+        except Exception as exc:
+            if is_network_unavailable(exc):
+                # #979: a WAN/DNS outage is not a disconnect. Code + exception
+                # class only (no trace, no URL), never needs_reauth / hard auth.
+                _note_client_unavailable(patient_id, NETWORK_UNAVAILABLE)
+                logger.warning(
+                    "Token refresh for patient %s: %s (%s) — transient, will retry",
+                    patient_id,
+                    NETWORK_UNAVAILABLE,
+                    type(exc).__name__,
+                )
+                return None
+            _note_client_unavailable(patient_id, "refresh_failed")
             logger.warning("Token refresh failed for patient %s", patient_id, exc_info=True)
             return None
 
@@ -778,6 +820,8 @@ async def _create_patient_clients(
 
     # Curated folder (#562): block every legacy write on this client.
     await _mark_patient_curated(patient_id, p_gdrive, token.gdrive_folder_id)
+
+    _client_unavailable.pop(patient_id, None)  # #979: built fine, nothing pending
 
     # Cache the clients
     _patient_clients_cache[patient_id] = (
@@ -4092,9 +4136,13 @@ async def readiness(request: Request) -> JSONResponse:
         # #552: per-patient sync staleness, from the watchdog cache.
         result["sync_staleness"] = _sync_staleness
         # #665: per-patient continuous-mode counters (in-memory, no DB call).
-        from oncofiles.tools.curated import probe_stats, startup_index_stats
+        from oncofiles.tools.curated import nightly_retry_stats, probe_stats, startup_index_stats
 
         result["curated_probes"] = probe_stats()
+        # #979: transient network/DNS failures building Google clients and the
+        # curated nightly's same-night retries (codes, counts, times; no DB).
+        result["network_unavailable"] = network_unavailable_stats()
+        result["curated_nightly_retry"] = nightly_retry_stats()
         # #880: patients (re-)indexed at startup, incl. non-enrolled ones with a
         # stale INDEX_VERSION (in-memory counts, no DB call).
         result["curated_startup_index"] = startup_index_stats()
