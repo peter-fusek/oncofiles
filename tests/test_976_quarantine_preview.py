@@ -15,9 +15,11 @@ Synthetic only: invented addresses, file names, texts and dates in 2027.
 from __future__ import annotations
 
 import ast
+import asyncio
 import base64
 import json
 import logging
+import threading
 from email.message import EmailMessage
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -25,7 +27,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from cryptography.exceptions import InvalidTag
 
-from oncofiles import inbound_body, inbound_email, inbound_quarantine, inbound_queue, server
+from oncofiles import (
+    inbound_body,
+    inbound_email,
+    inbound_quarantine,
+    inbound_queue,
+    quarantine_preview,
+    server,
+)
 from tests.test_950_inbound_address import (  # noqa: F401 - fixtures used by name
     CARER,
     OTHER_CARER,
@@ -560,3 +569,132 @@ def test_which_rows_carry_the_text_is_pinned():
         'payload = to_payload(msg, inbound_email._find_token(msg) or "", keep_body=True)',
         "payload = to_payload(msg, token, keep_body=not trusted)",
     ]
+
+
+# ── per-patient fairness of the render slot (#976 follow-up) ─────────────
+
+
+def _blocking_render(gate, started, image=b"\xff\xd8\xff synthetic jpeg 2027"):
+    def fake(*_args, **_kwargs):
+        started.set()
+        if not gate.wait(10):
+            raise RuntimeError("synthetic gate never opened")
+        return image
+
+    return fake
+
+
+async def _wait_for(event, timeout=5.0):
+    await asyncio.wait_for(asyncio.to_thread(event.wait, timeout), timeout + 1)
+
+
+async def _until_free(pid, rounds=300):
+    for _ in range(rounds):
+        if not quarantine_preview.patient_busy(pid):
+            return
+        await asyncio.sleep(0.01)
+
+
+async def test_second_render_of_the_same_patient_is_busy_at_once(idb, drive, mails, monkeypatch):
+    qp = quarantine_preview
+    item = await _quarantine(idb)
+    gate, started = threading.Event(), threading.Event()
+    monkeypatch.setattr(qp, "_render_blocking", _blocking_render(gate, started))
+    first = asyncio.create_task(qp.render(idb, PID, item["id"], 0, "thumb"))
+    await _wait_for(started)
+    assert qp.patient_busy(PID)
+    with pytest.raises(qp.PreviewRefusedError) as busy:
+        await asyncio.wait_for(qp.render(idb, PID, item["id"], 0, "large"), 1.0)
+    assert busy.value.code == qp.BUSY
+    gate.set()
+    assert (await first)[:3] == b"\xff\xd8\xff"
+    await _until_free(PID)
+    assert not qp.patient_busy(PID) and not qp._loop_state()[0].locked()
+
+
+async def test_route_answers_429_with_retry_after_while_the_patient_is_busy(idb, drive, mails):
+    qp = quarantine_preview
+    item = await _quarantine(idb)
+    qp._loop_state()[1].add(PID)
+    try:
+        resp = await _preview(idb, item_id=item["id"])
+    finally:
+        qp._loop_state()[1].discard(PID)
+    assert resp.status_code == 429
+    assert json.loads(resp.body) == {"error": "preview_busy"}
+    assert resp.headers["retry-after"] == str(qp.BUSY_RETRY_AFTER_S)
+    assert resp.headers["cache-control"] == "no-store"
+    assert (await _preview(idb, item_id=item["id"])).status_code == 200
+
+
+async def test_patient_slot_is_per_patient_and_the_global_cap_stays():
+    qp = quarantine_preview
+    global_sem, in_flight = qp._loop_state()
+    mine = qp._PatientSlot(in_flight, "patient-a-2027")
+    other = qp._PatientSlot(in_flight, "patient-b-2027")
+    assert await mine.acquire() and await other.acquire()  # no BUSY across patients
+    with pytest.raises(qp.PreviewRefusedError) as busy:
+        await qp._PatientSlot(in_flight, "patient-a-2027").acquire()
+    assert busy.value.code == qp.BUSY
+    mine.release()
+    other.release()
+    assert not in_flight
+    assert qp.RENDER_CONCURRENCY == 1
+    await global_sem.acquire()
+    try:
+        assert global_sem.locked()  # another patient queues here (global cap of one)
+    finally:
+        global_sem.release()
+
+
+async def test_slot_is_held_until_the_thread_ends_after_a_timeout(idb, drive, mails, monkeypatch):
+    qp = quarantine_preview
+    item = await _quarantine(idb)
+    gate, started = threading.Event(), threading.Event()
+    monkeypatch.setattr(qp, "_render_blocking", _blocking_render(gate, started))
+    monkeypatch.setattr(qp, "RENDER_TIMEOUT_S", 0.3)
+    with pytest.raises(qp.PreviewRefusedError) as timed_out:
+        await qp.render(idb, PID, item["id"], 0, "thumb")
+    assert timed_out.value.code == qp.TIMEOUT
+    await _wait_for(started)
+    # the worker thread still runs: the patient stays busy, the global slot held
+    assert qp.patient_busy(PID) and qp._loop_state()[0].locked()
+    gate.set()
+    await _until_free(PID)
+    assert not qp.patient_busy(PID) and not qp._loop_state()[0].locked()
+
+
+async def test_slot_is_released_after_an_exception(idb, drive, mails, monkeypatch):
+    qp = quarantine_preview
+    item = await _quarantine(idb)
+
+    def boom(*_a, **_k):
+        raise qp.PreviewRefusedError(qp.FAILED)
+
+    monkeypatch.setattr(qp, "_render_blocking", boom)
+    with pytest.raises(qp.PreviewRefusedError) as failed:
+        await qp.render(idb, PID, item["id"], 0, "thumb")
+    assert failed.value.code == qp.FAILED
+    await _until_free(PID)
+    assert not qp.patient_busy(PID) and not qp._loop_state()[0].locked()
+
+
+async def test_giving_up_before_the_thread_starts_frees_the_patient(idb, drive, mails, monkeypatch):
+    qp = quarantine_preview
+    item = await _quarantine(idb)
+    monkeypatch.setattr(qp, "RENDER_TIMEOUT_S", 0.1)
+    global_sem, _ = qp._loop_state()
+    await global_sem.acquire()  # another patient's render holds the global slot
+    try:
+        with pytest.raises(qp.PreviewRefusedError) as timed_out:
+            await qp.render(idb, PID, item["id"], 0, "thumb")
+        assert timed_out.value.code == qp.TIMEOUT
+        assert not qp.patient_busy(PID)  # released at once, no thread ever ran
+    finally:
+        global_sem.release()
+
+
+def test_dashboard_retries_a_busy_preview_instead_of_caching_no_preview():
+    js = (SRC / "dashboard.js").read_text()
+    assert "resp.status === 429" in js and "Retry-After" in js
+    assert "Q_BUSY_RETRIES" in js
