@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import errno
 import socket
+import ssl
 
 NETWORK_UNAVAILABLE = "network_unavailable"
 
@@ -78,6 +79,12 @@ def _matches(exc: BaseException, names: frozenset[tuple[str, str]]) -> bool:
 
 def _direct(exc: BaseException) -> bool:
     if isinstance(exc, socket.gaierror | ConnectionError | TimeoutError):
+        return True
+    # A TLS stream cut by a dropped link (seen in Drive reads during the
+    # 2026-11-23 outage). Never a certificate failure: that is not transient.
+    if isinstance(exc, ssl.SSLEOFError | ssl.SSLZeroReturnError | ssl.SSLSyscallError) and not (
+        isinstance(exc, ssl.SSLCertVerificationError)
+    ):
         return True
     if type(exc) is OSError and exc.errno in _NET_ERRNOS:
         return True

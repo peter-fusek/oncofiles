@@ -407,3 +407,17 @@ def test_readiness_exposes_counts_and_health_does_not():
     assert "network_unavailable_stats()" in src and "nightly_retry_stats()" in src
     health = inspect.getsource(srv.health)
     assert "network_unavailable" not in health and "nightly_retry" not in health
+
+
+def test_tls_stream_cut_is_network_but_certificate_failure_is_not():
+    """Infra nit: a TLS stream cut by a dropped link is transient; a
+    certificate verification failure never is."""
+    import ssl
+
+    assert is_network_unavailable(ssl.SSLEOFError(8, "EOF occurred in violation of protocol"))
+    assert is_network_unavailable(ssl.SSLZeroReturnError(6, "TLS/SSL connection has been closed"))
+    wrapped = RuntimeError("drive read failed")
+    wrapped.__cause__ = ssl.SSLEOFError(8, "eof")
+    assert is_network_unavailable(wrapped)
+    assert not is_network_unavailable(ssl.SSLCertVerificationError(1, "certificate verify failed"))
+    assert not is_network_unavailable(ssl.SSLError(1, "wrong version number"))
