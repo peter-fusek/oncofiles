@@ -241,6 +241,10 @@ def _prune_bindings() -> None:
         _binding_for_code.popitem(last=False)
 
 
+class OAuthStoreUnavailableError(RuntimeError):
+    """The MCP OAuth token store could not be read (answered as a 5xx)."""
+
+
 UNBOUND_REFUSAL_MESSAGE = (
     "Sign in at https://oncofiles.com/dashboard with your Google account first, then connect again."
 )
@@ -332,9 +336,11 @@ def client_name_refusal(client_name: object, redirect_uris) -> str:
        anything else is ``client_name_invalid``. This shuts out confusables
        (a Cyrillic "С" in "Сlaude"), invisible and bidi characters.
     2. A name containing a reserved first-party word (Claude, Anthropic,
-       ChatGPT, OpenAI, Oncofiles; letters compared case-insensitively with
-       everything but letters removed) is allowed only when every redirect
-       URI of the client is that vendor's exact callback.
+       ChatGPT, OpenAI, Oncofiles; case-insensitive, look-alike digits mapped
+       0→o 1→l 3→e 4→a 5→s, everything but letters removed) is allowed only
+       when every redirect URI of the client is that vendor's exact callback,
+       or when every redirect URI is loopback (the code goes to the user's
+       own machine, e.g. Claude Code). "Oncofiles" is never allowed.
     """
     from oncofiles import config
 
@@ -343,14 +349,24 @@ def client_name_refusal(client_name: object, redirect_uris) -> str:
     name = str(client_name)
     if not _CLIENT_NAME_RE.fullmatch(name):
         return "client_name_invalid"
-    letters = "".join(c for c in name.lower() if c.isalpha())
-    uris = [_exact_redirect_key(u) for u in (redirect_uris or [])]
+    letters = "".join(c for c in name.lower().translate(_DIGIT_LOOKALIKES) if c.isalpha())
+    raw = list(redirect_uris or [])
+    uris = [_exact_redirect_key(u) for u in raw]
+    all_loopback = bool(raw) and all(is_loopback_redirect(u) for u in raw)
     for word, vendor_uris in config.MCP_OAUTH_RESERVED_CLIENT_NAMES.items():
-        if word in letters:
-            vendor = {_exact_redirect_key(u) for u in vendor_uris}
-            if not uris or not all(u is not None and u in vendor for u in uris):
-                return "client_name_reserved"
+        if word not in letters:
+            continue
+        if not vendor_uris:  # e.g. "oncofiles": no client may use it
+            return "client_name_reserved"
+        if all_loopback:
+            continue
+        vendor = {_exact_redirect_key(u) for u in vendor_uris}
+        if not uris or not all(u is not None and u in vendor for u in uris):
+            return "client_name_reserved"
     return ""
+
+
+_DIGIT_LOOKALIKES = str.maketrans({"0": "o", "1": "l", "3": "e", "4": "a", "5": "s"})
 
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -936,7 +952,9 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
 
         # #478: preserve the user_email across refresh — read it off the old
         # refresh token row BEFORE we delete it.
-        old_email = await self._read_user_email_by_digest(old_refresh)
+        # strict: a DB error raises (5xx, the client retries) instead of
+        # reading as "unbound" and refusing a bound user's refresh.
+        old_email = await self._read_user_email_by_digest(old_refresh, strict=True)
         # #898: an unbound refresh token (minted before the fix) is refused,
         # not rotated, so legacy unbound connections end now instead of living
         # on for the refresh TTL. Bound tokens refresh exactly as before.
@@ -1047,8 +1065,16 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
             return None
         return await self._read_user_email_by_digest(token_digest(token_str))
 
-    async def _read_user_email_by_digest(self, key: str | None) -> str | None:
-        """Look up the bound Google account email on a persisted MCP token row."""
+    async def _read_user_email_by_digest(
+        self, key: str | None, *, strict: bool = False
+    ) -> str | None:
+        """Look up the bound Google account email on a persisted MCP token row.
+
+        None for a missing row or a row with no email. A DB error returns None
+        too, unless ``strict``: then it raises ``OAuthStoreUnavailableError``
+        (a 5xx), so a transient DB error can never look like an unbound token
+        and force a bound user to reconnect (#898).
+        """
         if not self._db or not key:
             return None
         try:
@@ -1060,7 +1086,13 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
                 if not row:
                     return None
                 return row["user_email"] if isinstance(row, dict) else row[0]
-        except Exception:
+        except Exception as exc:
+            if strict:
+                logger.warning(
+                    "MCP OAuth token store unavailable: code=user_email_lookup_failed (%s)",
+                    type(exc).__name__,
+                )
+                raise OAuthStoreUnavailableError("token store unavailable") from exc
             logger.debug("user_email lookup failed for token", exc_info=True)
             return None
 

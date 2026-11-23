@@ -220,13 +220,20 @@ LOCAL_CB = "http://localhost:3000/callback"
         ("OpenAI connector", GPT_CB, True),
         ("My tool", LOCAL_CB, True),
         (None, LOCAL_CB, True),
-        ("Claude Desktop helper", LOCAL_CB, False),
-        ("C-l-a-u-d-e", LOCAL_CB, False),
+        # Loopback only: the code goes to the user's own machine (Claude Code).
+        ("Claude Code (cli)", LOCAL_CB, True),
+        ("Claude Desktop helper", LOCAL_CB, True),
+        ("Official OpenAI", LOCAL_CB, True),
+        ("C-l-a-u-d-e", GPT_CB, False),
         ("ChatGPT", CLAUDE_CB, False),
         ("Claude", GPT_CB, False),
-        ("Official OpenAI", LOCAL_CB, False),
         ("Oncofiles", CLAUDE_CB, False),
-        ("oncofiles official", LOCAL_CB, False),
+        ("oncofiles official", LOCAL_CB, False),  # never, not even loopback
+        # Look-alike digits are mapped to letters (zero to o, one to l, ...).
+        ("C1aude", GPT_CB, False),
+        ("Ch4tGPT", CLAUDE_CB, False),
+        ("0nc0files", LOCAL_CB, False),
+        ("Anthr0pic", GPT_CB, False),
         # Only plain ASCII (letters, digits, space, basic punctuation), ≤ 64.
         ("Сlaude", LOCAL_CB, False),  # Cyrillic Es
         ("Сlaude", CLAUDE_CB, False),
@@ -256,16 +263,24 @@ async def test_reserved_client_names(odb, name, redirect, ok):
         assert await p.get_client("n-898") is None
 
 
+def test_mixed_loopback_and_web_redirects_do_not_unlock_a_vendor_name():
+    from oncofiles.persistent_oauth import client_name_refusal
+
+    assert client_name_refusal("Claude", [LOCAL_CB, GPT_CB]) == "client_name_reserved"
+    assert client_name_refusal("Claude Code", [LOCAL_CB, "http://127.0.0.1:9/cb"]) == ""
+
+
 async def test_reserved_name_on_an_old_client_is_refused_at_authorize(provider):
-    provider.clients["fake-claude"] = _client_info("fake-claude", LOCAL_CB, name="Claude")
+    # Registered before the rule: a ChatGPT callback calling itself Claude.
+    provider.clients["fake-claude"] = _client_info("fake-claude", GPT_CB, name="Claude")
     client = await provider.get_client("fake-claude")
     with (
-        consented_binding(CAREGIVER, "fake-claude", "chal-n", LOCAL_CB),
+        consented_binding(CAREGIVER, "fake-claude", "chal-n", GPT_CB),
         pytest.raises(AuthorizeError),
     ):
-        await provider.authorize(client, _params("chal-n", LOCAL_CB))
+        await provider.authorize(client, _params("chal-n", GPT_CB))
     app = _FastMCPLike(provider)
-    start, body = await _call(app, qs=_qs("chal-n", "fake-claude", LOCAL_CB), cookie=_cookie())
+    start, body = await _call(app, qs=_qs("chal-n", "fake-claude", GPT_CB), cookie=_cookie())
     assert start["status"] == 400 and b"client_name_reserved" in body
 
 
@@ -1047,10 +1062,90 @@ def test_global_ceiling_is_far_above_the_per_session_cap():
 def _mk_nonce(challenge, tid="tid898"):
     from oncofiles.server import _make_consent_nonce
 
-    return _make_consent_nonce(CAREGIVER, tid, CLIENT_ID, challenge, REDIRECT)
+    return _make_consent_nonce(CAREGIVER, tid, CLIENT_ID, challenge, REDIRECT, _qs(challenge))
 
 
-def _chk(nonce, challenge, tid="tid898"):
+def _chk(nonce, challenge, tid="tid898", q=None):
     from oncofiles.server import _check_consent_nonce
 
-    return _check_consent_nonce(nonce, CAREGIVER, tid, CLIENT_ID, challenge, REDIRECT)
+    return _check_consent_nonce(
+        nonce,
+        CAREGIVER,
+        tid,
+        CLIENT_ID,
+        challenge,
+        REDIRECT,
+        q if q is not None else _qs(challenge),
+    )
+
+
+def test_nonce_signs_the_whole_query():
+    """state / scope / resource are covered by the nonce too (sha256 of q)."""
+    nonce = _mk_nonce("chal-q")
+    tampered = _qs("chal-q").replace("state=st-1", "state=attacker")
+    assert tampered != _qs("chal-q")
+    assert _chk(nonce, "chal-q", q=tampered) == "nonce_invalid"
+    assert _chk(nonce, "chal-q") == ""
+
+
+async def test_consent_post_with_changed_state_is_refused(provider):
+    app = _FastMCPLike(provider)
+    cookie = _cookie()
+    _, page = await _call(app, qs=_qs("chal-st"), cookie=cookie)
+    forged = _qs("chal-st").replace("state=st-1", "state=attacker")
+    start, body = await _consent(app, page, cookie, q=forged)
+    assert start["status"] == 403 and b"nonce_invalid" in body
+    assert app.calls == [] and provider.auth_codes == {}
+
+
+async def test_consent_page_warns_about_forwarded_links_and_cancel_binds_nothing(provider):
+    app = _FastMCPLike(provider)
+    _, page = await _call(app, qs=_qs(), cookie=_cookie())
+    html = page.decode("utf-8")
+    assert "Ak vám tento odkaz niekto poslal, kliknite Zrušiť." in html
+    assert "If someone sent you this link, click Cancel." in html
+    assert '<a href="/dashboard">Cancel / Zrušiť</a>' in html
+    assert _binding_for_code == {} and provider.auth_codes == {}
+
+
+async def test_refresh_db_error_is_a_server_error_not_invalid_grant(odb, provider, monkeypatch):
+    """A transient DB error must not look like an unbound token (bound users
+    would be forced to reconnect): it raises, the pair is not rotated."""
+    from oncofiles.persistent_oauth import OAuthStoreUnavailableError
+
+    client, auth_code = await _code(provider, "chal-dberr", bind_as=CAREGIVER)
+    tok = await provider.exchange_authorization_code(client, auth_code)
+    refresh_obj = await provider.load_refresh_token(client, tok.refresh_token)
+    before = await _token_rows(odb)
+
+    real_execute = odb.db.execute
+
+    def failing_execute(sql, *args, **kwargs):
+        if "SELECT user_email FROM mcp_oauth_tokens" in sql:
+            raise RuntimeError("database is locked")
+        return real_execute(sql, *args, **kwargs)
+
+    monkeypatch.setattr(odb.db, "execute", failing_execute)
+    with pytest.raises(OAuthStoreUnavailableError):
+        await provider.exchange_refresh_token(client, refresh_obj, [])
+    monkeypatch.setattr(odb.db, "execute", real_execute)
+
+    assert await _token_rows(odb) == before
+    assert token_digest(tok.refresh_token) in provider.refresh_tokens
+    # Once the DB is back, the same bound refresh token works.
+    new = await provider.exchange_refresh_token(client, refresh_obj, [])
+    assert {r["user_email"] for r in await _token_rows(odb)} == {CAREGIVER}
+    assert new.access_token != tok.access_token
+
+
+async def test_refresh_with_a_missing_row_is_invalid_grant(odb, provider):
+    client, auth_code = await _code(provider, "chal-norow", bind_as=CAREGIVER)
+    tok = await provider.exchange_authorization_code(client, auth_code)
+    refresh_obj = await provider.load_refresh_token(client, tok.refresh_token)
+    await odb.db.execute(
+        "DELETE FROM mcp_oauth_tokens WHERE token = ?", (token_digest(tok.refresh_token),)
+    )
+    await odb.db.commit()
+    with pytest.raises(TokenError) as exc_info:
+        await provider.exchange_refresh_token(client, refresh_obj, [])
+    assert exc_info.value.error == "invalid_grant"

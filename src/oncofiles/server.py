@@ -9075,20 +9075,33 @@ def _consent_sig(parts: list[str]) -> str:
     return hmac.new(key, "\x1f".join(parts).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def _q_digest(q: str) -> str:
+    """SHA-256 of the full forwarded query, so state/scope/resource are signed too."""
+    return hashlib.sha256(q.encode("utf-8")).hexdigest()
+
+
 def _make_consent_nonce(
-    account: str, tid: str, client_id: str, challenge: str, redirect_uri: str
+    account: str, tid: str, client_id: str, challenge: str, redirect_uri: str, q: str
 ) -> str:
-    """A CSRF nonce bound to the session and the exact flow tuple (#898)."""
+    """A CSRF nonce bound to the session, the flow tuple and the whole query (#898)."""
     import secrets as _secrets
 
     exp = int(time.time()) + CONSENT_NONCE_TTL_S
     nid = _secrets.token_urlsafe(16)
-    sig = _consent_sig([account, tid, client_id, challenge, redirect_uri, str(exp), nid])
+    sig = _consent_sig(
+        [account, tid, client_id, challenge, redirect_uri, _q_digest(q), str(exp), nid]
+    )
     return f"{exp}.{nid}.{sig}"
 
 
 def _check_consent_nonce(
-    nonce: str, account: str, tid: str, client_id: str, challenge: str, redirect_uri: str
+    nonce: str,
+    account: str,
+    tid: str,
+    client_id: str,
+    challenge: str,
+    redirect_uri: str,
+    q: str,
 ) -> str:
     """'' when valid (and consumes it), else an error code."""
     parts = (nonce or "").split(".")
@@ -9099,7 +9112,9 @@ def _check_consent_nonce(
         exp = int(exp_s)
     except ValueError:
         return "nonce_malformed"
-    expected = _consent_sig([account, tid, client_id, challenge, redirect_uri, exp_s, nid])
+    expected = _consent_sig(
+        [account, tid, client_id, challenge, redirect_uri, _q_digest(q), exp_s, nid]
+    )
     if not hmac.compare_digest(sig, expected):
         return "nonce_invalid"
     now = int(time.time())
@@ -9227,6 +9242,8 @@ p.sk{{color:#475569}}
 Allow it only if you started this connection yourself.</p>
 <p class="sk" lang="sk">Aplikácia žiada prístup k vašim záznamom v Oncofiles pod týmto účtom.
 Povoľte to, len ak ste pripojenie spustili vy.</p>
+<p><strong>Ak vám tento odkaz niekto poslal, kliknite Zrušiť. /
+If someone sent you this link, click Cancel.</strong></p>
 <dl>
 <dt>Application name, as supplied by the app / Názov, ktorý uvádza aplikácia</dt>
 <dd>&ldquo;{name}&rdquo;</dd>
@@ -9338,7 +9355,7 @@ class MCPAuthorizeEmailCaptureMiddleware:
             await _send_authorize_refusal(send, err)
             return
         nonce = _make_consent_nonce(
-            account, tid, client.client_id, params["code_challenge"], redirect_uri
+            account, tid, client.client_id, params["code_challenge"], redirect_uri, qs
         )
         body = _consent_page(client, redirect_uri, account, qs, nonce)
         await _send_simple(send, 200, body, b"text/html; charset=utf-8")
@@ -9380,7 +9397,7 @@ class MCPAuthorizeEmailCaptureMiddleware:
             await _send_authorize_refusal(send, err)
             return
         err = _check_consent_nonce(
-            nonce, account, tid, client.client_id, params["code_challenge"], redirect_uri
+            nonce, account, tid, client.client_id, params["code_challenge"], redirect_uri, qs
         )
         if err:
             logger.info("MCP consent refused: code=%s", err)
