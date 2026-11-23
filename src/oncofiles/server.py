@@ -8982,8 +8982,44 @@ def _safe_authorize_next(value: object) -> str | None:
     return value
 
 
-def _session_email_from_scope(scope) -> str | None:
-    """The verified dashboard-session account of an ASGI request, or None."""
+# #898 security review: parameters that must appear at most once on
+# /authorize, so our parse and FastMCP's parse can never disagree.
+_AUTHORIZE_SINGLE_PARAMS = (
+    "client_id",
+    "code_challenge",
+    "code_challenge_method",
+    "redirect_uri",
+    "response_type",
+    "state",
+    "scope",
+    "resource",
+)
+_AUTHORIZE_REQUIRED_PARAMS = ("client_id", "code_challenge", "redirect_uri", "response_type")
+CONSENT_PATH = "/authorize/consent"
+CONSENT_NONCE_TTL_S = 300
+CONSENT_BODY_MAX = 8192
+_consumed_consent_nonces: dict[str, int] = {}  # nonce id → expiry (unix s)
+
+
+def _authorize_params(qs: str) -> tuple[dict[str, str] | None, str]:
+    """Parse an /authorize query: ``(params, "")`` or ``(None, error_code)``."""
+    from urllib.parse import parse_qsl
+
+    if _safe_authorize_next("/authorize" + (f"?{qs}" if qs else "")) is None:
+        return None, "unsafe_query"
+    pairs = parse_qsl(qs, keep_blank_values=True)
+    seen: dict[str, str] = {}
+    for key, value in pairs:
+        if key in _AUTHORIZE_SINGLE_PARAMS and key in seen:
+            return None, "duplicate_param"
+        seen.setdefault(key, value)
+    if any(not seen.get(k) for k in _AUTHORIZE_REQUIRED_PARAMS):
+        return None, "missing_param"
+    return seen, ""
+
+
+def _session_from_scope(scope) -> tuple[str, str] | None:
+    """``(account, tid)`` of the request's valid dashboard session, or None."""
     from urllib.parse import unquote as _urlunquote
 
     for name, value in scope.get("headers", []):
@@ -8994,74 +9030,218 @@ def _session_email_from_scope(scope) -> str | None:
             if "=" not in pair:
                 continue
             cname, _, cvalue = pair.strip().partition("=")
-            if cname == "oncofiles_session":
-                # URL-decode: /dashboard/verify URL-encodes the token so
-                # SimpleCookie never wraps it in double quotes ('@' is outside
-                # SimpleCookie's legal-value char set).
-                found = _verify_session_token(_urlunquote(cvalue.strip()), log=False)
-                if found:
-                    return found
+            if cname != "oncofiles_session":
+                continue
+            # URL-decode: /dashboard/verify URL-encodes the token so
+            # SimpleCookie never wraps it in double quotes ('@' is outside
+            # SimpleCookie's legal-value char set).
+            token = _urlunquote(cvalue.strip())
+            found = _verify_session_token(token, log=False)
+            if found:
+                parsed = _parse_session_token(token)
+                return found, (parsed[2] if parsed else "")
     return None
 
 
-async def _send_authorize_to_sign_in(qs: str, send) -> None:
-    """#898: answer GET /authorize without a session: 302 to sign-in, or 400."""
-    target = _safe_authorize_next("/authorize" + (f"?{qs}" if qs else ""))
-    if target is None:
-        logger.info("MCP /authorize refused: no session and the URL is not a safe next")
-        body = b"Sign in at https://oncofiles.com/dashboard first, then connect again."
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 400,
-                "headers": [
-                    (b"content-type", b"text/plain; charset=utf-8"),
-                    (b"content-length", str(len(body)).encode("ascii")),
-                    (b"cache-control", b"no-store"),
-                ],
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
-        return
-    logger.info("MCP /authorize: no session, redirecting to sign-in (#898)")
-    location = "/dashboard?next=" + quote(target, safe="")
+def _consent_sig(parts: list[str]) -> str:
+    from oncofiles.secrets_keys import mcp_consent_key
+
+    key = mcp_consent_key(MCP_BEARER_TOKEN)
+    return hmac.new(key, "\x1f".join(parts).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _make_consent_nonce(
+    account: str, tid: str, client_id: str, challenge: str, redirect_uri: str
+) -> str:
+    """A CSRF nonce bound to the session and the exact flow tuple (#898)."""
+    import secrets as _secrets
+
+    exp = int(time.time()) + CONSENT_NONCE_TTL_S
+    nid = _secrets.token_urlsafe(16)
+    sig = _consent_sig([account, tid, client_id, challenge, redirect_uri, str(exp), nid])
+    return f"{exp}.{nid}.{sig}"
+
+
+def _check_consent_nonce(
+    nonce: str, account: str, tid: str, client_id: str, challenge: str, redirect_uri: str
+) -> str:
+    """'' when valid (and consumes it), else an error code."""
+    parts = (nonce or "").split(".")
+    if len(parts) != 3:
+        return "nonce_malformed"
+    exp_s, nid, sig = parts
+    try:
+        exp = int(exp_s)
+    except ValueError:
+        return "nonce_malformed"
+    expected = _consent_sig([account, tid, client_id, challenge, redirect_uri, exp_s, nid])
+    if not hmac.compare_digest(sig, expected):
+        return "nonce_invalid"
+    now = int(time.time())
+    if exp < now:
+        return "nonce_expired"
+    for stale in [k for k, e in _consumed_consent_nonces.items() if e < now]:
+        _consumed_consent_nonces.pop(stale, None)
+    if nid in _consumed_consent_nonces:
+        return "nonce_replayed"
+    _consumed_consent_nonces[nid] = exp
+    return ""
+
+
+async def _consent_client(params: dict[str, str]):
+    """``(client, normalised redirect_uri, "")`` or ``(None, "", error_code)``."""
+    from oncofiles.persistent_oauth import normalize_redirect_uri, redirect_host_allowed
+
+    provider = auth
+    if provider is None or not hasattr(provider, "get_client"):
+        return None, "", "no_oauth_provider"
+    client = await provider.get_client(params["client_id"])
+    if client is None:
+        return None, "", "unknown_client"
+    try:
+        wanted = normalize_redirect_uri(params["redirect_uri"])
+        registered = {normalize_redirect_uri(u) for u in (client.redirect_uris or [])}
+    except Exception:
+        return None, "", "invalid_redirect_uri"
+    if wanted not in registered:
+        return None, "", "redirect_uri_not_registered"
+    if not redirect_host_allowed(wanted):
+        return None, "", "redirect_host_not_allowed"
+    return client, wanted, ""
+
+
+_CONSENT_HEADERS = [
+    (b"cache-control", b"no-store"),
+    (b"x-frame-options", b"DENY"),
+    (b"referrer-policy", b"no-referrer"),
+    (b"x-content-type-options", b"nosniff"),
+    (
+        b"content-security-policy",
+        b"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
+    ),
+]
+
+
+async def _send_simple(send, status: int, body: bytes, content_type: bytes, extra=()) -> None:
     await send(
         {
             "type": "http.response.start",
-            "status": 302,
+            "status": status,
             "headers": [
-                (b"location", location.encode("ascii")),
-                (b"content-length", b"0"),
-                (b"cache-control", b"no-store"),
-                (b"referrer-policy", b"no-referrer"),
+                (b"content-type", content_type),
+                (b"content-length", str(len(body)).encode("ascii")),
+                *_CONSENT_HEADERS,
+                *extra,
             ],
         }
     )
-    await send({"type": "http.response.body", "body": b""})
+    await send({"type": "http.response.body", "body": body})
+
+
+async def _send_authorize_refusal(send, code: str, status: int = 400) -> None:
+    body = (
+        f"This connection request was refused ({code}). Sign in at "
+        "https://oncofiles.com/dashboard, then connect again from Claude.ai or ChatGPT."
+    ).encode("ascii")
+    await _send_simple(send, status, body, b"text/plain; charset=utf-8")
+
+
+async def _send_authorize_to_sign_in(qs: str, send) -> None:
+    """#898: GET /authorize without a session: 302 to sign-in, or 400."""
+    target = _safe_authorize_next("/authorize" + (f"?{qs}" if qs else ""))
+    if target is None:
+        logger.info("MCP /authorize refused: code=unsafe_query (no session)")
+        await _send_authorize_refusal(send, "unsafe_query")
+        return
+    logger.info("MCP /authorize: no session, redirecting to sign-in (#898)")
+    location = "/dashboard?next=" + quote(target, safe="")
+    await _send_simple(send, 302, b"", b"text/plain", ((b"location", location.encode("ascii")),))
+
+
+def _consent_page(client, redirect_uri: str, account: str, qs: str, nonce: str) -> bytes:
+    from html import escape
+
+    from oncofiles.persistent_oauth import redirect_host_for_log
+
+    name = escape((client.client_name or client.client_id or "?")[:120])
+    host = escape(redirect_host_for_log(redirect_uri))
+    who = escape(account)
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Connect Oncofiles</title>
+<style>
+body{{font-family:system-ui,sans-serif;background:#f6f7fb;color:#14213d;margin:0;padding:16px}}
+main{{max-width:520px;margin:40px auto;background:#fff;border-radius:12px;padding:24px}}
+dt{{font-weight:600;margin-top:12px}} dd{{margin:2px 0 0;word-break:break-all}}
+button{{background:#ff7f6b;color:#14213d;border:0;border-radius:8px;padding:12px 20px;
+font-size:16px;font-weight:600;cursor:pointer}}
+a{{color:#14213d;margin-left:16px}}
+p.sk{{color:#475569}}
+</style></head><body><main>
+<h1>Connect Oncofiles?</h1>
+<p>An application asks to read and write your Oncofiles records as this account.
+Allow it only if you started this connection yourself.</p>
+<p class="sk" lang="sk">Aplikácia žiada prístup k vašim záznamom v Oncofiles pod týmto účtom.
+Povoľte to, len ak ste pripojenie spustili vy.</p>
+<dl>
+<dt>Application / Aplikácia</dt><dd>{name}</dd>
+<dt>Returns to / Vráti sa na</dt><dd>{host}</dd>
+<dt>Your account / Váš účet</dt><dd>{who}</dd>
+</dl>
+<form method="post" action="{CONSENT_PATH}">
+<input type="hidden" name="q" value="{escape(qs)}">
+<input type="hidden" name="nonce" value="{escape(nonce)}">
+<p><button type="submit">Allow / Povoliť</button><a href="/dashboard">Cancel / Zrušiť</a></p>
+</form>
+</main></body></html>
+""".encode()
+
+
+async def _read_small_body(receive, limit: int) -> bytes | None:
+    chunks: list[bytes] = []
+    size = 0
+    while True:
+        message = await receive()
+        if message["type"] != "http.request":
+            return None
+        chunk = message.get("body", b"")
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+        if not message.get("more_body", False):
+            return b"".join(chunks)
 
 
 class MCPAuthorizeEmailCaptureMiddleware:
-    """Read the oncofiles_session cookie on /authorize requests and stash the
-    Google account email against the request's `code_challenge`.
+    """Bind the signed-in Google account to an MCP OAuth flow only after
+    explicit consent (#478, #898).
 
-    This is the #478 proper-fix bridge: FastMCP's AuthorizationHandler doesn't
-    know which Google user is driving the OAuth flow, so it can't bind the
-    issued MCP token to a specific user. We intercept the request upstream,
-    read the dashboard session cookie (set by /dashboard/verify on Google
-    sign-in), and store (code_challenge → email) in an in-memory dict that
-    ``PersistentOAuthProvider.exchange_authorization_code`` reads at code
-    exchange time.
+    FastMCP's AuthorizationHandler doesn't know which Google user drives the
+    flow, so this middleware sits in front of it:
 
-    Scope: ONLY GET /authorize.
+    - **GET /authorize**: a parameter that must be single (client_id,
+      code_challenge, redirect_uri, response_type, ...) appearing twice → 400,
+      so our parse and FastMCP's never disagree. Without a valid dashboard
+      session: 302 to ``/dashboard?next=<this URL>`` (the sign-in page comes
+      back here). With a session: the client must be registered, the
+      redirect_uri registered for it and its host on the allowlist
+      (``config.MCP_OAUTH_REDIRECT_HOSTS``); then a server-rendered consent
+      page shows the client name, the redirect host and the account. GET
+      never binds and never reaches FastMCP.
+    - **POST /authorize/consent**: the page's form. Session again, the same
+      checks, and a single-use CSRF nonce (HMAC with the #502 purpose key
+      ``mcp_consent_key``, bound to the session tid, the account and the
+      exact (client_id, code_challenge, redirect_uri), 5-minute TTL). Only
+      then is the request forwarded internally as GET /authorize inside
+      ``persistent_oauth.consented_binding``; the provider's ``authorize``
+      records the account against the code from FastMCP's own parsed params.
+    - **POST /authorize** (FastMCP's form variant): 405, it would skip consent.
 
-    #898: a browser WITHOUT a valid session is redirected (302) to
-    ``/dashboard?next=<this /authorize URL>``; the sign-in page returns it to
-    that exact URL after Google sign-in, now carrying the cookie. Before #898
-    it was passed through and FastMCP minted a token with no email, which can
-    never see a patient and hid the real problem. The code exchange refuses an
-    unbound code as well (defense in depth, also covers POST /authorize).
     ``MCP_OAUTH_ALLOW_UNBOUND=true`` (single-user deployments without Google
-    sign-in) restores the old pass-through.
+    sign-in) lets a session-less GET and POST /authorize through, unbound.
     """
 
     def __init__(self, app):
@@ -9073,40 +9253,116 @@ class MCPAuthorizeEmailCaptureMiddleware:
             return
         path = scope.get("path")
         method = scope.get("method")
-        if path != "/authorize" or method != "GET":
-            await self.app(scope, receive, send)
-            return
-        from oncofiles.persistent_oauth import stash_email_for_challenge, unbound_tokens_allowed
+        if path == "/authorize" and method == "GET":
+            await self._authorize_get(scope, receive, send)
+        elif path == "/authorize" and method == "POST":
+            from oncofiles.persistent_oauth import unbound_tokens_allowed
 
+            if unbound_tokens_allowed():
+                await self.app(scope, receive, send)
+            else:
+                logger.info("MCP /authorize refused: code=post_not_allowed")
+                await _send_authorize_refusal(send, "post_not_allowed", status=405)
+        elif path == CONSENT_PATH and method == "POST":
+            await self._consent_post(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
+
+    async def _authorize_get(self, scope, receive, send) -> None:
+        from oncofiles.persistent_oauth import unbound_tokens_allowed
+
+        qs = scope.get("query_string", b"").decode("latin-1", errors="replace")
+        params, err = _authorize_params(qs)
+        if err:
+            logger.info("MCP /authorize refused: code=%s", err)
+            await _send_authorize_refusal(send, err)
+            return
+        session = _session_from_scope(scope)
+        if session is None:
+            if unbound_tokens_allowed():
+                await self.app(scope, receive, send)
+                return
+            await _send_authorize_to_sign_in(qs, send)
+            return
+        account, tid = session
+        client, redirect_uri, err = await _consent_client(params)
+        if err:
+            logger.info("MCP /authorize refused: code=%s", err)
+            await _send_authorize_refusal(send, err)
+            return
+        nonce = _make_consent_nonce(
+            account, tid, client.client_id, params["code_challenge"], redirect_uri
+        )
+        body = _consent_page(client, redirect_uri, account, qs, nonce)
+        await _send_simple(send, 200, body, b"text/html; charset=utf-8")
+
+    async def _consent_post(self, scope, receive, send) -> None:
+        from urllib.parse import parse_qsl
+
+        from oncofiles.persistent_oauth import consented_binding, redirect_host_for_log
+
+        body = await _read_small_body(receive, CONSENT_BODY_MAX)
+        if body is None:
+            await _send_authorize_refusal(send, "body_too_large", status=413)
+            return
         try:
-            from urllib.parse import parse_qs
-
-            qs = scope.get("query_string", b"").decode("latin-1", errors="replace")
-            code_challenges = parse_qs(qs).get("code_challenge", [])
-            email = _session_email_from_scope(scope)
-        except Exception:
-            # The code exchange still refuses a code without a bound email, so
-            # passing through here can never mint an unbound token (#898).
-            logger.warning("email-capture middleware failed", exc_info=True)
-            await self.app(scope, receive, send)
+            form = parse_qsl(body.decode("ascii"), keep_blank_values=True)
+        except UnicodeDecodeError:
+            form = []
+        keys = [k for k, _ in form]
+        if keys.count("q") != 1 or keys.count("nonce") != 1:
+            logger.info("MCP consent refused: code=form_invalid")
+            await _send_authorize_refusal(send, "form_invalid")
             return
-
-        if email:
-            if code_challenges:
-                stash_email_for_challenge(code_challenges[0], email)
-                logger.info(
-                    "MCP /authorize: bound the signed-in account to the flow caller=%s",
-                    _acl_caller_log_id(email),
-                )
-            await self.app(scope, receive, send)
+        values = dict(form)
+        qs, nonce = values["q"], values["nonce"]
+        params, err = _authorize_params(qs)
+        if err:
+            logger.info("MCP consent refused: code=%s", err)
+            await _send_authorize_refusal(send, err)
             return
-
-        if unbound_tokens_allowed():
-            logger.debug("MCP /authorize: no session, unbound tokens allowed by env")
-            await self.app(scope, receive, send)
+        session = _session_from_scope(scope)
+        if session is None:
+            logger.info("MCP consent refused: code=no_session")
+            await _send_authorize_refusal(send, "no_session", status=403)
             return
+        account, tid = session
+        client, redirect_uri, err = await _consent_client(params)
+        if err:
+            logger.info("MCP consent refused: code=%s", err)
+            await _send_authorize_refusal(send, err)
+            return
+        err = _check_consent_nonce(
+            nonce, account, tid, client.client_id, params["code_challenge"], redirect_uri
+        )
+        if err:
+            logger.info("MCP consent refused: code=%s", err)
+            await _send_authorize_refusal(send, err, status=403)
+            return
+        logger.info(
+            "MCP consent granted caller=%s host=%s",
+            _acl_caller_log_id(account),
+            redirect_host_for_log(redirect_uri),
+        )
+        headers = [
+            (k, v)
+            for k, v in scope.get("headers", [])
+            if k.decode("latin-1").lower() not in ("content-type", "content-length")
+        ]
+        forward = dict(
+            scope,
+            method="GET",
+            path="/authorize",
+            raw_path=b"/authorize",
+            query_string=qs.encode("ascii"),
+            headers=headers,
+        )
 
-        await _send_authorize_to_sign_in(qs, send)
+        async def empty_receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        with consented_binding(account, client.client_id, params["code_challenge"], redirect_uri):
+            await self.app(forward, empty_receive, send)
 
 
 class SecurityHeadersMiddleware:

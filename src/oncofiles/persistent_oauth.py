@@ -12,6 +12,7 @@ it is digested before any lookup.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import hashlib
 import hmac
@@ -19,6 +20,7 @@ import json
 import logging
 import secrets
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from fastmcp.server.auth.auth import ClientRegistrationOptions, RevocationOptions
@@ -26,7 +28,15 @@ from fastmcp.server.auth.providers.in_memory import (
     DEFAULT_ACCESS_TOKEN_EXPIRY_SECONDS,
     InMemoryOAuthProvider,
 )
-from mcp.server.auth.provider import AccessToken, AuthorizationCode, RefreshToken, TokenError
+from mcp.server.auth.provider import (
+    AccessToken,
+    AuthorizationCode,
+    AuthorizationParams,
+    AuthorizeError,
+    RefreshToken,
+    RegistrationError,
+    TokenError,
+)
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyHttpUrl
 
@@ -142,31 +152,81 @@ def caller_auth_method(transport: str = "") -> str:
     return "stdio" if transport == "stdio" else "none"
 
 
-# #478 email-capture bridge: populated by MCPAuthorizeEmailCaptureMiddleware
-# when a signed-in user's browser hits GET /authorize. Keyed by code_challenge
-# (stable across the OAuth handshake — AuthorizationCode carries it unchanged).
-# TTL-cleaned on every read; auth codes are short-lived (5 min) so worst-case
-# stash size is tiny.
-_email_for_challenge: dict[str, tuple[str, float]] = {}
-_EMAIL_STASH_TTL_S = 600.0  # 10 min — longer than code TTL to avoid races
+# #478 / #898: binding a signed-in account to an MCP OAuth flow.
+#
+# The account is bound only after the consent page (server.py,
+# POST /authorize/consent) has checked the session, a single-use CSRF nonce
+# and the client's redirect host. It then sets ``_consented_binding`` for the
+# duration of the internal forward to FastMCP's authorize handler, and
+# ``PersistentOAuthProvider.authorize`` — which sees the SAME parsed
+# ``AuthorizationParams`` FastMCP uses — records the account against the code
+# it just minted, only when (client_id, code_challenge, redirect_uri) match
+# the consented tuple. No parser differential: the middleware's own parse
+# never keys anything. The exchange pops by code and re-checks the tuple.
+_EMAIL_STASH_TTL_S = 600.0  # 10 min — longer than the code TTL (5 min)
 
 
-def stash_email_for_challenge(code_challenge: str, email: str) -> None:
-    """Bind a Google account email to an in-flight OAuth code_challenge."""
-    _prune_email_stash()
-    _email_for_challenge[code_challenge] = (email, time.monotonic())
+@dataclass(frozen=True)
+class ConsentedBinding:
+    email: str
+    client_id: str
+    code_challenge: str
+    redirect_uri: str  # normalised with normalize_redirect_uri
 
 
-def pop_email_for_challenge(code_challenge: str) -> str | None:
-    """Consume the stashed email for a code_challenge, returning None if expired/absent."""
-    _prune_email_stash()
-    entry = _email_for_challenge.pop(code_challenge, None)
+_consented_binding: contextvars.ContextVar[ConsentedBinding | None] = contextvars.ContextVar(
+    "oncofiles_mcp_consented_binding", default=None
+)
+# code → (binding, created_at)
+_binding_for_code: dict[str, tuple[ConsentedBinding, float]] = {}
+
+
+def normalize_redirect_uri(uri: object) -> str:
+    """One spelling for a redirect URI on both sides (pydantic AnyUrl)."""
+    from pydantic import AnyUrl
+
+    return str(AnyUrl(str(uri)))
+
+
+@contextlib.contextmanager
+def consented_binding(email: str, client_id: str, code_challenge: str, redirect_uri: str):
+    """Mark the current request as consented by ``email`` for this exact tuple."""
+    token = _consented_binding.set(
+        ConsentedBinding(
+            email=email,
+            client_id=client_id,
+            code_challenge=code_challenge,
+            redirect_uri=normalize_redirect_uri(redirect_uri),
+        )
+    )
+    try:
+        yield
+    finally:
+        _consented_binding.reset(token)
+
+
+def _record_binding(code: str, binding: ConsentedBinding) -> None:
+    _prune_bindings()
+    _binding_for_code[code] = (binding, time.monotonic())
+
+
+def pop_binding_for_code(code: str) -> ConsentedBinding | None:
+    """Consume the binding of an authorization code (None if absent/expired)."""
+    _prune_bindings()
+    entry = _binding_for_code.pop(code, None)
     if entry is None:
         return None
-    email, created_at = entry
+    binding, created_at = entry
     if time.monotonic() - created_at > _EMAIL_STASH_TTL_S:
         return None
-    return email
+    return binding
+
+
+def _prune_bindings() -> None:
+    now = time.monotonic()
+    stale = [k for k, (_, t) in _binding_for_code.items() if now - t > _EMAIL_STASH_TTL_S]
+    for k in stale:
+        _binding_for_code.pop(k, None)
 
 
 UNBOUND_REFUSAL_MESSAGE = (
@@ -185,11 +245,49 @@ def unbound_tokens_allowed() -> bool:
     return bool(config.MCP_OAUTH_ALLOW_UNBOUND)
 
 
-def _prune_email_stash() -> None:
-    now = time.monotonic()
-    stale = [k for k, (_, t) in _email_for_challenge.items() if now - t > _EMAIL_STASH_TTL_S]
-    for k in stale:
-        _email_for_challenge.pop(k, None)
+def redirect_host_allowed(uri: object) -> bool:
+    """#898: may a client with this redirect URI be bound to an account?
+
+    ``config.MCP_OAUTH_REDIRECT_HOSTS`` + ``MCP_OAUTH_EXTRA_REDIRECT_HOSTS``:
+    an entry matches the host exactly; an entry starting with ``.`` matches
+    any subdomain. https only, plain http only for loopback hosts. No
+    userinfo. Any port.
+    """
+    from urllib.parse import urlsplit
+
+    from oncofiles import config
+
+    try:
+        parts = urlsplit(str(uri))
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return False
+    if not host or parts.username is not None or parts.password is not None:
+        return False
+    loopback = host in _LOOPBACK_HOSTS
+    if parts.scheme != "https" and not (loopback and parts.scheme == "http"):
+        return False
+    for entry in (*config.MCP_OAUTH_REDIRECT_HOSTS, *config.MCP_OAUTH_EXTRA_REDIRECT_HOSTS):
+        entry = entry.lower()
+        if entry.startswith("."):
+            if host.endswith(entry) and len(host) > len(entry):
+                return True
+        elif host == entry:
+            return True
+    return False
+
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def redirect_host_for_log(uri: object) -> str:
+    """Only the host of a redirect URI, for logs (never the full URI)."""
+    from urllib.parse import urlsplit
+
+    try:
+        return (urlsplit(str(uri)).hostname or "?")[:80]
+    except ValueError:
+        return "?"
 
 
 def _email_matches_caregiver(email: str, caregiver_email: str | None) -> bool:
@@ -636,8 +734,58 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
     # ── Write-through: persist after mutations ──────────────────────────
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        # #898: DCR is open to anyone, so a client may only register redirect
+        # URIs on the allowlist; otherwise it could phish authorization codes.
+        for uri in client_info.redirect_uris or []:
+            if not redirect_host_allowed(uri):
+                logger.info(
+                    "MCP OAuth register refused: code=redirect_host_not_allowed host=%s",
+                    redirect_host_for_log(uri),
+                )
+                raise RegistrationError(
+                    "invalid_redirect_uri",
+                    "redirect_uri host is not allowed on this server",
+                )
         await super().register_client(client_info)
         await self._persist_client(client_info)
+
+    async def authorize(
+        self, client: OAuthClientInformationFull, params: AuthorizationParams
+    ) -> str:
+        """Mint a code only for a consented, allowlisted flow (#898).
+
+        The binding is recorded against the code here, from the same parsed
+        ``params`` FastMCP uses, and only when the consented tuple matches.
+        Without a matching consent no code is minted (unless the single-user
+        opt-out ``MCP_OAUTH_ALLOW_UNBOUND`` is on).
+        """
+        if not redirect_host_allowed(params.redirect_uri):
+            logger.info(
+                "MCP OAuth authorize refused: code=redirect_host_not_allowed host=%s",
+                redirect_host_for_log(params.redirect_uri),
+            )
+            raise AuthorizeError("access_denied", "redirect_uri host is not allowed")
+        binding = _consented_binding.get()
+        matches = (
+            binding is not None
+            and binding.client_id == client.client_id
+            and binding.code_challenge == params.code_challenge
+            and binding.redirect_uri == normalize_redirect_uri(params.redirect_uri)
+        )
+        if not matches:
+            if binding is not None:
+                logger.info("MCP OAuth authorize refused: code=consent_tuple_mismatch")
+            if not unbound_tokens_allowed():
+                raise AuthorizeError("access_denied", UNBOUND_REFUSAL_MESSAGE)
+            binding = None
+        redirect = await super().authorize(client, params)
+        if binding is not None:
+            from urllib.parse import parse_qs, urlsplit
+
+            code = parse_qs(urlsplit(redirect).query).get("code", [""])[0]
+            if code in self.auth_codes:
+                _record_binding(code, binding)
+        return redirect
 
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: AuthorizationCode
@@ -650,12 +798,25 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         if client.client_id is None:
             raise TokenError("invalid_client", "Client ID is required")
 
-        # #478: pop the email bound at /authorize time and persist it alongside
-        # the new token rows. #898: no bound email → refuse BEFORE anything is
-        # issued or written (the code is already consumed above). An unbound
-        # token can never see a patient in a multi-patient deployment, so
-        # issuing it only hides the real problem (no dashboard sign-in).
-        user_email = pop_email_for_challenge(authorization_code.code_challenge)
+        # #478: pop the account bound to THIS code at authorize time and
+        # persist it alongside the new token rows. #898: the binding must
+        # still match the code's (client_id, code_challenge, redirect_uri);
+        # no (matching) binding → refuse BEFORE anything is issued or written
+        # (the code is already consumed above). An unbound token can never
+        # see a patient in a multi-patient deployment.
+        binding = pop_binding_for_code(authorization_code.code)
+        user_email = None
+        if binding is not None:
+            if (
+                binding.client_id == authorization_code.client_id
+                and binding.client_id == client.client_id
+                and binding.code_challenge == authorization_code.code_challenge
+                and binding.redirect_uri == normalize_redirect_uri(authorization_code.redirect_uri)
+            ):
+                user_email = binding.email
+            else:
+                logger.info("MCP OAuth code exchange refused: code=binding_tuple_mismatch")
+                raise TokenError("invalid_grant", UNBOUND_REFUSAL_MESSAGE)
         if not user_email and not unbound_tokens_allowed():
             logger.info("MCP OAuth code exchange refused: no signed-in account bound (#898)")
             raise TokenError("invalid_grant", UNBOUND_REFUSAL_MESSAGE)
@@ -688,6 +849,12 @@ class PersistentOAuthProvider(InMemoryOAuthProvider):
         # #478: preserve the user_email across refresh — read it off the old
         # refresh token row BEFORE we delete it.
         old_email = await self._read_user_email_by_digest(old_refresh)
+        # #898: an unbound refresh token (minted before the fix) is refused,
+        # not rotated, so legacy unbound connections end now instead of living
+        # on for the refresh TTL. Bound tokens refresh exactly as before.
+        if not old_email and not unbound_tokens_allowed():
+            logger.info("MCP OAuth refresh refused: code=unbound_refresh_token")
+            raise TokenError("invalid_grant", UNBOUND_REFUSAL_MESSAGE)
 
         # Rotation: the old pair is revoked when the new pair is issued.
         self._revoke_internal(refresh_token_str=old_refresh)

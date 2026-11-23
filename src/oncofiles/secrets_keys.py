@@ -75,6 +75,20 @@ def oauth_state_key(bearer: str | None = None) -> bytes:
     return _derive(_OAUTH_STATE_PURPOSE, bearer)
 
 
+_MCP_CONSENT_PURPOSE = b"oncofiles.mcp_oauth.consent.v1"
+
+
+def mcp_consent_key(bearer: str | None = None) -> bytes:
+    """Key for the MCP OAuth consent-page CSRF nonce (#898).
+
+    Override with ``MCP_CONSENT_SECRET`` (raw string, any length).
+    """
+    override = os.environ.get("MCP_CONSENT_SECRET", "")
+    if override:
+        return override.encode()
+    return _derive(_MCP_CONSENT_PURPOSE, bearer)
+
+
 _AUDIT_EMAIL_PURPOSE = b"oncofiles.audit.caller_email.v1"
 
 

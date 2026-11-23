@@ -291,6 +291,28 @@ MCP_OAUTH_ALLOW_UNBOUND: bool = os.environ.get(
     "MCP_OAUTH_ALLOW_UNBOUND", "false"
 ).strip().lower() in ("true", "1", "yes")
 
+# #898 security review: the consent page binds a signed-in account only for a
+# client whose redirect_uri host is on this list (exact host match; https,
+# plain http only for loopback; an entry starting with "." matches any
+# subdomain). Claude.ai and its subdomains, claude.com, the ChatGPT connector
+# callback hosts, and loopback (any port) for desktop/CLI clients.
+# MCP_OAUTH_EXTRA_REDIRECT_HOSTS (comma list) adds exact hosts at runtime.
+MCP_OAUTH_REDIRECT_HOSTS: tuple[str, ...] = (
+    "claude.ai",
+    ".claude.ai",
+    "claude.com",
+    "chatgpt.com",
+    "chat.openai.com",
+    "localhost",
+    "127.0.0.1",
+    "::1",
+)
+MCP_OAUTH_EXTRA_REDIRECT_HOSTS: tuple[str, ...] = tuple(
+    h.strip().lower()
+    for h in os.environ.get("MCP_OAUTH_EXTRA_REDIRECT_HOSTS", "").split(",")
+    if h.strip()
+)
+
 # Sync scheduler (v1.0)
 SYNC_INTERVAL_MINUTES: int = int(os.environ.get("SYNC_INTERVAL_MINUTES", "5"))
 SYNC_ENABLED: bool = os.environ.get("SYNC_ENABLED", "true").lower() in ("true", "1", "yes")
