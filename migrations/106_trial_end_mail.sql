@@ -1,0 +1,11 @@
+-- #950: the one end-of-trial e-mail (maintainer decision 2026-11-26).
+-- Additive only: one nullable instant on trial_accounts, no DML, no index.
+-- Rollback: ignore the column.
+--
+-- end_mail_sent_at: the one "your trial has ended" e-mail (claimed with a
+--                   conditional UPDATE before sending, so it is sent at most
+--                   once per trial; a refused send clears the claim). Only a
+--                   trial that is not converted and has no connected Drive
+--                   folder gets it (oncofiles.trial_funnel.send_due_end_mails).
+--                   Nothing is deleted when a trial ends (#734).
+ALTER TABLE trial_accounts ADD COLUMN end_mail_sent_at TEXT;

@@ -35,7 +35,12 @@ Rules (the #855 capacity rules, and the shared LM Studio, infra review):
   pages of the day). Over the patient's budget that patient waits until the
   next UTC day; over the global cap the run stops. A document longer than a
   whole day's budget is ``failed`` / ``too_many_pages``.
-* After ``trial_ends_at`` nothing of that trial is read (the query skips it).
+* After ``trial_ends_at`` nothing of that trial is read (maintainer decision
+  2026-11-26: the account is read-only): the query skips it, and a document
+  whose trial ends while it is being read goes back to ``pending`` before its
+  next page batch (``trial_ended``, not an attempt; it is never read again
+  unless the trial converts, and then the curated pipeline reads the Drive
+  copy). A converted trial is not "ended" (``holding_store.trial_ended``).
 * Without a configured local model nothing is read (documents stay
   ``pending``). A model or transport error is retried on later runs, at most
   ``MAX_ATTEMPTS`` times, then the document is ``failed`` (shown as needing
@@ -380,9 +385,14 @@ async def run_pending(db, *, limit: int = MAX_DOCS_PER_RUN) -> Counter:
             error: str | None = None
             excluded: str | None = None
             interrupted = False
+            ended = False
             lost = False
             for index, batch in enumerate(batches):
                 if index:
+                    # the trial ended mid-document: read-only from now on
+                    if holding_store.trial_ended(await db.get_trial(patient_id=pid)):
+                        ended = True
+                        break
                     # before every further batch: real patients first, and the
                     # claim moves forward so a long read is never taken over
                     busy = lm_busy()
@@ -416,6 +426,14 @@ async def run_pending(db, *, limit: int = MAX_DOCS_PER_RUN) -> Counter:
             batches = []
             if lost:
                 counts["lease_lost"] += 1
+                continue
+            if ended:
+                state["extract"] = "pending"  # not an attempt; the query skips it now
+                await db.set_holding_state(
+                    doc_id, patient_id=pid, holding=state, claimed_at=claimed_at
+                )
+                counts["trial_ended"] += 1
+                held.append(pid)
                 continue
             if interrupted:
                 # the shared model is needed by a real patient: back to pending,

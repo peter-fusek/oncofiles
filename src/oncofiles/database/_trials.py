@@ -5,9 +5,11 @@ the address). The holding-store documents are ordinary ``documents`` rows
 with ``file_id = "holding:<uuid>"`` (``oncofiles.holding_store``); their state
 lives in ``structured_metadata.holding``.
 
-No helper deletes anything (#734). TODO(#950): the end-of-trial purge of an
-unclaimed trial needs a RUNBOOK lifecycle entry and a reviewed entry in
-``tests/test_no_automatic_deletion.py`` (maintainer decision) first.
+No helper deletes anything (#734). When a trial ends (maintainer decision
+2026-11-26) nothing is purged: the account becomes read-only, the holding
+reader stops (``next_holding_extraction``) and ONE end-of-trial e-mail goes out
+(``trials_awaiting_end_mail``, ``oncofiles.trial_funnel``). Erasure happens only
+on request (``patient_erasure.erase_patient``, #856).
 """
 
 from __future__ import annotations
@@ -20,7 +22,8 @@ TRIAL_SOURCES = ("welcome_email",)
 HOLDING_PREFIX = "holding:"
 _TRIAL_COLUMNS = (
     "id, patient_id, source, trial_ends_at, created_at, drive_connected_at, "
-    "converted_at, first_reply_at, signed_in_at, ready_mail_sent_at, move_claimed_at"
+    "converted_at, first_reply_at, signed_in_at, ready_mail_sent_at, move_claimed_at, "
+    "end_mail_sent_at"
 )
 # A holding row is written by the mover only while its trial's lease is the
 # run's own (one parameter: the lease).
@@ -35,6 +38,7 @@ TRIAL_EVENT_COLUMNS = (
     "first_reply_at",
     "signed_in_at",
     "ready_mail_sent_at",
+    "end_mail_sent_at",  # the one end-of-trial e-mail (migration 106)
 )
 
 
@@ -427,7 +431,7 @@ class TrialsMixin(DatabaseBase):
             "  (SELECT MIN(a.created_at) FROM activity_log a "
             "     WHERE a.patient_id = t.patient_id AND a.agent_id = 'auto') "
             "    AS first_mcp_call_at, "
-            "  t.drive_connected_at, t.converted_at, t.ready_mail_sent_at "
+            "  t.drive_connected_at, t.converted_at, t.ready_mail_sent_at, t.end_mail_sent_at "
             "FROM trial_accounts t ORDER BY t.id"
         ) as cursor:
             return [dict(r) for r in await cursor.fetchall()]
@@ -456,3 +460,21 @@ class TrialsMixin(DatabaseBase):
             "GROUP BY t.patient_id HAVING done > 0 AND open = 0 ORDER BY MIN(t.id)"
         ) as cursor:
             return [{"patient_id": r[0], "done": int(r[1] or 0)} for r in await cursor.fetchall()]
+
+    async def trials_awaiting_end_mail(self, *, now: str) -> list[str]:
+        """Patient ids of trials due for the one end-of-trial e-mail (#950,
+        maintainer decision 2026-11-26): ``trial_ends_at`` has passed, not
+        converted, the mail not sent yet, and no connected Drive folder (such a
+        trial is being moved and converted by ``holding_move``; telling it to
+        connect Drive would be wrong). System-wide on purpose; ids only."""
+        async with self.db.execute(
+            "SELECT t.patient_id FROM trial_accounts t "
+            "WHERE t.trial_ends_at <= ? AND t.converted_at IS NULL "
+            "AND t.end_mail_sent_at IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM oauth_tokens o "
+            "  WHERE o.patient_id = t.patient_id AND o.provider = 'google' "
+            "  AND COALESCE(o.gdrive_folder_id, '') != '') "
+            "ORDER BY t.id",
+            (now,),
+        ) as cursor:
+            return [r[0] for r in await cursor.fetchall()]

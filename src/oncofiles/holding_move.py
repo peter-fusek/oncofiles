@@ -362,7 +362,8 @@ async def run_pending(db, *, limit: int = MAX_FILES_PER_RUN) -> Counter:
 
     The caller holds ``_sync_semaphore`` (the scheduler job and :func:`kick`
     both do). Also flags held rows whose curated mirror row now exists, and
-    sends due "ready" e-mails (``trial_funnel.send_due_ready_mails``)."""
+    sends due "ready" e-mails (``trial_funnel.send_due_ready_mails``) and the
+    one end-of-trial e-mail (``trial_funnel.send_due_end_mails``)."""
     from oncofiles import holding_store, trial_funnel
 
     counts: Counter = Counter()
@@ -383,6 +384,13 @@ async def run_pending(db, *, limit: int = MAX_FILES_PER_RUN) -> Counter:
             counts["ready_mails"] += sent
     except Exception as exc:  # noqa: BLE001 - mail never stops the mover
         logger.warning("holding: ready mails failed (%s)", type(exc).__name__)
+    try:
+        # #950 (maintainer decision 2026-11-26): the one end-of-trial e-mail
+        ended = await trial_funnel.send_due_end_mails(db)
+        if ended:
+            counts["end_mails"] += ended
+    except Exception as exc:  # noqa: BLE001 - mail never stops the mover
+        logger.warning("holding: end mails failed (%s)", type(exc).__name__)
     if counts:
         logger.info("holding: move run %s", dict(sorted(counts.items())))
     return counts
