@@ -4518,9 +4518,11 @@ async def curated_lab_retract(
 
 
 async def _model_override_refusal(model: str | None) -> dict | None:
-    """A scorecard's per-job ``model`` must be listed by the configured LM
-    Studio (``GET /v1/models``, same base URL and key as every call) before
-    anything starts: no slot, no run row. Never loads or downloads a model."""
+    """A scorecard's per-job ``model`` must already be LOADED in the
+    configured LM Studio (native ``GET /api/v0/models``, ``state ==
+    "loaded"``; same host and key as every call) before anything starts: no
+    slot, no run row. An override never triggers a JIT load next to the
+    production model; an unreadable native list refuses (fail closed)."""
     if model is None:
         return None
     from oncofiles.curated import llm
@@ -4529,9 +4531,9 @@ async def _model_override_refusal(model: str | None) -> dict | None:
     if code is None:
         return None
     message = (
-        "the model is not listed by the local LM Studio at /v1/models"
+        "the model is not loaded in the local LM Studio (/api/v0/models state != loaded)"
         if code == "model_not_loaded"
-        else "the local LM Studio model list is unavailable"
+        else "the local LM Studio model states (/api/v0/models) are unavailable"
     )
     return {"error": code, "model": model, "message": message}
 
@@ -4725,8 +4727,9 @@ async def curated_extraction_scorecard(
             one LM Studio slot; echoed in ``settings.parallel_docs``.
         model: LM Studio model id for this job only (dry run; 1-200 of
             ``A-Za-z0-9._:/@-``); null = LOCAL_LLM_MODEL. Refused
-            (``model_not_loaded``) unless the configured LM Studio lists it at
-            ``/v1/models``; nothing is loaded or downloaded.
+            (``model_not_loaded``) unless the configured LM Studio reports it
+            ``loaded`` at its native ``/api/v0/models`` (``model_state_unknown``
+            when that list is unavailable); nothing is loaded or downloaded.
         reasoning_effort: "none" | "low" | "medium" | "high", sent for this
             job only; null = the default request. Both are echoed in
             ``settings`` and, when given, recorded in ``versions``: a baseline
@@ -5018,8 +5021,9 @@ async def curated_classify_scorecard(
             and an after (v2) run on the same deployed code.
         model: LM Studio model id for this job only (dry run; 1-200 of
             ``A-Za-z0-9._:/@-``); null = LOCAL_LLM_MODEL. Refused
-            (``model_not_loaded``) unless the configured LM Studio lists it at
-            ``/v1/models``; nothing is loaded or downloaded. In ``settings``
+            (``model_not_loaded``) unless the configured LM Studio reports it
+            ``loaded`` at its native ``/api/v0/models`` (``model_state_unknown``
+            when that list is unavailable); nothing is loaded or downloaded. In ``settings``
             and ``versions``: a baseline of another model is not comparable
             (no aggregate ``delta``), ``per_document_delta`` is still given
             with ``across_definitions: true``.

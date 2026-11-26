@@ -242,17 +242,30 @@ def _headers() -> dict:
     return headers
 
 
-def listed_models(*, client: httpx.Client | None = None) -> list[str]:
-    """Model ids the configured LM Studio lists at ``GET /models`` (same base
-    URL and key as ``chat``; blocking, read-only: it never loads or downloads
-    a model). Raises ``LocalLLMTransportError`` when the list is unavailable."""
+def native_models_url(base_url: str | None = None) -> str:
+    """LM Studio's native model list (``/api/v0/models``), derived from
+    ``LOCAL_LLM_BASE_URL`` with a trailing ``/v1`` stripped."""
+    base = (config.LOCAL_LLM_BASE_URL if base_url is None else base_url).rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    return f"{base}/api/v0/models"
+
+
+def model_states(*, client: httpx.Client | None = None) -> dict[str, str]:
+    """``{model id: state}`` from LM Studio's native ``GET /api/v0/models``
+    (same host, key and #925 check as ``chat``; blocking, read-only: it never
+    loads or downloads a model). ``state`` is LM Studio's (``loaded`` /
+    ``not-loaded``). Raises ``LocalLLMTransportError`` when the endpoint is
+    unavailable (unreachable, 404 on an older LM Studio, any non-200, an
+    unexpected body). The OpenAI ``/v1/models`` is never used instead: with
+    just-in-time loading it lists models that are not loaded."""
     if not config.LOCAL_LLM_BASE_URL:
         raise LocalLLMTransportError("LOCAL_LLM_BASE_URL not set")
     require_private_base_url()  # #925
     own = client is None
     http = client or httpx.Client(timeout=MODELS_TIMEOUT_S)
     try:
-        resp = http.get(f"{config.LOCAL_LLM_BASE_URL}/models", headers=_headers())
+        resp = http.get(native_models_url(), headers=_headers())
     except httpx.HTTPError as exc:
         raise LocalLLMTransportError(f"local LLM unreachable: {type(exc).__name__}") from exc
     finally:
@@ -262,20 +275,26 @@ def listed_models(*, client: httpx.Client | None = None) -> list[str]:
         raise LocalLLMTransportError(f"local LLM HTTP {resp.status_code}")
     try:
         data = resp.json().get("data")
-        return [m["id"] for m in data if isinstance(m, dict) and isinstance(m.get("id"), str)]
+        if not isinstance(data, list):
+            raise TypeError("data is not a list")
+        return {m["id"]: m.get("state") if isinstance(m.get("state"), str) else ""
+                for m in data if isinstance(m, dict) and isinstance(m.get("id"), str)}  # fmt: skip
     except (AttributeError, TypeError, ValueError, KeyError) as exc:
         raise LocalLLMTransportError("local LLM returned an unexpected model list") from exc
 
 
 def model_refusal(model: str, *, client: httpx.Client | None = None) -> str | None:
-    """None when ``model`` is listed by the configured LM Studio; else the
-    refusal code ``model_not_loaded``, or ``model_list_unavailable`` when the
-    list cannot be read (fail closed: nothing is started)."""
+    """None only when the configured LM Studio reports ``model`` with
+    ``state == "loaded"`` at its native ``/api/v0/models``, so a scorecard
+    override can never make LM Studio load (JIT) another large model next to
+    the production one. Else ``model_not_loaded`` (unlisted or not loaded) or
+    ``model_state_unknown`` when the native list cannot be read (fail closed,
+    no fallback to ``/v1/models``)."""
     try:
-        ids = listed_models(client=client)
+        states = model_states(client=client)
     except LocalLLMError:
-        return "model_list_unavailable"
-    return None if model in ids else "model_not_loaded"
+        return "model_state_unknown"
+    return None if states.get(model) == "loaded" else "model_not_loaded"
 
 
 def image_part(png_bytes: bytes, mime: str = "image/png") -> dict:
