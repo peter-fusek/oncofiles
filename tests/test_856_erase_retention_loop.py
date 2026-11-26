@@ -284,6 +284,37 @@ def test_ensure_background_loop_is_reference_counted():
     assert scheduler_singleton.release_background_loop("x", first) is False  # stale holder
 
 
+async def test_a_dying_background_loop_is_logged_and_a_cancel_is_not(caplog):
+    """Infra review of #998: a loop that dies must not be silent."""
+
+    async def boom():
+        raise RuntimeError("synthetic")
+
+    async def forever():
+        await asyncio.sleep(3600)
+
+    caplog.set_level("ERROR", logger="oncofiles.scheduler_singleton")
+    dead, _ = scheduler_singleton.ensure_background_loop(
+        "dies", lambda: asyncio.create_task(boom())
+    )
+    with pytest.raises(RuntimeError):
+        await dead
+    await asyncio.sleep(0)  # let the done callback run
+    assert "dies loop died: RuntimeError" in caplog.text
+
+    caplog.clear()
+    alive, _ = scheduler_singleton.ensure_background_loop(
+        "cancelled", lambda: asyncio.create_task(forever())
+    )
+    alive.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await alive
+    await asyncio.sleep(0)
+    assert caplog.text == ""
+    scheduler_singleton.release_background_loop("dies", dead)
+    scheduler_singleton.release_background_loop("cancelled", alive)
+
+
 # ── the #734 lock still sees the job, within the existing entry ──────────
 
 

@@ -174,7 +174,22 @@ def ensure_background_loop(name: str, factory: Callable[[], Any]) -> tuple[Any, 
         _loop_refs[name] = 1
         _loop_started_at[name] = datetime.now(UTC).isoformat(timespec="seconds")
         _duplicate_logged.discard(f"{name} loop")
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(lambda t, n=name: _report_loop_end(n, t))
         return task, True
+
+
+def _report_loop_end(name: str, task: Any) -> None:
+    """A boot loop must never end on its own: log loudly if it does (infra
+    review of #998), so a dead loop is not visible only as
+    ``loop_running=false``. A cancel at shutdown stays quiet."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("%s loop died: %s", name, type(exc).__name__)
+    else:
+        logger.error("%s loop ended unexpectedly", name)
 
 
 def release_background_loop(name: str, task: Any) -> bool:
