@@ -2996,14 +2996,19 @@ def _source_reason(meta: dict) -> str | None:
     return None
 
 
-def _overrides(thinking, sampling, timeout_s, reasoning_marker, parallel_docs=None) -> dict:
+def _overrides(
+    thinking, sampling, timeout_s, reasoning_marker, parallel_docs=None, model=None,
+    reasoning_effort=None,
+) -> dict:  # fmt: skip
     """The per-job A/B overrides as echoed in job and report (#767, #770);
-    ``parallel_docs`` (#773) only when it was given (the effective value is
-    always in ``settings.parallel_docs``)."""
+    ``parallel_docs`` (#773), ``model`` and ``reasoning_effort`` (scorecards
+    only) only when given (the effective values are in ``settings``)."""
     out = {"thinking": thinking, "sampling": sampling, "timeout_s": timeout_s,
            "reasoning_marker": reasoning_marker}  # fmt: skip
-    if parallel_docs is not None:
-        out["parallel_docs"] = parallel_docs
+    for key, value in (("parallel_docs", parallel_docs), ("model", model),
+                       ("reasoning_effort", reasoning_effort)):  # fmt: skip
+        if value is not None:
+            out[key] = value
     return out
 
 
@@ -4511,6 +4516,28 @@ async def curated_lab_retract(
 
 # ── extraction scorecard (#773): fixed page set, counts only ──────────────
 
+
+async def _model_override_refusal(model: str | None) -> dict | None:
+    """A scorecard's per-job ``model`` must already be LOADED in the
+    configured LM Studio (native ``GET /api/v0/models``, ``state ==
+    "loaded"``; same host and key as every call) before anything starts: no
+    slot, no run row. An override never triggers a JIT load next to the
+    production model; an unreadable native list refuses (fail closed)."""
+    if model is None:
+        return None
+    from oncofiles.curated import llm
+
+    code = await asyncio.to_thread(llm.model_refusal, model)
+    if code is None:
+        return None
+    message = (
+        "the model is not loaded in the local LM Studio (/api/v0/models state != loaded)"
+        if code == "model_not_loaded"
+        else "the local LM Studio model states (/api/v0/models) are unavailable"
+    )
+    return {"error": code, "model": model, "message": message}
+
+
 SCORECARD_MAX_DOCS = 25
 _SCORECARD_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,59}")
 
@@ -4531,6 +4558,8 @@ async def _scorecard_job(
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
     parallel_docs: int | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> None:
     """Run the existing extractors + verifiers over a fixed document set and
     score them (#773). DRY RUN: no facts, no Drive; the only write is the
@@ -4539,8 +4568,11 @@ async def _scorecard_job(
     ``LLM_EXTRACT_PARALLEL_DOCS`` = 1, one LM Studio slot), each document's
     pages one after another; every DB read happens before the model phase;
     the task runs inside ``local_only()``. ``totals.speed.wall_seconds`` sits
-    next to ``seconds_total`` (summed per-page seconds)."""
+    next to ``seconds_total`` (summed per-page seconds). ``model`` /
+    ``reasoning_effort`` (validated by the tool) ride in this job's
+    ``CallSettings`` to every call of this job only."""
     from oncofiles.curated import (
+        llm,
         llm_extract,
         llm_extract_call,
         scorecard,
@@ -4552,7 +4584,8 @@ async def _scorecard_job(
 
     started = time.monotonic()
     job = _reocr_jobs[pid]
-    cfg = llm_extract_call.settings(thinking, sampling, timeout_s, reasoning_marker)
+    cfg = llm_extract_call.settings(thinking, sampling, timeout_s, reasoning_marker,
+                                    model=model, reasoning_effort=reasoning_effort)  # fmt: skip
     parallel = llm_extract_call.parallel_docs(parallel_docs)
     cards: list[dict] = []
     stopped = False
@@ -4588,6 +4621,7 @@ async def _scorecard_job(
             extractor=llm_extract.EXTRACTOR_VERSION, verifier=verifier.VERIFIER_VERSION,
             clinical_extractor=lx.EXTRACTOR_VERSION,
             clinical_verifier=verifier_clinical.CLINICAL_VERIFIER_VERSION,
+            model=model, reasoning_effort=reasoning_effort,
         )  # fmt: skip
         job.update(state="done", report={
             "dry_run": True, "scorecard": scorecard.SCORECARD_VERSION, "label": label,
@@ -4597,8 +4631,10 @@ async def _scorecard_job(
                            "lab": llm_extract.EXTRACTOR_VERSION,
                            "lab_verifier": verifier.VERIFIER_VERSION},
             "settings": {**cfg.report(), "parallel_docs": parallel,
+                         "model": model or llm.model_id(),
+                         "reasoning_effort": reasoning_effort or llm.DEFAULT_REASONING_EFFORT,
                          "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker,
-                                                 parallel_docs)},
+                                                 parallel_docs, model, reasoning_effort)},
             "totals": totals,
             "compared_to": {"row_id": prev["id"], "label": prev_report.get("label"),
                             "finished_at": prev.get("finished_at")} if prev else None,
@@ -4638,6 +4674,8 @@ async def curated_extraction_scorecard(
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
     parallel_docs: int | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     """DRY RUN extraction scorecard (#773): measure the LOCAL-model extractors
     on a fixed set of curated documents, as counts and codes only.
@@ -4687,12 +4725,21 @@ async def curated_extraction_scorecard(
         parallel_docs: documents scored at once (int, 1-3, #773); null keeps
             LLM_EXTRACT_PARALLEL_DOCS (default 1). Each running document holds
             one LM Studio slot; echoed in ``settings.parallel_docs``.
+        model: LM Studio model id for this job only (dry run; 1-200 of
+            ``A-Za-z0-9._:/@-``); null = LOCAL_LLM_MODEL. Refused
+            (``model_not_loaded``) unless the configured LM Studio reports it
+            ``loaded`` at its native ``/api/v0/models`` (``model_state_unknown``
+            when that list is unavailable); nothing is loaded or downloaded.
+        reasoning_effort: "none" | "low" | "medium" | "high", sent for this
+            job only; null = the default request. Both are echoed in
+            ``settings`` and, when given, recorded in ``versions``: a baseline
+            with another (or no) override is not comparable.
     """
     from oncofiles import config
     from oncofiles.curated import llm, llm_extract_call
 
     llm_extract_call.validate_overrides(
-        thinking, sampling, timeout_s, reasoning_marker, parallel_docs
+        thinking, sampling, timeout_s, reasoning_marker, parallel_docs, model, reasoning_effort
     )
     for name, value in (("label", label), ("compare_to_label", compare_to_label)):
         if value is not None and not _SCORECARD_LABEL.fullmatch(str(value)):
@@ -4712,6 +4759,8 @@ async def curated_extraction_scorecard(
         return json.dumps({"error": "disabled by LLM_EXTRACT_SHADOW_DISABLED=true"})
     if not llm.configured():
         return json.dumps({"error": "local model not configured (LOCAL_LLM_BASE_URL/MODEL)"})
+    if refused := await _model_override_refusal(model):
+        return json.dumps(refused)
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
     known = {r["id"]: r for r in await db.curated_reocr_candidates(patient_id=pid)}
@@ -4728,7 +4777,8 @@ async def curated_extraction_scorecard(
     _reocr_jobs[pid] = job = {
         "state": "running", "kind": "extraction_scorecard", "dry_run": True, "label": label,
         "compare_to_label": compare_to_label, "started_at": datetime.now(UTC).isoformat(),
-        "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker, parallel_docs),
+        "overrides": _overrides(thinking, sampling, timeout_s, reasoning_marker, parallel_docs,
+                                model, reasoning_effort),
         "parallel_docs": llm_extract_call.parallel_docs(parallel_docs),
         "documents": [{"document_id": d["id"], "category": d.get("category"),
                        "extractor": "clinical"} for d in clinical_docs]
@@ -4756,6 +4806,7 @@ async def curated_extraction_scorecard(
                 compare_to_label=compare_to_label, requested=requested, missing=len(missing),
                 thinking=thinking, sampling=sampling, timeout_s=timeout_s,
                 reasoning_marker=reasoning_marker, parallel_docs=parallel_docs,
+                model=model, reasoning_effort=reasoning_effort,
             )
         )  # fmt: skip
     return json.dumps(_public_job(pid), ensure_ascii=False)
@@ -4802,15 +4853,19 @@ async def _classify_scorecard_job(
     repeat: int,
     sampling: str | None = None,
     prompt_variant: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> None:
     """Re-run ``classify.propose`` + ``validate`` on each document's stored
     sidecar text (#926). DRY RUN: no Drive write, no filing, no sidecar, no
     fact; the only write is the job's own ``curated_runs`` row (trigger
     ``scorecard``, report ``kind: classification``). DB reads first, then the
     model calls one at a time in a worker thread (one LM Studio slot); the
-    task runs inside ``local_only()``."""
+    task runs inside ``local_only()``. ``model`` / ``reasoning_effort``
+    (validated by the tool) are passed explicitly to every call of this job
+    only; never config or module state."""
     from oncofiles.curated import classify_scorecard as csc
-    from oncofiles.curated import llm_input
+    from oncofiles.curated import llm, llm_input
     from oncofiles.curated import vocabulary as vocab_mod
 
     started = time.monotonic()
@@ -4855,7 +4910,7 @@ async def _classify_scorecard_job(
                     csc.run_once, contract, text, d.get("filename") or "",
                     prompt_variant=variant,
                     sampling=request["sampling"] if variant == "v2" else None,
-                    auto_vocab=auto_vocab,
+                    auto_vocab=auto_vocab, model=model, reasoning_effort=reasoning_effort,
                 ))  # fmt: skip
                 progress["calls_done"] += 1
             cards.append(csc.card(d["id"], d.get("category"), runs))
@@ -4872,14 +4927,19 @@ async def _classify_scorecard_job(
             patient_id=pid, label_prefix=compare_to_label, before_id=row_id, kind=csc.KIND
         )
         prev_report = (prev or {}).get("report") or {}
-        versions = csc.versions(sampling=request["sampling"], prompt_variant=variant)
+        versions = csc.versions(sampling=request["sampling"], prompt_variant=variant,
+                                model=model, reasoning_effort=reasoning_effort)  # fmt: skip
         job.update(state="done", report={
             "kind": csc.KIND, "dry_run": True, "scorecard": csc.SCORECARD_VERSION,
             "label": label, "partial": stopped, "versions": versions,
             "settings": {**request, "repeat": repeat, "auto_vocab": auto_vocab,
-                         "max_age_days": None,
+                         "max_age_days": None, "model": model or llm.model_id(),
+                         "reasoning_effort": reasoning_effort or llm.DEFAULT_REASONING_EFFORT,
                          "overrides": {k: v for k, v in (("prompt_variant", prompt_variant),
-                                                         ("sampling", sampling)) if v}},
+                                                         ("sampling", sampling),
+                                                         ("model", model),
+                                                         ("reasoning_effort",
+                                                          reasoning_effort)) if v}},
             "totals": totals,
             "compared_to": {"row_id": prev["id"], "label": prev_report.get("label"),
                             "finished_at": prev.get("finished_at")} if prev else None,
@@ -4915,6 +4975,8 @@ async def curated_classify_scorecard(
     repeat: int = 1,
     sampling: str | None = None,
     prompt_variant: str | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> str:
     """DRY RUN classification scorecard (#926): re-run the curated
     classification (LOCAL model, ``classify.propose`` + ``validate``) on the
@@ -4957,6 +5019,16 @@ async def curated_classify_scorecard(
             reasoning + sampling + worked examples. Echoed in ``settings``
             and ``versions`` (with its ``prompt_version``), so a before (v1)
             and an after (v2) run on the same deployed code.
+        model: LM Studio model id for this job only (dry run; 1-200 of
+            ``A-Za-z0-9._:/@-``); null = LOCAL_LLM_MODEL. Refused
+            (``model_not_loaded``) unless the configured LM Studio reports it
+            ``loaded`` at its native ``/api/v0/models`` (``model_state_unknown``
+            when that list is unavailable); nothing is loaded or downloaded. In ``settings``
+            and ``versions``: a baseline of another model is not comparable
+            (no aggregate ``delta``), ``per_document_delta`` is still given
+            with ``across_definitions: true``.
+        reasoning_effort: "none" | "low" | "medium" | "high", sent for this
+            job only; null = the default request. Same versions rule.
     """
     from oncofiles.curated import classify, llm
     from oncofiles.curated import classify_scorecard as csc
@@ -4979,6 +5051,8 @@ async def curated_classify_scorecard(
         or not 1 <= repeat <= CLASSIFY_SCORECARD_MAX_REPEAT
     ):
         return json.dumps({"error": f"repeat must be an int, 1-{CLASSIFY_SCORECARD_MAX_REPEAT}"})
+    if err := llm.model_override_error(model, reasoning_effort):
+        return json.dumps({"error": err})
     ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))
     if not ids:
         return json.dumps({"error": "document_ids is required"})
@@ -4987,6 +5061,8 @@ async def curated_classify_scorecard(
                            f"got {len(ids)}"})  # fmt: skip
     if not llm.configured():
         return json.dumps({"error": "local model not configured (LOCAL_LLM_BASE_URL/MODEL)"})
+    if refused := await _model_override_refusal(model):
+        return json.dumps(refused)
     pid = await _resolve_patient_id(patient_slug, ctx)
     db = _get_db(ctx)
     known = {r["id"]: r for r in await db.curated_reocr_candidates(patient_id=pid)}
@@ -5002,6 +5078,8 @@ async def curated_classify_scorecard(
         "state": "running", "kind": "classify_scorecard", "dry_run": True, "label": label,
         "compare_to_label": compare_to_label, "started_at": datetime.now(UTC).isoformat(),
         "repeat": repeat, **csc.request_settings(sampling, prompt_variant),
+        "overrides": {k: v for k, v in (("model", model), ("reasoning_effort", reasoning_effort))
+                      if v is not None},
         "documents": [{"document_id": d["id"], "category": d.get("category")} for d in docs],
         "missing_document_ids": missing,
     }  # fmt: skip
@@ -5022,7 +5100,7 @@ async def curated_classify_scorecard(
             _classify_scorecard_job(
                 db, pid, docs, row_id=row_id, label=label, compare_to_label=compare_to_label,
                 requested=len(ids), missing=len(missing), repeat=repeat, sampling=sampling,
-                prompt_variant=prompt_variant,
+                prompt_variant=prompt_variant, model=model, reasoning_effort=reasoning_effort,
             )
         )  # fmt: skip
     return json.dumps(_public_job(pid), ensure_ascii=False)

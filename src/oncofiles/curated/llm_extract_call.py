@@ -95,10 +95,15 @@ def validate_overrides(
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
     parallel_docs: int | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> None:
     """Per-job overrides must be one of the known modes, ``timeout_s`` an
-    int of seconds in [30, 900] and ``parallel_docs`` an int in [1, 3]
+    int of seconds in [30, 900], ``parallel_docs`` an int in [1, 3] and
+    ``model`` / ``reasoning_effort`` valid per ``llm.model_override_error``
     (ValueError otherwise)."""
+    if err := llm.model_override_error(model, reasoning_effort):
+        raise ValueError(err)
     if parallel_docs is not None and (
         isinstance(parallel_docs, bool)
         or not isinstance(parallel_docs, int)
@@ -136,17 +141,21 @@ def refuse_overrides_on_write(
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
     parallel_docs: int | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> None:
     """Overrides are for the dry-run A/B only: a write path never takes them."""
-    validate_overrides(thinking, sampling, timeout_s, reasoning_marker, parallel_docs)
-    if write and any(
-        v is not None for v in (thinking, sampling, timeout_s, reasoning_marker, parallel_docs)
-    ):
+    validate_overrides(
+        thinking, sampling, timeout_s, reasoning_marker, parallel_docs, model, reasoning_effort
+    )
+    values = (thinking, sampling, timeout_s, reasoning_marker, parallel_docs, model,
+              reasoning_effort)  # fmt: skip
+    if write and any(v is not None for v in values):
         raise ValueError(
-            "thinking/sampling/timeout_s/reasoning_marker/parallel_docs overrides are allowed "
-            "only on a dry run; a write always uses the configured LLM_EXTRACT_THINKING / "
-            "LLM_EXTRACT_SAMPLING / LLM_EXTRACT_TIMEOUT_S / "
-            "LLM_EXTRACT_REASONING_MARKER / LLM_EXTRACT_PARALLEL_DOCS"
+            "thinking/sampling/timeout_s/reasoning_marker/parallel_docs/model/reasoning_effort "
+            "overrides are allowed only on a dry run; a write always uses the configured "
+            "LLM_EXTRACT_THINKING / LLM_EXTRACT_SAMPLING / LLM_EXTRACT_TIMEOUT_S / "
+            "LLM_EXTRACT_REASONING_MARKER / LLM_EXTRACT_PARALLEL_DOCS / LOCAL_LLM_MODEL"
         )
 
 
@@ -174,17 +183,28 @@ class CallSettings:
     # Passed explicitly to every llm.chat call of this job (#770): never env
     # or module state, so concurrent classify / re-OCR calls are unaffected.
     reasoning_marker: bool = False
+    # Dry-run scorecard overrides only (None = LOCAL_LLM_MODEL / llm.chat's
+    # default effort); sent per call only when set, so the default request
+    # body stays byte-identical.
+    model: str | None = None
+    reasoning_effort: str | None = None
 
     @property
     def params(self) -> dict:
         return sampling_params(self.sampling, self.thinking)
+
+    @property
+    def overrides(self) -> dict:
+        """``llm.chat`` kwargs of the per-job model / effort overrides (only those set)."""
+        out = {"model": self.model, "reasoning_effort": self.reasoning_effort}
+        return {k: v for k, v in out.items() if v is not None}
 
     def report(self) -> dict:
         """Effective settings for a job report (numbers and modes only)."""
         return {"thinking": "on" if self.thinking else "off", "sampling": self.sampling,
                 "max_tokens": self.max_tokens, "timeout_s": self.timeout_s,
                 "reasoning_marker": "on" if self.reasoning_marker else "off",
-                **self.params}  # fmt: skip
+                **self.params, **self.overrides}  # fmt: skip
 
 
 def settings(
@@ -192,6 +212,9 @@ def settings(
     sampling: str | None = None,
     timeout_s: int | None = None,
     reasoning_marker: str | None = None,
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> CallSettings:
     """Effective call settings: per-job overrides over the env defaults.
 
@@ -204,10 +227,13 @@ def settings(
     effect with thinking OFF). The global ``LLM_REASONING_MARKER`` is never
     read here: it stays the default of every other ``llm.chat`` caller.
     Defaults (no env, no override) = the configuration of scorecard rows
-    132/133: thinking off, qwen sampling, marker on, 300 s timeout."""
+    132/133: thinking off, qwen sampling, marker on, 300 s timeout.
+    ``model`` / ``reasoning_effort``: the extraction scorecard's dry-run
+    overrides (never a write: ``refuse_overrides_on_write``)."""
     from oncofiles import config
 
-    validate_overrides(thinking, sampling, timeout_s, reasoning_marker)
+    validate_overrides(thinking, sampling, timeout_s, reasoning_marker, model=model,
+                       reasoning_effort=reasoning_effort)  # fmt: skip
     on = (thinking or config.LLM_EXTRACT_THINKING) == "on"
     mode = sampling or config.LLM_EXTRACT_SAMPLING
     if mode not in SAMPLING_MODES:
@@ -219,7 +245,8 @@ def settings(
         if reasoning_marker is not None
         else bool(config.LLM_EXTRACT_REASONING_MARKER)
     )
-    return CallSettings(on, mode, int(budget), float(timeout), reasoning_marker=marker)
+    return CallSettings(on, mode, int(budget), float(timeout), reasoning_marker=marker,
+                        model=model, reasoning_effort=reasoning_effort)  # fmt: skip
 
 
 @dataclass
@@ -315,7 +342,7 @@ def call_and_parse(
     # read from shared state by the concurrent classify / re-OCR calls.
     kwargs = {"max_tokens": cfg.max_tokens, "thinking": cfg.thinking,
               "timeout": cfg.timeout_s, "reasoning_marker": cfg.reasoning_marker,
-              **cfg.params}  # fmt: skip
+              **cfg.params, **cfg.overrides}  # fmt: skip
     info: dict = {}
     t0 = time.monotonic()
     try:
