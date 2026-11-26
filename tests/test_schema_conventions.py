@@ -175,12 +175,12 @@ LEGACY_PATIENT_NULLABLE: dict[str, str] = {
 # table -> reason. May only shrink. A DEFAULT turns a forgotten patient_id into
 # a real-looking value instead of an error.
 LEGACY_PATIENT_DEFAULT: dict[str, str] = {
-    "activity_log": "DEFAULT 'erika' (single-patient era)",
-    "conversation_entries": "DEFAULT 'erika' (single-patient era)",
-    "documents": "DEFAULT 'erika' (single-patient era)",
-    "prompt_log": "DEFAULT 'erika' (single-patient era)",
-    "research_entries": "DEFAULT 'erika' (single-patient era)",
-    "treatment_events": "DEFAULT 'erika' (single-patient era)",
+    "activity_log": "DEFAULT <legacy name> (single-patient era, migration 029)",
+    "conversation_entries": "DEFAULT <legacy name> (single-patient era, migration 029)",
+    "documents": "DEFAULT <legacy name> (single-patient era, migration 029)",
+    "prompt_log": "DEFAULT <legacy name> (single-patient era, migration 029)",
+    "research_entries": "DEFAULT <legacy name> (single-patient era, migration 029)",
+    "treatment_events": "DEFAULT <legacy name> (single-patient era, migration 029)",
     "calendar_entries": "DEFAULT 'default'",
     "email_entries": "DEFAULT 'default'",
     "oauth_tokens": "DEFAULT 'default'",
@@ -636,7 +636,7 @@ def _synthetic() -> dict[str, Table]:
             c.name: c
             for c in (
                 col("uuid", pk=1),
-                col("patient_id", default="'erika'"),
+                col("patient_id", default="'legacy'"),
                 col("document_ref_id", "INTEGER"),
                 col("organization_id", "INTEGER"),
                 col("institution"),
