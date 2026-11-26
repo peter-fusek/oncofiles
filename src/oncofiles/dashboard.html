@@ -293,6 +293,23 @@
  </section>
 
  <!--app-only-->
+ <!-- #856 data rights: export (caregiver, or an admin for the selected patient) and Drive disconnect (caregiver only) -->
+ <section class="panel data-rights" id="data-rights-card" aria-labelledby="data-rights-title">
+ <div class="section-head">
+ <h2 id="data-rights-title" data-sk="Vaše údaje" data-en="Your data">Vaše údaje</h2>
+ </div>
+ <p class="section-lead" data-sk="Stiahnite si všetko, čo Oncofiles o pacientovi ukladá (ZIP so súbormi JSON). Pôvodné súbory sú vo vašom Google Drive a zostávajú tam." data-en="Download everything Oncofiles stores about the patient (a ZIP of JSON files). Your original files are in your Google Drive and stay there.">Stiahnite si všetko, čo Oncofiles o pacientovi ukladá (ZIP so súbormi JSON). Pôvodné súbory sú vo vašom Google Drive a zostávajú tam.</p>
+ <div class="inbound-actions">
+ <button type="button" class="copy-btn" id="patient-export-btn" data-action="downloadPatientExport" data-sk="Stiahnuť všetky údaje (ZIP)" data-en="Download all data (ZIP)">Stiahnuť všetky údaje (ZIP)</button>
+ <button type="button" class="copy-btn" id="drive-disconnect-btn" data-action="disconnectDrive" data-sk="Odpojiť Google Drive" data-en="Disconnect Google Drive">Odpojiť Google Drive</button>
+ </div>
+ <p class="inbound-terms" data-sk="Odpojenie zruší prístup Oncofiles k vášmu Google Drive a zastaví spracovanie. Súbory na Drive zostanú bez zmeny; dokumenty a údaje v Oncofiles zostanú, kým nepožiadate o vymazanie. Vymazanie všetkých údajov o pacientovi si vyžiadate e-mailom (do 30 dní), pozri zásady ochrany súkromia." data-en="Disconnecting ends Oncofiles' access to your Google Drive and stops processing. Your Drive files stay unchanged; documents and data in Oncofiles stay until you ask for deletion. To have all data about the patient deleted, write to us by e-mail (within 30 days), see the privacy policy.">Odpojenie zruší prístup Oncofiles k vášmu Google Drive a zastaví spracovanie. Súbory na Drive zostanú bez zmeny; dokumenty a údaje v Oncofiles zostanú, kým nepožiadate o vymazanie. Vymazanie všetkých údajov o pacientovi si vyžiadate e-mailom (do 30 dní), pozri zásady ochrany súkromia.</p>
+ <p class="inbound-terms"><a href="/privacy#rights" target="_blank" rel="noopener" data-sk="Zásady ochrany súkromia: vaše práva" data-en="Privacy policy: your rights">Zásady ochrany súkromia: vaše práva</a></p>
+ <p id="data-rights-status" class="inbound-status" role="status" hidden></p>
+ </section>
+ <!--/app-only-->
+
+ <!--app-only-->
  <!-- Administration: only for DASHBOARD_ADMIN_EMAILS sessions; every panel loads on first open -->
  <section class="admin-area" id="admin-area" style="display:none" aria-labelledby="admin-title">
  <div class="section-head">

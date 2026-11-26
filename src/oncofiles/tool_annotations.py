@@ -132,6 +132,8 @@ DESTRUCTIVE_TOOLS: frozenset[str] = frozenset(
         "delete_conversation",
         # #824: admin; deactivates a patient's bearer tokens (soft, no un-revoke tool)
         "revoke_patient_tokens",
+        # #856: admin, operator surface; hard-deletes ONE patient's rows on request
+        "erase_patient",
     }
 )
 

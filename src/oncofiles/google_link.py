@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 # hashes line up once that helper is on main; switch to it then.
 _AUDIT_EMAIL_PURPOSE = b"oncofiles.audit.caller_email.v1"
 
+# #856: version of the keyed account hash stored with the token
+# (``oauth_tokens.google_account_hash_v``). Bump it when the hash's key or
+# purpose changes: older rows then count as unknown, so no grant is revoked
+# on a stale comparison.
+GOOGLE_ACCOUNT_HASH_VERSION = 1
+
 
 def email_hash(email: str | None) -> str | None:
     """Keyed HMAC-SHA256 hex of the normalised email, or None (no email / no key)."""
@@ -143,6 +149,11 @@ async def store_google_link(
                 granted_scopes=json.dumps(merged),
                 gdrive_folder_id=existing.gdrive_folder_id if existing else "",
                 owner_email=existing.owner_email if existing else "",
+                # #856: the granting account, in the SAME upsert as the token
+                # (keyed hash only, never the e-mail); the revoke decision
+                # reads only this, never the audit row below.
+                google_account_hash=new_hash or None,
+                google_account_hash_v=GOOGLE_ACCOUNT_HASH_VERSION if new_hash else None,
             )
         )
 

@@ -316,6 +316,9 @@ class OAuthToken(BaseModel):
     gdrive_folder_name: str | None = None
     owner_email: str | None = None
     granted_scopes: str = "[]"
+    # #856: keyed hash (+ version) of the Google account that granted the token
+    google_account_hash: str | None = None
+    google_account_hash_v: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

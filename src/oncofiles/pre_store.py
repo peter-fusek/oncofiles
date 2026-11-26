@@ -30,9 +30,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 KEEP = 5
-# clinical: #726; restore: #806 sidecar restore; lab: #714 LLM lab facts
-JOBS = ("reread", "reocr", "clinical", "restore", "lab")
-NAME_RE = re.compile(r"oncofiles-\d{8}T\d{12}Z-(?:reread|reocr|clinical|restore|lab)\.db")
+# clinical: #726; restore: #806 sidecar restore; lab: #714 LLM lab facts;
+# erase: #856 erasure of a patient on request (the copy is made before any row goes)
+JOBS = ("reread", "reocr", "clinical", "restore", "lab", "erase")
+NAME_RE = re.compile(r"oncofiles-\d{8}T\d{12}Z-(?:reread|reocr|clinical|restore|lab|erase)\.db")
 
 
 class PreStoreError(RuntimeError):

@@ -202,6 +202,8 @@ OPERATOR_TOOLS: frozenset[str] = frozenset(
         # token admin (#824)
         "list_patient_tokens",
         "revoke_patient_tokens",
+        # erasure on request (#856)
+        "erase_patient",
         # deprecated: Oncoteam sunset (#721)
         "add_activity_log",
         "add_research_entry",

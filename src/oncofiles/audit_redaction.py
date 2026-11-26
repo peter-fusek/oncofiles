@@ -48,6 +48,12 @@ _PYDANTIC_INPUT_RE = re.compile(r"input_value=.*?(?=, input_type=|\]|$)", re.MUL
 _PYDANTIC_INPUT_DICT_RE = re.compile(r"'input': .*?(?=, 'ctx': |\}(?:, \{|\]|$))", re.DOTALL)
 
 SLUG_KEYS = frozenset({"patient_slug", "target_patient_slug"})
+# Keys redacted for one tool even where they are otherwise safe. ``erase_patient``
+# (#856): the erased patient's slug must not survive in the SYSTEM_NO_PATIENT
+# audit row the middleware writes (dry runs included).
+TOOL_REDACTED_KEYS: dict[str, frozenset[str]] = {
+    "erase_patient": frozenset({"patient_slug", "confirm_slug"}),
+}
 INT_KEYS = frozenset(
     {
         "limit",
@@ -215,11 +221,19 @@ def _render_pairs(pairs: Iterable[tuple[str | None, Any]]) -> str:
     return _join(parts)
 
 
-def summarize_args(args: Any) -> str:
+def _tool_masked(args: dict, tool_name: str) -> dict:
+    """``args`` with the tool's always-redacted keys replaced by a marker."""
+    keys = TOOL_REDACTED_KEYS.get(tool_name or "")
+    if not keys:
+        return args
+    return {k: (_redacted(v) if str(k) in keys and v is not None else v) for k, v in args.items()}
+
+
+def summarize_args(args: Any, tool_name: str = "") -> str:
     """The ``input_summary`` for a tool call's argument dict (allowlist)."""
     if not isinstance(args, dict) or not args:
         return ""
-    return _render_pairs((str(k), v) for k, v in args.items())
+    return _render_pairs((str(k), v) for k, v in _tool_masked(args, tool_name).items())
 
 
 _LITERAL_RE = re.compile(r"-?\d{1,18}|True|False|None|\[[^\n]{0,4000}\]")
@@ -275,13 +289,14 @@ def _leaves(v: Any) -> Iterable[Any]:
         yield v
 
 
-def sensitive_strings(args: Any) -> tuple[str, ...]:
+def sensitive_strings(args: Any, tool_name: str = "") -> tuple[str, ...]:
     """Every text form of the non-allowlisted argument values, longest first."""
     if not isinstance(args, dict):
         return ()
+    forced = TOOL_REDACTED_KEYS.get(tool_name or "", frozenset())
     found: set[str] = set()
     for key, v in args.items():
-        if is_safe_value(str(key), v):
+        if str(key) not in forced and is_safe_value(str(key), v):
             continue
         for leaf in _leaves(v):
             if leaf is None or isinstance(leaf, bool):
