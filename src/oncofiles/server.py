@@ -1282,6 +1282,27 @@ def _start_sync_scheduler(
             logger.exception("Dashboard access log retention failed")
             raise
 
+    async def _run_pre_store_erase_retention():
+        """Remove pre-store erase copies older than 30 days (#856).
+
+        Maintainer decision 2026-11-26 (RUNBOOK lifecycle): an erase copy holds
+        the erased patient's rows, so it must not outlive /privacy's 30-day
+        promise. Only ``oncofiles-<ts>Z-erase.db`` files (plus the existing
+        newest-``KEEP`` cap), under ``_sync_semaphore``. Logs the count only.
+        """
+        from oncofiles.pre_store import prune_expired_erase_copies
+
+        try:
+            async with _sync_semaphore:
+                removed = await asyncio.to_thread(prune_expired_erase_copies)
+            entry = job_tracker.get("pre_store_erase_retention", {})
+            entry["last_deleted"] = removed
+            job_tracker["pre_store_erase_retention"] = entry
+            logger.info("Pre-store erase retention: removed %d copies", removed)
+        except Exception:
+            logger.exception("Pre-store erase retention failed")
+            raise
+
     # _log_rss removed — restart logic consolidated into periodic_memory_check().
     # The old _log_rss reclaimed before checking, masking the threshold crossing,
     # and sys.exit(0) was caught by APScheduler as a job error (#213).
@@ -1803,6 +1824,15 @@ def _start_sync_scheduler(
         local_only_task("dashboard_access_log_retention", _run_dashboard_access_log_retention),
         CronTrigger(hour=4, minute=25, timezone="UTC"),
         id="dashboard_access_log_retention",
+        max_instances=1,
+        misfire_grace_time=1800,
+        coalesce=True,
+    )
+    # #856: erase copies older than 30 days (maintainer decision 2026-11-26).
+    scheduler.add_job(
+        local_only_task("pre_store_erase_retention", _run_pre_store_erase_retention),
+        CronTrigger(hour=4, minute=35, timezone="UTC"),
+        id="pre_store_erase_retention",
         max_instances=1,
         misfire_grace_time=1800,
         coalesce=True,

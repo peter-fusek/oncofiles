@@ -117,6 +117,13 @@ CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
         "Zmazanie záznamov prístupov do dashboardu starších ako 90 dní",
         "Delete dashboard access log rows older than 90 days",
     ),
+    "pre_store_erase_retention": (
+        "infra",
+        "Retencia kópií pred vymazaním",
+        "Erase copy retention",
+        "Zmazanie bezpečnostných kópií pred vymazaním pacienta starších ako 30 dní",
+        "Delete pre-erasure safety copies older than 30 days",
+    ),
     "inbound_queue": (
         "infra",
         "Fronta prijatej pošty",

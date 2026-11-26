@@ -12,7 +12,9 @@ across job kinds.
 * Mode 0600, directory 0700.
 * Retention: the newest ``KEEP`` copies stay; older ones are removed one by
   one, and only files whose name fully matches ``NAME_RE`` — never a glob,
-  never anything else in the directory.
+  never anything else in the directory. Erase copies (#856) are also removed
+  once older than ``ERASE_MAX_AGE_DAYS`` (30), on every copy and by the daily
+  ``pre_store_erase_retention`` job (maintainer decision 2026-11-26, RUNBOOK).
 
 Blocking (file I/O): call through ``asyncio.to_thread``.
 """
@@ -24,7 +26,7 @@ import logging
 import os
 import re
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,10 @@ KEEP = 5
 # erase: #856 erasure of a patient on request (the copy is made before any row goes)
 JOBS = ("reread", "reocr", "clinical", "restore", "lab", "erase")
 NAME_RE = re.compile(r"oncofiles-\d{8}T\d{12}Z-(?:reread|reocr|clinical|restore|lab|erase)\.db")
+# #856: an erase copy holds the erased patient's rows; it is removed once older
+# than this (maintainer decision 2026-11-26), so /privacy's "within 30 days" holds.
+ERASE_SUFFIX = "-erase.db"
+ERASE_MAX_AGE_DAYS = 30
 
 
 class PreStoreError(RuntimeError):
@@ -67,16 +73,51 @@ def _quick_check(path: Path) -> list:
         conn.close()
 
 
-def _prune(directory: Path, keep: int) -> list[str]:
+def _copy_time(name: str) -> datetime | None:
+    """UTC time from a copy's own name (``oncofiles-<YYYYmmddTHHMMSS…>Z-…``)."""
+    try:
+        return datetime.strptime(name[10:25], "%Y%m%dT%H%M%S").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _expired_erase(directory: Path, name: str, now: datetime) -> bool:
+    """An erase copy older than ``ERASE_MAX_AGE_DAYS`` (time from its name, else mtime)."""
+    if not name.endswith(ERASE_SUFFIX) or not (directory / name).is_file():
+        return False
+    made = _copy_time(name)
+    if made is None:
+        try:
+            made = datetime.fromtimestamp((directory / name).stat().st_mtime, UTC)
+        except OSError:
+            return False
+    return now - made > timedelta(days=ERASE_MAX_AGE_DAYS)
+
+
+def _prune(directory: Path, keep: int, now: datetime | None = None) -> list[str]:
+    now = now or datetime.now(UTC)
     names = sorted(n for n in os.listdir(directory) if NAME_RE.fullmatch(n))
+    over_count = set(names[: max(0, len(names) - keep)])
     removed = []
-    for name in names[: max(0, len(names) - keep)]:
+    for name in names:
+        if name not in over_count and not _expired_erase(directory, name, now):
+            continue
         try:
             os.remove(directory / name)  # exact filename, pattern-matched above
             removed.append(name)
         except OSError:
             logger.warning("pre-store: could not remove old copy %s", name)
     return removed
+
+
+def prune_expired_erase_copies(*, now: datetime | None = None) -> int:
+    """Daily lifecycle (maintainer decision 2026-11-26, RUNBOOK): remove erase
+    copies older than ``ERASE_MAX_AGE_DAYS`` (and anything over ``KEEP``), so a
+    stale copy never outlives the 30-day erasure promise. Returns the count."""
+    directory = pre_store_dir()
+    if not directory.is_dir():
+        return 0
+    return len(_prune(directory, KEEP, now))
 
 
 def make_copy(db, job: str, *, now: datetime | None = None, keep: int = KEEP) -> str:
@@ -122,6 +163,6 @@ def make_copy(db, job: str, *, now: datetime | None = None, keep: int = KEEP) ->
         if isinstance(exc, PreStoreError):
             raise
         raise PreStoreError(f"backup failed: {type(exc).__name__}") from exc
-    removed = _prune(directory, keep)
+    removed = _prune(directory, keep, now)
     logger.info("pre-store copy %s made (%d old copies removed)", name, len(removed))
     return name
