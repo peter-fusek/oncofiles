@@ -712,8 +712,9 @@ class FactsMixin:
     ) -> list[dict]:
         sql = (
             "SELECT s.*, d.title AS source_title, d.document_date AS source_date, "
-            "d.source_url FROM fact_series_v s "
+            "d.source_url, COALESCE(o.code, d.institution) AS institution FROM fact_series_v s "
             "LEFT JOIN documents d ON d.id = s.source_document_id AND d.patient_id = s.patient_id "
+            "LEFT JOIN organizations o ON o.id = d.organization_id "
             f"WHERE s.patient_id = ? AND s.code IN ({','.join('?' * len(codes))})"
         )
         params: list = [patient_id, *codes]
