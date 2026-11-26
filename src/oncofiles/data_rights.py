@@ -20,14 +20,18 @@ one page of rows plus one chunk of compressed output; one held original at a
 time), JSON Lines per table, a ``manifest.json`` with counts and a bilingual
 ``README.md``. Rows come from the registry's own ``where`` (the patient's rows
 only, SQL-filtered) and never carry credentials, hashes of anyone, encrypted
-blobs or other people's e-mail addresses (:func:`exported_columns`). The
+blobs or other people's e-mail addresses (:func:`exported_columns`); it does
+include the patient's own mail and calendar entries (``email_entries``,
+``calendar_entries``) with the addresses in them (senders, recipients,
+attendees), because they are the patient's own data. The
 originals are in the patient's own Google Drive and are not copied, except a
 trial's held files (``holding:`` ids), which exist nowhere else.
 
 **Drive disconnect** (:func:`disconnect_drive`): the caregiver's own button.
-Revokes the grant at Google unless another patient uses the same grant or
-account, deletes the stored token row (which also holds the folder link),
-switches curated processing off and forgets the in-memory curated state.
+Deletes the stored token row (which also holds the folder link), switches
+curated processing off, forgets the in-memory curated state and then revokes
+the grant at Google unless another patient uses the same grant or account (the
+revoke runs in a ``finally``, so a failure of the curated switch never skips it).
 Refused while any curated work of the patient runs. Drive files are untouched.
 """
 
@@ -109,6 +113,17 @@ REGISTRY: tuple[TableRule, ...] = (
     ),
     TableRule("lab_values", f"document_id IN ({_DOCS})", True, "legacy lab values"),
     TableRule(
+        "prompt_log",
+        # also rows with a legacy patient_id ('' / default) that reference one of
+        # the patient's documents: their prompts were built from its page text.
+        # Before ``documents`` in this list, or the subquery finds nothing.
+        f"patient_id = {_P} OR document_id IN ({_DOCS})",
+        False,
+        "cloud-AI call telemetry (prompts built from the page text, which is exported)",
+        # never exported; should that change, only the patient's own rows
+        export_scope=f"patient_id = {_P}",
+    ),
+    TableRule(
         "inbound_claimed_jobs",
         f"bucket IN (SELECT token_hash FROM inbound_addresses WHERE patient_id = {_P})",
         False,
@@ -163,11 +178,6 @@ REGISTRY: tuple[TableRule, ...] = (
         True,
         "access log of AI assistant calls",
         only=("created_at", "tool_name", "status", "agent_id", "auth_method", "duration_ms"),
-    ),
-    _direct(
-        "prompt_log",
-        False,
-        "cloud-AI call telemetry (prompts built from the page text, which is exported)",
     ),
     _direct("patient_selection", False, "which patient an account last selected (UI state)"),
     _direct("patient_tokens", False, "bearer token hashes (credential)"),
@@ -522,11 +532,15 @@ async def disconnect_drive(db, patient_id: str, *, caller_email: str | None) -> 
             return await _refuse(busy)
         grants = await db.oauth_grants_for_disconnect(patient_id=patient_id)
         removed = await db.delete_oauth_tokens(patient_id=patient_id)
-        await db.set_curated_nightly(
-            patient_id=patient_id, enabled=False, updated_by="drive disconnect (#856)"
-        )
-        curated.forget_patient(patient_id)
-        google = await revoke_grants(grants)
+        # The stored token is gone: the grant at Google must be revoked even when
+        # switching curated processing off fails (the error still propagates).
+        try:
+            await db.set_curated_nightly(
+                patient_id=patient_id, enabled=False, updated_by="drive disconnect (#856)"
+            )
+            curated.forget_patient(patient_id)
+        finally:
+            google = await revoke_grants(grants)
     out = {
         "status": "disconnected" if removed else "not_connected",
         "google_revoke": google,

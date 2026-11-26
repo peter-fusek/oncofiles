@@ -235,6 +235,12 @@ async def test_every_table_with_a_patient_reference_is_in_the_registry(db: Datab
             offenders.append(table)
         if {t for t, _ in fks.values()} & (patient_parents | registry):
             offenders.append(table)
+        # a reference to a patient row without a declared FK (C3)
+        if any(
+            n.endswith("document_id") or n in {"record_id", "quarantine_id", "item_uuid"}
+            for n in names
+        ):
+            offenders.append(table)
     assert not offenders, offenders
 
 
@@ -375,6 +381,161 @@ async def test_erasure_rolls_back_as_a_whole(two, fake_copy, fake_revoke):
     after = await _all_counts(two)
     assert after == before
     assert fake_revoke == []  # the Google link keeps working after a rollback
+
+
+def test_deferred_fk_failure_reports_the_violating_tables():
+    """C5: a deferred FK failure at the commit names tables and counts only."""
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY, patient_id TEXT)")
+    conn.execute(
+        "CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id))"
+    )
+    conn.execute("INSERT INTO parent (id, patient_id) VALUES (1, 'p')")
+    conn.execute("INSERT INTO child (parent_id) VALUES (1)")
+    conn.execute("INSERT INTO child (parent_id) VALUES (1)")
+    rules = (data_rights.TableRule("parent", "patient_id = :pid", False, "t"),)
+    with (
+        patch.object(data_rights, "REGISTRY", rules),
+        pytest.raises(patient_erasure.ErasureRolledBackError) as info,
+    ):
+        patient_erasure._delete_rows_sync(conn, "p")
+    assert info.value.fk_violations == {"child": 2}
+    assert conn.execute("SELECT COUNT(*) FROM parent").fetchone()[0] == 1  # rolled back
+    assert not conn.in_transaction
+    conn.close()
+
+
+async def test_erasure_returns_fk_violations_on_rollback(two, fake_copy, fake_revoke):
+    exc = patient_erasure.ErasureRolledBackError(sqlite3.IntegrityError("x"), {"links": 3})
+
+    def _boom(conn, pid):
+        raise exc
+
+    with patch.object(patient_erasure, "_delete_rows_sync", _boom):
+        out = await patient_erasure.erase_patient(
+            two, patient_id=A, confirm_slug=A_SLUG, dry_run=False, reason="r"
+        )
+    assert out == {"status": "refused", "code": "rolled_back", "fk_violations": {"links": 3}}
+    assert fake_revoke == []
+
+
+async def test_erasure_compacts_fts_and_reports_no_residue(two, fake_copy, fake_revoke):
+    """C4 + C6: after the commit the FTS indexes are optimised and the WAL
+    truncated (best effort), and the registry is re-counted."""
+    seen: list[str] = []
+    real = patient_erasure._compact_sync
+
+    def _spy(conn):
+        seen.append("compact")
+        return real(conn)
+
+    with patch.object(patient_erasure, "_compact_sync", _spy):
+        out = await patient_erasure.erase_patient(
+            two, patient_id=A, confirm_slug=A_SLUG, dry_run=False, reason="r"
+        )
+    assert out["status"] == "erased"
+    assert seen == ["compact"]
+    assert out["residual_rows"] == {}
+    assert out["compaction"] == "ok"
+
+
+def test_compaction_optimises_existing_fts_tables_and_never_raises():
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE VIRTUAL TABLE documents_fts USING fts5(body)")
+    conn.execute("INSERT INTO documents_fts (body) VALUES ('invented text 2027')")
+    conn.commit()
+    # conversation_entries_fts does not exist: skipped, not a failure
+    assert patient_erasure._compact_sync(conn) == []
+    assert conn.execute("PRAGMA secure_delete").fetchone()[0] == 0  # restored
+    # an open transaction of someone else: nothing committed, reported
+    conn.execute("INSERT INTO documents_fts (body) VALUES ('pending')")
+    assert conn.in_transaction
+    assert patient_erasure._compact_sync(conn) == ["db_busy"]
+    assert conn.in_transaction
+    conn.rollback()
+    conn.close()
+    # a closed connection: the erasure still never fails
+    assert patient_erasure._compact_sync(conn) == ["compact"]
+
+
+async def test_erasure_reports_rows_left_after_the_commit(two, fake_copy, fake_revoke):
+    real = data_rights.count_rows
+    calls = {"n": 0}
+
+    async def _count(db, pid):
+        calls["n"] += 1
+        out = await real(db, pid)
+        if calls["n"] == 2:  # the re-count after the commit
+            out["documents"] = 1
+        return out
+
+    with patch.object(data_rights, "count_rows", _count):
+        out = await patient_erasure.erase_patient(
+            two, patient_id=A, confirm_slug=A_SLUG, dry_run=False, reason="r"
+        )
+    assert out["status"] == "erased" and out["residual_rows"] == {"documents": 1}
+
+
+async def test_erasure_removes_legacy_prompt_log_rows_of_the_patients_documents(
+    two, fake_copy, fake_revoke
+):
+    """C2: a prompt_log row with a legacy patient_id ('') that points at one of
+    the patient's documents is erased with the patient; B's stays."""
+    ids = {}
+    for pid in (A, B):
+        async with two.db.execute("SELECT id FROM documents WHERE patient_id = ?", (pid,)) as cur:
+            ids[pid] = (await cur.fetchone())[0]
+    for pid in (A, B):
+        await _seed_row(two, "prompt_log", "", f"legacy-{pid[-4:]}")
+        await two.db.execute(
+            "UPDATE prompt_log SET document_id = ? WHERE id = (SELECT MAX(id) FROM prompt_log)",
+            (ids[pid],),
+        )
+    await two.db.commit()
+    assert (await data_rights.count_rows(two, A))["prompt_log"] == 2
+    rule = data_rights.rule_for("prompt_log")
+    assert rule.export is False and "document_id" not in rule.export_where
+    # the documents subquery must run before documents are deleted
+    order = [r.table for r in data_rights.REGISTRY]
+    assert order.index("prompt_log") < order.index("documents")
+    out = await patient_erasure.erase_patient(
+        two, patient_id=A, confirm_slug=A_SLUG, dry_run=False, reason="r"
+    )
+    assert out["status"] == "erased" and out["rows_removed"]["prompt_log"] == 2
+    async with two.db.execute(
+        "SELECT COUNT(*) FROM prompt_log WHERE document_id = ?", (ids[A],)
+    ) as cur:
+        assert (await cur.fetchone())[0] == 0
+    async with two.db.execute(
+        "SELECT COUNT(*) FROM prompt_log WHERE document_id = ?", (ids[B],)
+    ) as cur:
+        assert (await cur.fetchone())[0] == 1  # the legacy row of B's document stays
+    assert (await data_rights.count_rows(two, B))["prompt_log"] == 2
+
+
+def test_erase_patient_audit_summary_never_keeps_the_slug():
+    """C1: the generic audit middleware redacts patient_slug for erase_patient
+    (the row is written under SYSTEM_NO_PATIENT, dry runs included)."""
+    from oncofiles.audit_redaction import sensitive_strings, summarize_args
+
+    args = {"patient_slug": A_SLUG, "confirm_slug": A_SLUG, "dry_run": True, "reason": "x"}
+    summary = summarize_args(args, "erase_patient")
+    assert A_SLUG not in summary and "dry_run=True" in summary
+    assert f"patient_slug=<redacted:len={len(A_SLUG)}>" in summary
+    assert A_SLUG in sensitive_strings(args, "erase_patient")  # scrubbed from logs too
+    # every other tool keeps a slug-shaped patient_slug as before
+    assert f"patient_slug={A_SLUG}" in summarize_args(args, "list_documents")
+    assert A_SLUG not in sensitive_strings({"patient_slug": A_SLUG}, "list_documents")
+
+
+def test_middleware_audit_row_of_erase_patient_has_no_slug():
+    from types import SimpleNamespace
+
+    from oncofiles.audit_middleware import _summarize_input
+
+    msg = SimpleNamespace(arguments={"patient_slug": A_SLUG, "dry_run": True})
+    assert A_SLUG not in _summarize_input(msg, "erase_patient")
 
 
 async def test_erasure_removes_the_patients_encrypted_files_only(
@@ -848,6 +1009,18 @@ async def test_disconnect_only_by_the_caregiver(two, fake_revoke, email, admin, 
     assert await _token(two, A) is not None and fake_revoke == []
 
 
+async def test_disconnect_revokes_even_when_the_curated_switch_fails(two, fake_revoke):
+    """C9: the stored token is gone, so the Google revoke runs in a finally:
+    an error switching curated processing off never skips it."""
+    with (
+        patch.object(two, "set_curated_nightly", AsyncMock(side_effect=RuntimeError("db"))),
+        pytest.raises(RuntimeError),
+    ):
+        await data_rights.disconnect_drive(two, A, caller_email=A_EMAIL)
+    assert fake_revoke == ["anna-oauth_tokens-refresh_token"]
+    assert await _token(two, A) is None
+
+
 class _Resp:
     def __init__(self, status, body=None):
         self.status_code = status
@@ -1045,7 +1218,8 @@ async def test_privacy_and_terms_describe_the_data_rights():
     privacy = " ".join((await server.privacy_policy(None)).body.decode().split())
     terms = " ".join((await server.terms_of_service(None)).body.decode().split())
     assert "download an export of everything Oncofiles stores about the patient" in privacy
-    assert "can disconnect Google Drive" in privacy and "asks Google to revoke it" in privacy
+    assert "can disconnect Google Drive" in privacy
+    assert "asks Google to revoke it when no other patient uses the same Google account" in privacy
     assert "your Drive files are not changed" in privacy
     assert "handled by hand, within 30 days" in privacy  # maintainer decision 2026-11-19
     assert "the consent record (section 2)" in privacy  # erased with the patient

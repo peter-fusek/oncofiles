@@ -21,7 +21,7 @@ import pytest
 
 from oncofiles import audit_middleware
 from oncofiles.audit_middleware import AuditMiddleware
-from oncofiles.audit_redaction import redact_stored_summary, summarize_args
+from oncofiles.audit_redaction import TOOL_REDACTED_KEYS, redact_stored_summary, summarize_args
 from oncofiles.database import Database
 from oncofiles.persistent_oauth import _verified_caller_is_admin
 
@@ -143,7 +143,10 @@ async def test_sweep_every_registered_tool_redacts_phi(db: Database, caplog):
             if k in shown:
                 assert f"{k}={FAKE_ID}" in summary, tool.name
                 with_id += 1
-        if "patient_slug" in shown:
+        if "patient_slug" in TOOL_REDACTED_KEYS.get(tool.name, ()):
+            # #856 erase_patient: the erased patient's slug is never kept
+            assert FAKE_SLUG not in stored and FAKE_SLUG not in logged, tool.name
+        elif "patient_slug" in shown:
             assert f"patient_slug={FAKE_SLUG}" in summary, tool.name
             with_slug += 1
         for k, v in args.items():

@@ -140,7 +140,7 @@ class AuditMiddleware(Middleware):
         resolved: set[str] = set()
         bucket_token = _call_patient_ids.set(resolved)
         auth_method, caller_email_hash = _caller_identity(context)
-        secrets = sensitive_strings(getattr(context.message, "arguments", None))
+        secrets = sensitive_strings(getattr(context.message, "arguments", None), tool_name)
         secrets_token = set_call_secrets(secrets)
 
         try:
@@ -236,9 +236,10 @@ def _summarize_input(message: Any, tool_name: str = "") -> str:
     One renderer for every tool, the session-diary tools (#755) included:
     only ids, slugs, booleans, enums and fact codes keep their value, so
     diary free text (title, content, search text, tags) never reaches
-    activity_log. ``tool_name`` is accepted for the call site and unused.
+    activity_log. ``tool_name`` selects per-tool always-redacted keys
+    (``audit_redaction.TOOL_REDACTED_KEYS``, e.g. ``erase_patient``'s slug).
     """
     try:
-        return summarize_args(getattr(message, "arguments", None))
+        return summarize_args(getattr(message, "arguments", None), tool_name)
     except Exception:
         return ""

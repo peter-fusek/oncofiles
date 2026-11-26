@@ -22,7 +22,13 @@ removed:
    on the database thread (no other coroutine's statement can interleave),
    FK checks deferred to the commit, ``secure_delete`` on; ``patients`` last;
    ``patient_consents`` with it (decision 2026-11-19). A refusal
-   (``db_busy``) or rollback ends here with nothing touched;
+   (``db_busy``) or rollback ends here with nothing touched (a deferred FK
+   failure also returns ``fk_violations`` = {table: rows});
+   after the commit, best effort (never failing the erasure): FTS5
+   ``optimize`` of ``documents_fts`` / ``conversation_entries_fts`` and
+   ``PRAGMA wal_checkpoint(TRUNCATE)`` with ``secure_delete`` on, so no
+   erased text lingers in old index segments or the WAL; then the registry is
+   re-counted and anything left is returned as ``residual_rows``;
 5. only after the commit the encrypted files go: the patient's quarantine
    items (through the quarantine purge helper's own path checks) and a
    trial's held originals; missing files are tolerated, a path that fails its
@@ -41,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sqlite3
 import stat
 from contextlib import AsyncExitStack
 
@@ -56,6 +63,71 @@ class ErasureRefusedError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class ErasureRolledBackError(RuntimeError):
+    """The transaction was rolled back. ``fk_violations`` = {table: rows} that
+    ``PRAGMA foreign_key_check`` reported when a deferred FK check failed the
+    commit (table names and counts only, never row ids or values)."""
+
+    def __init__(self, cause: BaseException, fk_violations: dict[str, int]) -> None:
+        super().__init__(type(cause).__name__)
+        self.cause_name = type(cause).__name__
+        self.fk_violations = fk_violations
+
+
+def _fk_violations(conn) -> dict[str, int]:
+    out: dict[str, int] = {}
+    try:
+        for row in conn.execute("PRAGMA foreign_key_check").fetchall():
+            out[row[0]] = out.get(row[0], 0) + 1
+    except Exception:  # noqa: BLE001 - a diagnostic only
+        logger.warning("erasure: foreign_key_check failed", exc_info=True)
+    return out
+
+
+FTS_TABLES = ("documents_fts", "conversation_entries_fts")
+
+
+def _compact_sync(conn) -> list[str]:
+    """Best effort after the erase commit: merge the FTS5 segments (the deleted
+    rows' tokens otherwise linger in old segments until a merge) and truncate
+    the WAL (which still holds page images with the erased rows), with
+    ``secure_delete`` on so freed pages are zeroed. Never raises; returns the
+    steps that failed or were skipped (``db_busy``: another coroutine left a
+    transaction open, committing would commit its writes)."""
+    failed: list[str] = []
+    try:
+        if conn.in_transaction:
+            return ["db_busy"]
+        secure = conn.execute("PRAGMA secure_delete").fetchone()[0]
+        conn.execute("PRAGMA secure_delete = ON")
+        try:
+            for fts in FTS_TABLES:
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (fts,)
+                ).fetchone()
+                if not exists:
+                    continue
+                try:
+                    table = data_rights._quote(fts)
+                    conn.execute(f"INSERT INTO {table}({table}) VALUES('optimize')")
+                    conn.commit()
+                except Exception:  # noqa: BLE001 - best effort
+                    if conn.in_transaction:
+                        conn.rollback()
+                    failed.append(fts)
+            try:
+                row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if row and row[0]:  # busy: not every frame could be checkpointed
+                    failed.append("wal_checkpoint_busy")
+            except Exception:  # noqa: BLE001 - best effort
+                failed.append("wal_checkpoint")
+        finally:
+            conn.execute(f"PRAGMA secure_delete = {int(secure)}")
+    except Exception:  # noqa: BLE001 - never fails the erasure
+        failed.append("compact")
+    return failed
 
 
 def _delete_rows_sync(conn, patient_id: str) -> dict[str, int]:
@@ -83,8 +155,17 @@ def _delete_rows_sync(conn, patient_id: str) -> dict[str, int]:
                 )
                 counts[rule.table] = int(cursor.rowcount or 0)
             conn.commit()
-        except BaseException:
+        except BaseException as exc:
+            fk: dict[str, int] = {}
+            if (
+                isinstance(exc, sqlite3.IntegrityError)
+                and "FOREIGN KEY" in str(exc).upper()
+                and conn.in_transaction
+            ):
+                fk = _fk_violations(conn)  # before the rollback undoes them
             conn.rollback()
+            if isinstance(exc, Exception):
+                raise ErasureRolledBackError(exc, fk) from exc
             raise
     finally:
         conn.execute(f"PRAGMA secure_delete = {int(secure)}")
@@ -216,9 +297,25 @@ async def erase_patient(
             removed = await db.db._execute(_delete_rows_sync, db.db._conn, patient_id)
         except ErasureRefusedError as exc:
             return refused(exc.code)
+        except ErasureRolledBackError as exc:
+            logger.warning(
+                "erasure: rolled back (%s), fk violations in %d table(s)",
+                exc.cause_name,
+                len(exc.fk_violations),
+            )
+            out = refused("rolled_back")
+            if exc.fk_violations:
+                out["fk_violations"] = exc.fk_violations
+            return out
         except Exception as exc:  # noqa: BLE001 - rolled back; say why by class only
             logger.warning("erasure: rolled back (%s)", type(exc).__name__)
             return refused("rolled_back")
+        compact_failed = await db.db._execute(_compact_sync, db.db._conn)
+        if compact_failed:
+            logger.warning("erasure: compaction steps not done: %s", ",".join(compact_failed))
+        residual = {t: n for t, n in (await data_rights.count_rows(db, patient_id)).items() if n}
+        if residual:
+            logger.warning("erasure: %d row(s) left after the commit", sum(residual.values()))
         q = await asyncio.to_thread(inbound_quarantine.erase_items_files, items)
         held_codes: dict[str, int] = {}
         held_left: list[str] = []
@@ -241,6 +338,9 @@ async def erase_patient(
         "status": "erased",
         "rows_removed": removed,
         "rows_total": sum(removed.values()),
+        # re-counted after the commit: {table: rows} still matching, normally {}
+        "residual_rows": residual,
+        "compaction": {"failed": compact_failed} if compact_failed else "ok",
         "quarantine": q,
         "held_files": held_codes,
         "leftover_files": leftover,

@@ -2792,7 +2792,8 @@ Data Protection of the Slovak Republic)</li>
 <p>On the dashboard, the patient's caregiver can download an export of everything Oncofiles
 stores about the patient (a ZIP of JSON files; the original files stay in your Google Drive),
 and can disconnect Google Drive: Oncofiles then deletes its stored Google access token, asks
-Google to revoke it, and stops processing the folder; your Drive files are not changed. You can
+Google to revoke it when no other patient uses the same Google account, and stops processing
+the folder; your Drive files are not changed. You can
 also stop Oncofiles' access to your Google Drive at any time in your Google Account
 (section 1).</p>
 <p>To use the other rights, write to us by e-mail (section 10). Requests for access, export and
