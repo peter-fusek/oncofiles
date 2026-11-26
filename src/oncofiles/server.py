@@ -2467,14 +2467,15 @@ link to the user so they can view, verify, or share the original document.
 Always display these when citing research findings.
 3. When making clinical observations, cite the specific source document(s) by filename \
 and `gdrive_url`. Never state medical facts without a traceable source.
-4. `get_related_documents` returns cross-referenced documents when links are available. \
-Links are not created automatically today, so an empty result with a `note` is normal; \
-never present documents as linked unless the tool returns them.
+4. `get_related_documents` returns related documents when links exist; an empty result \
+with a `note` is normal. Never present documents as linked unless the tool returns them.
 5. For lab trend analysis, reference the source `document_id` for each data point.
 
 CROSS-REFERENCES — links appear when available:
-- `same_visit`: same date + institution (e.g., labs and imaging from one appointment)
-- `related`: nearby dates or shared diagnoses/medications
+- `same_visit` (`source: computed`): the same document date AND the same known institution \
+(e.g., labs and imaging from one appointment). It is a date-and-place rule, not a reading \
+of the content; a document without a date or with an `Unknown` institution has none.
+- Other link types (`related`, `follow_up`) are not created automatically today.
 - When `get_related_documents` returns none, use `timeline` or `encounter_detail` for \
 documents of the same day or visit instead.
 

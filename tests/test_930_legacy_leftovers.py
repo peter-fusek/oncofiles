@@ -1,8 +1,10 @@
 """Lock tests for #930 part 1: legacy leftovers on the non-curated side.
 
 1. A calendar keyword match never creates a TreatmentEvent row.
-2. ``get_related_documents`` says so explicitly when there are no links, and the
-   server instructions no longer promise automatic linking.
+2. ``get_related_documents`` says so explicitly when there are no links, computes
+   only the deterministic ``same_visit`` link (same patient, date and known
+   institution; no model call, nothing written), and the server instructions
+   promise nothing more.
 3. Sync never invents a document date (no Drive mtime, created_at or literal
    placeholder date in a rebuilt filename or as ``document_date``).
 4. The primary-clinic institution fallbacks never touch curated / ``gdrive:`` rows.
@@ -140,6 +142,87 @@ def test_server_instructions_do_not_promise_automatic_links():
 
     assert "automatically linked" not in _MCP_INSTRUCTIONS
     assert "links appear when available" in _MCP_INSTRUCTIONS
+    # The only automatic link is the computed date-and-place rule; nearby dates or
+    # shared diagnoses are no longer promised.
+    assert "nearby dates" not in _MCP_INSTRUCTIONS
+    assert "`same_visit` (`source: computed`)" in _MCP_INSTRUCTIONS
+
+
+async def _insert(db: Database, file_id: str, *, patient_id: str = PATIENT_A_UUID, **kw):
+    return await db.insert_document(make_doc(file_id=file_id, **kw), patient_id=patient_id)
+
+
+async def test_related_documents_same_visit_computed_locally(db: Database):
+    from oncofiles.tools.documents import SAME_VISIT_BASIS, get_related_documents
+
+    day = date(2027, 6, 14)
+    doc = await _insert(db, "file_930_sv_a", document_date=day, institution="ZZZClinic")
+    same = await _insert(db, "file_930_sv_b", document_date=day, institution=" zzzclinic ")
+    await _insert(db, "file_930_sv_c", document_date=date(2027, 6, 15), institution="ZZZClinic")
+    await _insert(db, "file_930_sv_d", document_date=day, institution="QQQHospital")
+    await _insert(db, "file_930_sv_e", document_date=day, institution=None)
+    gone = await _insert(db, "file_930_sv_f", document_date=day, institution="ZZZClinic")
+    await db.delete_document(gone.id, patient_id=PATIENT_A_UUID)
+
+    with patch("oncofiles.enhance._get_client", side_effect=AssertionError("no model call")):
+        result = json.loads(await get_related_documents(_mock_ctx(db), doc.id))
+
+    assert [r["id"] for r in result["related"]] == [same.id]
+    item = result["related"][0]
+    assert item["relationship"] == "same_visit"
+    assert item["source"] == "computed"
+    assert item["basis"] == SAME_VISIT_BASIS
+    assert "note" not in result
+    # Read only: nothing is stored.
+    async with db.db.execute("SELECT COUNT(*) AS n FROM document_cross_references") as cur:
+        assert (await cur.fetchone())["n"] == 0
+
+
+@pytest.mark.parametrize("institution", [None, "", "Unknown", "  unknown "])
+async def test_related_documents_no_same_visit_without_known_institution(db: Database, institution):
+    from oncofiles.tools.documents import RELATED_DOCUMENTS_NONE_NOTE, get_related_documents
+
+    day = date(2027, 6, 14)
+    doc = await _insert(db, "file_930_ui_a", document_date=day, institution=institution)
+    await _insert(db, "file_930_ui_b", document_date=day, institution=institution)
+
+    result = json.loads(await get_related_documents(_mock_ctx(db), doc.id))
+    assert result["related"] == []
+    assert result["note"] == RELATED_DOCUMENTS_NONE_NOTE
+
+
+async def test_related_documents_no_same_visit_without_date(db: Database):
+    from oncofiles.tools.documents import get_related_documents
+
+    doc = await _insert(db, "file_930_nd_a", document_date=None, institution="ZZZClinic")
+    await _insert(db, "file_930_nd_b", document_date=None, institution="ZZZClinic")
+
+    result = json.loads(await get_related_documents(_mock_ctx(db), doc.id))
+    assert result["related"] == []
+
+
+async def test_same_visit_never_crosses_patients(db: Database):
+    from oncofiles.tools.documents import get_related_documents
+
+    other_pid = "00000000-0000-4000-8000-000000000930"
+    await db.db.execute(
+        "INSERT OR IGNORE INTO patients (patient_id, slug, display_name, caregiver_email) "
+        "VALUES (?, ?, ?, ?)",
+        (other_pid, "other-930-test", "Other Testova", "other930@example.com"),
+    )
+    await db.db.commit()
+    day = date(2027, 6, 14)
+    doc = await _insert(db, "file_930_xp_a", document_date=day, institution="ZZZClinic")
+    await _insert(
+        db, "file_930_xp_b", patient_id=other_pid, document_date=day, institution="ZZZClinic"
+    )
+
+    result = json.loads(await get_related_documents(_mock_ctx(db), doc.id))
+    assert result["related"] == []
+    found = await db.find_same_visit_documents(
+        doc.id, patient_id=PATIENT_A_UUID, document_date=day.isoformat(), institution="ZZZClinic"
+    )
+    assert found == []
 
 
 # ── 3. Never invent a document date ────────────────────────────────────────
