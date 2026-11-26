@@ -585,9 +585,16 @@ async def test_cartesian_aggregate_hits_step_budget(big_db, monkeypatch):
 
 
 async def test_value_size_capped(two_db):
-    # printf past the limit yields NULL; growing a value past it is an error.
-    out = await _run(two_db, f"SELECT length(printf('%.{MAX_VALUE_BYTES + 1}c', 'x')) AS n")
-    assert out["rows"][0]["n"] is None
+    # printf past the limit yields NULL on older SQLite builds and raises
+    # "string or blob too big" on newer ones (the CI runner's build changed in
+    # Nov 2026); either way no oversized value is ever produced. Growing a value
+    # past the limit is an error on every build.
+    try:
+        out = await _run(two_db, f"SELECT length(printf('%.{MAX_VALUE_BYTES + 1}c', 'x')) AS n")
+    except sqlite3.DatabaseError as exc:
+        assert "too big" in str(exc)
+    else:
+        assert out["rows"][0]["n"] is None
     half = MAX_VALUE_BYTES // 2 + 1
     with pytest.raises(sqlite3.DatabaseError, match="too big"):
         await _run(two_db, f"SELECT length(printf('%.{half}c', 'x') || printf('%.{half}c', 'x'))")
