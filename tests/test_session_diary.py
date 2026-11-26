@@ -421,6 +421,8 @@ DIARY_ACCESS_ALLOWLIST = {
     "tools/db_query.py": "patient-scoped query_db allowlist (user acting)",
     "server.py": "tool registration",
     "vocab.py": "maps code columns (entry_type, participant …) to vocab domains; names only (#789)",
+    "data_rights.py": "#856 table registry: the caregiver's own export ZIP and the erasure on "
+    "request; never a model, Drive or fact source",
 }
 # Extractors, indexers and every module that talks to a model.
 FORBIDDEN = ("curated/", "enhance.py", "doc_analysis.py", "tools/curated.py",

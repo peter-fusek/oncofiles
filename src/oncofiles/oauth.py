@@ -345,6 +345,46 @@ def refresh_access_token(refresh_token: str) -> dict:
     return response.json()
 
 
+REVOKE_URL = "https://oauth2.googleapis.com/revoke"
+
+
+def revoke_token(token: str, *, timeout: float = 10.0) -> str:
+    """Revoke a Google OAuth token at Google (#856, Drive disconnect / erasure).
+
+    Revoking the refresh token ends the whole grant of this OAuth client for
+    that Google account. Returns a code, never raises and never logs the token:
+    ``revoked`` (200), ``already_revoked`` (400 ``invalid_token``: expired,
+    revoked earlier or unknown, which is the state we want) or ``failed``
+    (network error, timeout, any other status). Blocking: call through
+    ``asyncio.to_thread``.
+    """
+    import httpx
+
+    if not token:
+        return "already_revoked"
+    try:
+        response = httpx.post(
+            REVOKE_URL,
+            data={"token": token},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=timeout,
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed revoke never blocks the caller
+        logger.warning("Google token revoke failed (%s)", type(exc).__name__)
+        return "failed"
+    if response.status_code == 200:
+        return "revoked"
+    if response.status_code == 400:
+        try:
+            error = (response.json() or {}).get("error")
+        except Exception:  # noqa: BLE001
+            error = None
+        if error == "invalid_token":
+            return "already_revoked"
+    logger.warning("Google token revoke answered %s", response.status_code)
+    return "failed"
+
+
 def is_token_expired(expiry_str: str | None) -> bool:
     """Check if a token expiry timestamp is in the past."""
     if not expiry_str:

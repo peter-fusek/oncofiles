@@ -1,0 +1,251 @@
+"""Erasure of ONE patient on request (#856, /privacy, maintainer decision 2026-11-19).
+
+The only code that hard-deletes a patient's rows. User-invoked, never scheduled
+(``tests/test_no_automatic_deletion.py``: its delete call site is allowlisted
+with the reason below and no scheduler job may reach it). Reached through the
+operator MCP tool ``erase_patient`` (``tools/patient.py``, admin only, served
+on ``/ops/mcp``).
+
+Dry run (the default): counts per registry table, quarantine items and held
+files; writes nothing. A real run, in this order, refusing before anything is
+removed:
+
+1. ``confirm_slug`` must equal the patient's slug and ``reason`` must be given
+   (≤ 200 chars; never stored nor logged: it may name the requester);
+2. no curated work of the patient may run (``patient_work_reason``), and the
+   patient lock, the inbound processing lock and the inbound patient lock are
+   held for the whole erasure;
+3. a verified pre-store copy of the database (``pre_store.make_copy(db,
+   "erase")``); no copy, no erasure;
+4. the encrypted files: the patient's quarantine items (through the
+   quarantine purge helper's own path checks) and a trial's held originals;
+   a refused path stops here with the database untouched;
+5. every row of every ``data_rights.REGISTRY`` table, in ONE transaction run
+   as one job on the database thread (no other coroutine's statement can
+   interleave), FK checks deferred to the commit, ``secure_delete`` on;
+   ``patients`` last; ``patient_consents`` with it (decision 2026-11-19);
+6. only then the Google grant (read before step 4) is revoked at Google, by
+   the Drive disconnect's rule: a grant another patient uses is left alone; a
+   failed revoke is reported, the stored token is gone anyway;
+7. one ``activity_log`` row under ``SYSTEM_NO_PATIENT`` with counts, the
+   copy's name and the caller's keyed hash: no slug, no patient id, no name.
+
+Never touches Google Drive files: they are the person's own.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import stat
+from contextlib import AsyncExitStack
+
+from oncofiles import data_rights
+
+logger = logging.getLogger(__name__)
+
+ERASURE_REASON = "user-invoked erasure on request, /privacy §5, maintainer decision 2026-11-19"
+REASON_MAX = 200
+
+
+class ErasureRefusedError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _delete_rows_sync(conn, patient_id: str) -> dict[str, int]:
+    """Delete the patient's rows of every registry table in ONE transaction.
+
+    Runs on aiosqlite's worker thread as one job (``Connection._execute``), so
+    nothing else uses the connection in between. Refuses when another
+    coroutine left a transaction open (``db_busy``: committing would commit
+    its half-done writes). Rolls back on any error, a deferred FK violation at
+    the commit included.
+    """
+    if conn.in_transaction:
+        raise ErasureRefusedError("db_busy")
+    secure = conn.execute("PRAGMA secure_delete").fetchone()[0]
+    conn.execute("PRAGMA secure_delete = ON")
+    counts: dict[str, int] = {}
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("PRAGMA defer_foreign_keys = ON")
+            for rule in data_rights.REGISTRY:
+                table = data_rights._quote(rule.table)
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE {rule.where}", {"pid": patient_id}
+                )
+                counts[rule.table] = int(cursor.rowcount or 0)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+    finally:
+        conn.execute(f"PRAGMA secure_delete = {int(secure)}")
+    return counts
+
+
+def erase_held_file(file_id: str) -> str:
+    """Remove ONE held original of the erased trial patient. Blocking.
+
+    Lives here, not in ``holding_store`` (which never deletes: the trial
+    lifecycle purge is still a maintainer TODO). Only
+    ``<holding dir>/<uuid>.bin`` of a canonical ``holding:<uuid>`` id, and
+    only a regular file directly inside the holding directory (no symlink,
+    no glob). Returns ``removed``, ``missing`` or ``refused``.
+    """
+    from oncofiles import holding_store
+
+    try:
+        uid = holding_store._uuid_of(file_id)
+    except holding_store.HoldingStoreError:
+        return "refused"
+    root = holding_store.holding_dir().resolve()
+    path = root / f"{uid}.bin"
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return "missing"
+    if not stat.S_ISREG(info.st_mode) or path.parent != root:
+        return "refused"
+    try:
+        os.remove(path)  # one named, checked file
+    except FileNotFoundError:
+        return "missing"
+    return "removed"
+
+
+async def _files_plan(db, patient_id: str) -> tuple[list[tuple[str, int]], list[str]]:
+    async with db.db.execute(
+        "SELECT item_uuid, file_count FROM inbound_quarantine WHERE patient_id = ?",
+        (patient_id,),
+    ) as cursor:
+        items = [(r[0], int(r[1] or 0)) for r in await cursor.fetchall()]
+    async with db.db.execute(
+        "SELECT file_id FROM documents WHERE patient_id = ? AND file_id LIKE 'holding:%'",
+        (patient_id,),
+    ) as cursor:
+        held = [r[0] for r in await cursor.fetchall()]
+    return items, held
+
+
+def _forget_runtime(patient_id: str) -> None:
+    """In-memory state of the erased patient (caches, curated registries)."""
+    from oncofiles import patient_context
+    from oncofiles.tools import curated
+
+    patient_context._contexts.pop(patient_id, None)
+    curated.forget_patient(patient_id)
+    curated._patient_locks.pop(patient_id, None)
+    try:
+        from oncofiles import server
+
+        server._forget_patient_runtime(patient_id)
+    except Exception:  # noqa: BLE001 - no server module loaded (CLI, tests)
+        pass
+
+
+async def erase_patient(
+    db,
+    *,
+    patient_id: str,
+    confirm_slug: str | None,
+    dry_run: bool = True,
+    reason: str | None = None,
+    caller_email: str | None = None,
+) -> dict:
+    """Erase ONE patient (see the module docstring). Returns codes and counts."""
+    from oncofiles import inbound_email, inbound_quarantine, pre_store
+    from oncofiles.constants import SYSTEM_NO_PATIENT
+    from oncofiles.tools import curated
+
+    patient = await db.get_patient(patient_id)
+    if patient is None:
+        return {"status": "not_found"}
+    counts = await data_rights.count_rows(db, patient_id)
+    items, held = await _files_plan(db, patient_id)
+    plan = {
+        "rows": counts,
+        "rows_total": sum(counts.values()),
+        "quarantine_items": len(items),
+        "quarantine_files": sum(n for _, n in items),
+        "held_files": len(held),
+        "drive_files": "untouched",
+    }
+    if dry_run:
+        return {"status": "dry_run", **plan}
+
+    def refused(code: str) -> dict:
+        return {"status": "refused", "code": code}
+
+    if not confirm_slug or confirm_slug.strip() != (patient.slug or ""):
+        return refused("confirm_slug_mismatch")
+    reason = (reason or "").strip()
+    if not reason:
+        return refused("reason_required")
+    if len(reason) > REASON_MAX:
+        return refused("reason_too_long")
+    busy = curated.patient_work_reason(patient_id)
+    if busy:
+        return refused(busy)
+
+    async with AsyncExitStack() as stack:
+        await stack.enter_async_context(curated.patient_lock(patient_id))
+        await stack.enter_async_context(inbound_email.PROCESS_LOCK)
+        await stack.enter_async_context(inbound_email._state.lock(patient_id))
+        try:
+            copy_name = await asyncio.to_thread(pre_store.make_copy, db, "erase")
+        except pre_store.PreStoreError as exc:
+            logger.warning("erasure: pre-store copy failed (%s)", type(exc).__name__)
+            return refused("pre_store_failed")
+        grants = await db.oauth_grants_for_disconnect(patient_id=patient_id)
+        items, held = await _files_plan(db, patient_id)  # again, under the locks
+        q = await asyncio.to_thread(inbound_quarantine.erase_items_files, items)
+        if q.get("refused"):
+            logger.warning("erasure: quarantine file path refused patient %s", patient_id[:4])
+            return refused("quarantine_path_refused")
+        held_codes: dict[str, int] = {}
+        for file_id in held:
+            code = await asyncio.to_thread(erase_held_file, file_id)
+            held_codes[code] = held_codes.get(code, 0) + 1
+        if held_codes.get("refused"):
+            logger.warning("erasure: held file path refused patient %s", patient_id[:4])
+            return refused("held_path_refused")
+        try:
+            removed = await db.db._execute(_delete_rows_sync, db.db._conn, patient_id)
+        except ErasureRefusedError as exc:
+            return refused(exc.code)
+        except Exception as exc:  # noqa: BLE001 - rolled back; say why by class only
+            logger.warning("erasure: rolled back (%s)", type(exc).__name__)
+            return refused("rolled_back")
+        # only after the rows are gone: a rolled-back erasure keeps a working link
+        google = await data_rights.revoke_grants(grants)
+    _forget_runtime(patient_id)
+    out = {
+        "status": "erased",
+        "rows_removed": removed,
+        "rows_total": sum(removed.values()),
+        "quarantine": q,
+        "held_files": held_codes,
+        "google_revoke": google,
+        "pre_store_copy": copy_name,
+        "drive_files": "untouched",
+    }
+    logger.info(
+        "erasure: patient erased, %d rows, quarantine files %d, held files %d, google=%s",
+        out["rows_total"],
+        int(q.get("files_removed", 0)),
+        int(held_codes.get("removed", 0)),
+        google,
+    )
+    await data_rights.audit(
+        db,
+        patient_id=SYSTEM_NO_PATIENT,
+        tool="erase_patient",
+        caller_email=caller_email,
+        data={k: v for k, v in out.items()},
+    )
+    return out

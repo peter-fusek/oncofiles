@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-CONSENT_VERSION = "2026-11-22.2"
+CONSENT_VERSION = "2026-11-26"  # #856: self-service export + Drive disconnect, erasure scope
 
 # ``patient_consents.kind`` (migration 097): ``wizard`` = the #857 checkbox,
 # ``by_sending`` = consent by sending documents to welcome@ (#950 phase 2,

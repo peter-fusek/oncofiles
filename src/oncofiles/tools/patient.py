@@ -414,6 +414,60 @@ async def revoke_patient_tokens(
     return json.dumps(out, ensure_ascii=False, default=str)
 
 
+async def erase_patient(
+    ctx: Context,
+    patient_slug: str,
+    confirm_slug: str | None = None,
+    dry_run: bool = True,
+    reason: str | None = None,
+) -> str:
+    """Erase ONE patient on request (admin only, operator surface, #856).
+
+    Deletes everything Oncofiles stores about the patient in its database
+    (documents index, page text, facts, diary, context, consent record,
+    tokens, document e-mail address, mail queue and quarantine with their
+    encrypted files, a trial's held files, access logs about the patient) and
+    then the patient. NEVER touches the person's Google Drive files.
+
+    A dry run (the default) only counts per table and writes nothing. A real
+    run (dry_run=false) needs confirm_slug equal to patient_slug and a reason
+    (at most 200 characters; checked, never stored or logged), refuses while
+    curated work of the patient runs, makes a verified pre-store copy of the
+    database first (no copy, no erasure), revokes the Google grant, and leaves
+    one activity_log row with counts and the caller's keyed hash only. Not
+    reversible except from that copy or a backup.
+
+    Args:
+        patient_slug: Required. The patient's slug.
+        confirm_slug: Required for a real run; must equal patient_slug.
+        dry_run: True (default) counts only; False erases.
+        reason: Required for a real run, e.g. the request's date and channel.
+    """
+    from oncofiles import patient_erasure
+    from oncofiles.tools._helpers import _caller_email, _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("erase_patient")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    slug = (patient_slug or "").strip()
+    if not slug:
+        return json.dumps({"error": "patient_slug is required"})
+    db = _get_db(ctx)
+    patient = await db.get_patient_by_slug(slug, active_only=False)
+    if patient is None:
+        return json.dumps({"status": "not_found", "patient_slug": slug})
+    result = await patient_erasure.erase_patient(
+        db,
+        patient_id=patient.patient_id,
+        confirm_slug=confirm_slug,
+        dry_run=bool(dry_run),
+        reason=reason,
+        caller_email=_caller_email(),
+    )
+    return json.dumps({"patient_slug": slug, "dry_run": bool(dry_run), **result}, default=str)
+
+
 def register(mcp):
     mcp.tool()(get_patient_context)
     mcp.tool()(update_patient_context)
@@ -422,3 +476,4 @@ def register(mcp):
     mcp.tool(annotations=READ_ONLY)(whoami)
     mcp.tool(annotations=READ_ONLY)(list_patient_tokens)
     mcp.tool()(revoke_patient_tokens)
+    mcp.tool()(erase_patient)

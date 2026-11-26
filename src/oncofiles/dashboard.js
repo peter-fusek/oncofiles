@@ -48,7 +48,8 @@
     var DEMO_BLOCKED_ACTIONS = {
       showOnboarding: 1, showGdriveSetup: 1, showGdriveSetupAndToggle: 1, triggerManualSync: 1,
       generateShareCode: 1, togglePatientArchive: 1, logout: 1, rotateInboundAddress: 1,
-      approveQuarantine: 1, rejectQuarantine: 1, restoreQuarantine: 1, confirmReviewAsIs: 1
+      approveQuarantine: 1, rejectQuarantine: 1, restoreQuarantine: 1, confirmReviewAsIs: 1,
+      disconnectDrive: 1, downloadPatientExport: 1
     };
 
     window._dispatch = function (spec, target) {
@@ -1099,6 +1100,95 @@
       }
     }
 
+    // #856 data rights: the export ZIP (caregiver, or an admin for the selected
+    // patient) and the caregiver's Drive disconnect (armed second click, no dialog).
+    var disconnectArmed = null;
+
+    function dataRightsStatus(sk, en) {
+      var el = document.getElementById('data-rights-status');
+      if (!el) return;
+      if (!sk) { el.hidden = true; el.textContent = ''; return; }
+      setI18n(el, sk, en);
+      el.hidden = false;
+    }
+
+    async function downloadPatientExport() {
+      if (DEMO || !currentPatientId) return;
+      var btn = document.getElementById('patient-export-btn');
+      if (btn) btn.disabled = true;
+      dataRightsStatus('Pripravujem export…', 'Preparing the export…');
+      try {
+        var resp = await fetch('/api/patient-export?patient_id=' + encodeURIComponent(currentPatientId), {
+          headers: { 'Authorization': authHeader() }
+        });
+        if (resp.status === 401) { logout(); return; }
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var blob = await resp.blob();
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'oncofiles-export.zip';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+        dataRightsStatus('Export je stiahnutý.', 'The export has been downloaded.');
+      } catch (e) {
+        dataRightsStatus('Export sa nepodaril. Skúste to znova neskôr.',
+          'The export failed. Try again later.');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function disconnectDrive() {
+      if (DEMO || isAdminMode || !currentPatientId) return;
+      var btn = document.getElementById('drive-disconnect-btn');
+      if (disconnectArmed !== currentPatientId) {
+        disconnectArmed = currentPatientId;
+        if (btn) {
+          btn.classList.add('armed');
+          setI18n(btn, 'Oncofiles stratí prístup k Drive. Kliknite znova', 'Oncofiles loses access to Drive. Click again');
+        }
+        setTimeout(function () {
+          if (disconnectArmed === null) return;
+          disconnectArmed = null;
+          if (btn) { btn.classList.remove('armed'); setI18n(btn, 'Odpojiť Google Drive', 'Disconnect Google Drive'); }
+        }, 6000);
+        return;
+      }
+      disconnectArmed = null;
+      if (btn) { btn.classList.remove('armed'); setI18n(btn, 'Odpojiť Google Drive', 'Disconnect Google Drive'); }
+      try {
+        var resp = await fetch('/api/drive-disconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
+          body: JSON.stringify({ patient_id: currentPatientId })
+        });
+        if (resp.status === 401) { logout(); return; }
+        if (resp.status === 409) {
+          dataRightsStatus('Práve prebieha spracovanie dokumentov. Skúste to o chvíľu znova.',
+            'Documents are being processed right now. Try again in a while.');
+          return;
+        }
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var data = await resp.json();
+        if (data.status === 'not_connected') {
+          dataRightsStatus('Google Drive nebol pripojený.', 'Google Drive was not connected.');
+        } else if (data.google_revoke === 'failed' || data.google_revoke === 'skipped_shared_account') {
+          dataRightsStatus('Drive je odpojený. Prístup aplikácie môžete skontrolovať aj v nastaveniach účtu Google (Zabezpečenie, aplikácie tretích strán).',
+            'Drive is disconnected. You can also check the app’s access in your Google Account (Security, third-party apps).');
+        } else {
+          dataRightsStatus('Google Drive je odpojený. Súbory na Drive zostali bez zmeny.',
+            'Google Drive is disconnected. Your Drive files are unchanged.');
+        }
+        refresh();
+      } catch (e) {
+        dataRightsStatus('Odpojenie sa nepodarilo. Skúste to znova neskôr.',
+          'The disconnect failed. Try again later.');
+      }
+    }
+
     // #950 quarantine: attachments from other senders wait for the caregiver.
     // The caregiver sees sender, time, file names, types and sizes and decides
     // (approve files them like the caregiver's own mail; reject only marks
@@ -2095,6 +2185,10 @@
       if (isAdminMode) closeUploadPanel();
       // #950: the document e-mail address is the caregiver's (a write credential).
       if (isAdminMode) { hideInboundCard(); inboundFor = null; }
+      // #856: only the caregiver disconnects Drive (the server refuses an admin too).
+      var disconnectBtn = document.getElementById('drive-disconnect-btn');
+      if (disconnectBtn) disconnectBtn.hidden = isAdminMode;
+      dataRightsStatus('', '');
     }
 
     function switchPatient(patientId) {
@@ -2519,7 +2613,7 @@
 
     // #857: version of the privacy + terms text the consent checkbox refers to.
     // Must equal oncofiles.patient_consent.CONSENT_VERSION (a test keeps them equal).
-    var CONSENT_VERSION = '2026-11-22.2';
+    var CONSENT_VERSION = '2026-11-26';
 
     async function wizardStep1Submit() {
       var btn = document.getElementById('wiz-create-btn');

@@ -205,6 +205,51 @@ def run_block_reason(pid: str) -> str | None:
     return None
 
 
+def patient_work_reason(pid: str) -> str | None:
+    """Why a Drive disconnect or an erasure of THIS patient must wait (#856).
+
+    Stricter than :func:`run_block_reason`: ANY curated work of the patient
+    counts, a dry job included (it holds the patient's Drive token and an LM
+    Studio slot), and so does a restore / confirm slot. Another patient's work
+    never does. Codes only.
+    """
+    if (_runs.get(pid) or {}).get("state") == "running":
+        return "run_in_progress"
+    if (_restoring.get(pid) or {}).get("state") == "running":
+        return "restore_in_progress"
+    job = _reocr_jobs.get(pid) or {}
+    if job.get("state") == "running":
+        return f"{job.get('kind') or 'reocr'}_in_progress"
+    if patient_lock(pid).locked():
+        return "patient_lock_held"
+    return None
+
+
+def forget_patient(pid: str) -> None:
+    """Drop the in-memory curated state of ONE patient (#856).
+
+    After a Drive disconnect or an erasure: the inbox snapshot (file names
+    shown on the dashboard), probe counters, watch / onboarding state and the
+    last run summaries. Never touches running work (callers refuse while
+    :func:`patient_work_reason` is set) nor the patient lock object.
+    """
+    for registry in (
+        _inbox_snapshots,
+        _probe_stats,
+        _watch,
+        _empty_streak,
+        _onboarding,
+        _readme_births,
+        _text_reviews,
+        _backfill_failures,
+        _inflight_pages,
+    ):
+        registry.pop(pid, None)
+    for registry in (_runs, _restoring, _reocr_jobs):
+        if (registry.get(pid) or {}).get("state") != "running":
+            registry.pop(pid, None)
+
+
 # ── text sources awaiting review (no sidecar to mark them) ─────────────
 
 _text_reviews: dict[str, set] = {}

@@ -27,7 +27,12 @@ removing a deletion path also removes its permission.
    ``<path>.unlink()`` / ``<path>.rmdir()`` call site is an allowlisted
    (file, function) pair; ``shutil.rmtree`` / ``os.removedirs`` never appear.
    The #950 quarantine purge (maintainer decision 2026-11-22, RUNBOOK
-   lifecycle) is the only one that removes stored user files.
+   lifecycle) is the only one that removes stored user files on a schedule.
+7. The #856 erasure of a patient on request (``patient_erasure``, operator
+   tool ``erase_patient``) is the one user-invoked hard delete of a patient's
+   rows, core tables included: its registry-built ``DELETE FROM {table}`` is
+   the only dynamic delete, its file helpers have one caller, and no job may
+   reach any of it.
 
 This is the single hard-DELETE allowlist; #723 (PR #732) merged its own lock
 into it: treatment_events and conversation_entries are soft-deleted and listed
@@ -65,7 +70,21 @@ SQL_DELETE_ALLOWLIST: dict[tuple[str, str], str] = {
         "database/_documents.py",
         "document_pages",
     ): "delete_ocr_pages: OCR cache reset right before it is rewritten from the current source",
+    ("database/_operational.py", "oauth_tokens"): (
+        "delete_oauth_tokens: the caregiver's Drive disconnect (#856): removes the stored "
+        "Google token of one patient (credential cleanup), Drive files untouched"
+    ),
 }
+
+# The ONE user-invoked erasure of a patient (#856). Its statement is built from
+# the data_rights registry (``DELETE FROM {table}``), which DELETE_RE cannot
+# read, so dynamic deletes have their own lock: every ``DELETE FROM {`` in
+# src/oncofiles is an allowlisted (file, function) pair. May only shrink.
+ERASURE_REASON = "user-invoked erasure on request, /privacy §5, maintainer decision 2026-11-19"
+DYNAMIC_DELETE_ALLOWLIST: dict[tuple[str, str], str] = {
+    ("patient_erasure.py", "_delete_rows_sync"): ERASURE_REASON,
+}
+DYNAMIC_DELETE_RE = re.compile(r"(?i:DELETE\s+FROM)\s+\{")
 
 # Tables that hold the patient's documents and facts: never hard-deleted.
 NEVER_HARD_DELETED = {
@@ -101,8 +120,88 @@ def test_sql_allowlist_no_stale_entries():
 
 
 def test_core_patient_tables_never_hard_deleted():
+    """Outside the #856 erasure (below), which is the only path for them."""
     tables = {table for _, table in _sql_hard_deletes()}
     assert not tables & NEVER_HARD_DELETED, sorted(tables & NEVER_HARD_DELETED)
+
+
+def _dynamic_deletes() -> set[tuple[str, str]]:
+    """(file, enclosing function) of every f-string / string with ``DELETE FROM {``."""
+    found: set[tuple[str, str]] = set()
+    for path in SRC.rglob("*.py"):
+        rel = path.relative_to(SRC).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        scopes: list[tuple[ast.AST, str]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scopes.append((node, node.name))
+        for fn, name in scopes:
+            for node in ast.walk(fn):
+                if isinstance(node, ast.JoinedStr):
+                    text = "".join(
+                        v.value if isinstance(v, ast.Constant) else "{}" for v in node.values
+                    )
+                elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    text = node.value
+                else:
+                    continue
+                if DYNAMIC_DELETE_RE.search(text):
+                    found.add((rel, name))
+        module_text = path.read_text(encoding="utf-8")
+        if DYNAMIC_DELETE_RE.search(module_text) and not any(f == rel for f, _ in found):
+            found.add((rel, "<module>"))
+    return found
+
+
+def test_dynamic_deletes_only_on_allowlist():
+    unexpected = _dynamic_deletes() - set(DYNAMIC_DELETE_ALLOWLIST)
+    assert not unexpected, (
+        "dynamic DELETE FROM {...} outside the allowlist: only the #856 erasure on request "
+        f"builds its delete from the registry: {sorted(unexpected)}"
+    )
+
+
+def test_dynamic_delete_allowlist_no_stale_entries():
+    stale = set(DYNAMIC_DELETE_ALLOWLIST) - _dynamic_deletes()
+    assert not stale, f"allowlist entries no longer in the code, remove them: {sorted(stale)}"
+
+
+def test_erasure_deletes_exactly_the_registry_and_covers_the_core_tables():
+    """The erasure's tables are the registry's; every core table is in it (the
+    #856 erasure is the one place they may be hard-deleted)."""
+    from oncofiles import data_rights, patient_erasure
+
+    tables = {r.table for r in data_rights.REGISTRY}
+    assert tables >= NEVER_HARD_DELETED
+    assert "patient_consents" in tables  # maintainer decision 2026-11-19
+    src = (SRC / "patient_erasure.py").read_text(encoding="utf-8")
+    assert "for rule in data_rights.REGISTRY:" in src
+    assert patient_erasure.ERASURE_REASON == ERASURE_REASON
+
+
+def test_erasure_helpers_have_one_caller_each():
+    """erase_patient only from the operator MCP tool; the file helpers only from
+    the erasure; the row delete only inside it."""
+    expected = {
+        "erase_patient": {"tools/patient.py", "patient_erasure.py"},
+        "erase_items_files": {"patient_erasure.py", "inbound_quarantine.py"},
+        "erase_held_file": {"patient_erasure.py"},
+        "_delete_rows_sync": {"patient_erasure.py"},
+    }
+    refs: dict[str, set[str]] = defaultdict(set)
+    for path in SRC.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            name = None
+            if isinstance(node, ast.Name):
+                name = node.id
+            elif isinstance(node, ast.Attribute):
+                name = node.attr
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = node.name
+            if name in expected:
+                refs[name].add(path.relative_to(SRC).as_posix())
+    for name, files in expected.items():
+        assert refs[name] == files, (name, sorted(refs[name]))
 
 
 # ── 2 + 3. Drive / Files API deletes and document trash calls ────────────
@@ -274,6 +373,13 @@ FORBIDDEN_IN_JOBS = (
         "soft_delete_hard_fact",
         "reconcile_gdrive",
         "repair_gdrive_folder_hygiene",
+        # #856: user-invoked only (erasure on request, Drive disconnect)
+        "erase_patient",
+        "erase_items_files",
+        "erase_held_file",
+        "_delete_rows_sync",
+        "delete_oauth_tokens",
+        "disconnect_drive",
     }
 )
 
@@ -561,6 +667,8 @@ LOCAL_DELETE_ALLOWLIST: dict[tuple[str, str], str] = {
         "only with QUARANTINE_PURGE_APPROVED) and then that item's empty directory; the row "
         "stays 'purged'"
     ),
+    ("patient_erasure.py", "erase_held_file"): ERASURE_REASON
+    + ": one checked <uuid>.bin of the erased trial patient",
 }
 
 _LOCAL_DELETE_ANY_RECEIVER = {"unlink", "rmdir"}  # os.x(...) or Path.x()
@@ -644,7 +752,9 @@ def test_quarantine_purge_helper_is_reached_only_from_purge_due():
             for node in ast.walk(fn):
                 if isinstance(node, ast.Name) and node.id in {"_purge_item_files", "purge_due"}:
                     callers[node.id].add(fn.name)
-    assert callers["_purge_item_files"] == {"purge_due"}
+    # #856: plus the erasure on request (erase_items_files, called only by
+    # patient_erasure: test_erasure_helpers_have_one_caller_each)
+    assert callers["_purge_item_files"] == {"purge_due", "erase_items_files"}
     assert callers["purge_due"] == {"run_maintenance"}
     others = [
         p.relative_to(SRC).as_posix()

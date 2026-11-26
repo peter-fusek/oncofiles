@@ -510,6 +510,24 @@ _client_unavailable: dict[str, str] = {}
 _network_unavailable_stats: dict[str, dict] = {}
 
 
+def _forget_patient_runtime(patient_id: str) -> None:
+    """Drop every in-memory Google state of ONE patient (#856).
+
+    After a Drive disconnect or an erasure: the cached Drive / Gmail / Calendar
+    clients (they carry the access + refresh token), the folder 404 counter and
+    the re-auth / hard-auth / unavailable markers of that patient.
+    """
+    _patient_clients_cache.pop(patient_id, None)
+    _folder_404_counts.pop(patient_id, None)
+    _client_unavailable.pop(patient_id, None)
+    _network_unavailable_stats.pop(patient_id, None)
+    _curated_patients.discard(patient_id)
+    for key in [k for k in _invalid_grant_tokens if k[0] == patient_id]:
+        _invalid_grant_tokens.discard(key)
+    for key in [k for k in _hard_auth_failures if k[0] == patient_id]:
+        _hard_auth_failures.pop(key, None)
+
+
 def _note_client_unavailable(patient_id: str, code: str) -> None:
     _client_unavailable[patient_id] = code
     if code == NETWORK_UNAVAILABLE:
@@ -2605,8 +2623,8 @@ async def privacy_policy(request: Request) -> HTMLResponse:
         _PRIVACY_HTML = _legal_page(
             "Privacy Policy",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 22, 2026 ·
-Consent version 2026-11-22.2</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 26, 2026 ·
+Consent version 2026-11-26</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2709,8 +2727,8 @@ address), the Google access token for Drive, the document index, the recognised 
 values with their verification state, the consent record (section 2) and the access log
 (section 6).</li>
 <li><strong>Backups</strong> — local and encrypted, kept for a limited time. Before a bulk update
-of extracted values the server also makes a safety copy of the database; only the 5 newest
-safety copies are kept.</li>
+of extracted values, and before deleting a patient on request, the server also makes a safety
+copy of the database; only the 5 newest safety copies are kept.</li>
 <li><strong>Logs</strong> — the application's technical log masks e-mail addresses and tokens
 and is kept for 7 days. The server sees IP addresses of requests, for security and to limit
 abuse.</li>
@@ -2771,9 +2789,18 @@ Original files in your Google Drive are never deleted by Oncofiles.</p>
 <li>Lodge a complaint with your supervisory authority (in Slovakia: the Office for Personal
 Data Protection of the Slovak Republic)</li>
 </ul>
-<p>To use these rights, write to us by e-mail (section 10). Requests for access, export and
-deletion are handled by hand, within 30 days. You can stop Oncofiles' access to your Google
-Drive at any time in your Google Account (section 1).</p>
+<p>On the dashboard, the patient's caregiver can download an export of everything Oncofiles
+stores about the patient (a ZIP of JSON files; the original files stay in your Google Drive),
+and can disconnect Google Drive: Oncofiles then deletes its stored Google access token, asks
+Google to revoke it, and stops processing the folder; your Drive files are not changed. You can
+also stop Oncofiles' access to your Google Drive at any time in your Google Account
+(section 1).</p>
+<p>To use the other rights, write to us by e-mail (section 10). Requests for access, export and
+deletion are handled by hand, within 30 days. A deletion removes everything stored about the
+patient in our database, including extracted values, the consent record (section 2) and the
+access log (section 6); files in your Google Drive are never touched. Before the deletion the
+server makes one safety copy of the database (section 4); deleted data can remain in that copy
+until it is replaced by newer ones, and in the encrypted backups for up to 6 months.</p>
 
 <h2 id="google-api">9. Google API Services Disclosure</h2>
 <p>Oncofiles' use and transfer of information received from Google APIs adheres to the
@@ -2798,8 +2825,8 @@ async def terms_of_service(request: Request) -> HTMLResponse:
         _TERMS_HTML = _legal_page(
             "Terms of Service",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 22, 2026 ·
-Consent version 2026-11-22.2</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 26, 2026 ·
+Consent version 2026-11-26</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
@@ -2870,9 +2897,11 @@ only renames and moves them inside the folder you chose.</p>
 
 <h2 id="ending">7. Ending Your Use</h2>
 <p>You can stop Oncofiles' access to your Google Drive at any time in your
-<a href="https://myaccount.google.com/permissions">Google Account</a>. To have the data stored
-about a patient exported or deleted, write to us by e-mail; we handle such requests by hand,
-within 30 days. Your files in Google Drive stay where they are.</p>
+<a href="https://myaccount.google.com/permissions">Google Account</a>, or as the patient's
+caregiver with "Disconnect Google Drive" on the dashboard, where you can also download an
+export of the data stored about the patient. To have that data deleted (or exported by us),
+write to us by e-mail; we handle such requests by hand, within 30 days. Your files in Google
+Drive stay where they are.</p>
 
 <h2 id="changes">8. Changes</h2>
 <p>We may update these terms. The date at the top of this page shows the latest version.
@@ -7493,6 +7522,103 @@ async def api_inbound_address_rotate(request: Request) -> JSONResponse:
     except Exception:
         logger.exception("API inbound-address rotate error")
         return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+# ── Data rights (#856): Drive disconnect and export ──────────────────────────
+
+
+@mcp.custom_route("/api/drive-disconnect", methods=["POST"])
+async def api_drive_disconnect(request: Request) -> JSONResponse:
+    """The caregiver disconnects the patient's Google Drive (#856).
+
+    Body ``{"patient_id": …}``: ``_dashboard_body_patient`` (#867) then the
+    #921 write refusal (only the patient's own caregiver; an admin's
+    read-only view and the operator bearer get 403 ``read_only``). The
+    dashboard asks for a second, armed click first (no browser dialog).
+    ``data_rights.disconnect_drive`` revokes the grant at Google (unless
+    another patient uses it), deletes the stored token and folder link and
+    switches curated processing off; 409 ``busy`` + code while curated work of
+    the patient runs. Drive files are untouched.
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    patient_id, acl_err = await _dashboard_body_patient(
+        request, db_inst, str(body.get("patient_id") or "")
+    )
+    if acl_err is not None:
+        return acl_err
+    ro_err = await _dashboard_write_refusal(request, db_inst, patient_id)
+    if ro_err is not None:
+        return ro_err
+    from oncofiles import data_rights
+
+    try:
+        result = await data_rights.disconnect_drive(
+            db_inst, patient_id, caller_email=_get_dashboard_email(request)
+        )
+    except Exception:
+        logger.exception("API drive-disconnect error")
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    if result.get("status") == "refused":
+        return JSONResponse({"error": "busy", **result}, status_code=409)
+    _forget_patient_runtime(patient_id)
+    return JSONResponse(result)
+
+
+@mcp.custom_route("/api/patient-export", methods=["GET"])
+async def api_patient_export(request: Request) -> Response:
+    """ZIP of everything Oncofiles stores about ONE patient (#856).
+
+    ``?patient_id=``: ``_dashboard_patient_or_refusal`` (#867; the caregiver,
+    or an admin / the operator for a named patient; unknown and foreign are
+    the same 404). Streamed in chunks (``data_rights.export_stream``: bounded
+    memory, the registry's SQL-filtered rows, no credentials or hashes), with
+    ``Cache-Control: no-store``. One ``activity_log`` row per request (the
+    caller's keyed hash, no content).
+    """
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    patient_id, refusal = await _dashboard_patient_or_refusal(request)
+    if refusal is not None:
+        return refusal
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    from starlette.responses import StreamingResponse
+
+    from oncofiles import data_rights
+
+    patient = await db_inst.get_patient(patient_id)
+    if patient is None:
+        return _patient_not_found()
+    email, is_admin = _dashboard_caller(request)
+    await data_rights.audit(
+        db_inst,
+        patient_id=patient_id,
+        tool="patient_export",
+        caller_email=email,
+        data={"status": "started", "is_admin": bool(is_admin)},
+    )
+    slug = re.sub(r"[^a-z0-9-]+", "-", (patient.slug or "patient").lower()).strip("-")
+    stamp = datetime.now(UTC).strftime("%Y%m%d")
+    return StreamingResponse(
+        data_rights.export_stream(db_inst, patient_id),
+        media_type="application/zip",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": (
+                f'attachment; filename="oncofiles-export-{slug or "patient"}-{stamp}.zip"'
+            ),
+        },
+    )
 
 
 @mcp.custom_route("/api/inbound-quarantine", methods=["GET"])

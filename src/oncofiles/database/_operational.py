@@ -326,6 +326,43 @@ class OperationalMixin:
             row = await cursor.fetchone()
             return _row_to_oauth_token(row) if row else None
 
+    async def delete_oauth_tokens(self, *, patient_id: str) -> int:
+        """Remove every stored Google token of ONE patient (#856 Drive disconnect).
+
+        Credential cleanup on the caregiver's explicit request: the row holds
+        the access + refresh token and the folder link, so after this nothing
+        can refresh or reach the patient's Drive. Drive files are untouched.
+        Returns the number of rows removed.
+        """
+        patient_id = require_patient_id(patient_id)
+        cursor = await self.db.execute(
+            "DELETE FROM oauth_tokens WHERE patient_id = ?",
+            (patient_id,),
+        )
+        await self.db.commit()
+        return int(cursor.rowcount or 0)
+
+    async def oauth_grants_for_disconnect(self, *, patient_id: str) -> list[dict]:
+        """Refresh tokens of ONE patient with a flag: does another patient use the
+        same grant (same refresh token or the same Google account)? (#856)
+
+        Revoking a refresh token at Google ends the grant for that Google
+        account, so a grant another patient still uses is never revoked.
+        Returns ``[{"refresh_token", "shared"}]``; the caller never logs it.
+        """
+        patient_id = require_patient_id(patient_id)
+        async with self.db.execute(
+            "SELECT t.refresh_token AS refresh_token, EXISTS ("
+            "  SELECT 1 FROM oauth_tokens o WHERE o.patient_id != t.patient_id AND ("
+            "    o.refresh_token = t.refresh_token OR ("
+            "      COALESCE(t.owner_email, '') != '' "
+            "      AND lower(COALESCE(o.owner_email, '')) = lower(t.owner_email)))"
+            ") AS shared FROM oauth_tokens t WHERE t.patient_id = ?",
+            (patient_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [{"refresh_token": r[0] or "", "shared": bool(r[1])} for r in rows]
+
     async def update_oauth_folder(
         self,
         patient_id: str,
