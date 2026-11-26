@@ -168,10 +168,19 @@ def interpretation_code(row: dict) -> str | None:
     code = row.get("interpretation_code")
     if code and code.upper() in INTERPRETATION_DISPLAY:
         return code.upper()
+    flag = printed_flag(row)
+    return _FLAG_TO_INTERPRETATION.get(flag.lower()) if flag else None
+
+
+def printed_flag(row: dict) -> str | None:
+    """The row's ``flag`` when the lab printed it (#929), else None.
+
+    Also the ``interpretation.text``: next to an explicit interpretation code a
+    generic flag is never shown as if the lab had printed it."""
     flag = (row.get("flag") or "").strip()
     if flag_source(flag, row.get("metadata_json")) != FLAG_PRINTED:
         return None
-    return _FLAG_TO_INTERPRETATION.get(flag.lower())
+    return flag
 
 
 # Our canonical units (fact_codes.unit_canonical) → UCUM case-sensitive codes.
