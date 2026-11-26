@@ -147,6 +147,11 @@
         },
         {
           "@type": "Question",
+          "name": "Can I send documents by e-mail?",
+          "acceptedAnswer": { "@type": "Answer", "text": "Yes. Every patient has a private address for documents, shown in the dashboard. Forward lab results or send a photo from the address you sign in with, with that address in To or Cc (not Bcc): the attachments arrive unchanged in the Inbox of your Drive folder and are read like any other file. Only mail from your own address is filed directly. Attachments from anyone else wait for your approval in the dashboard or through a link in a notification e-mail; the sender gets no reply, and no model reads the files until you approve. Rejected items stay in the trash for 30 days, then they are deleted." }
+        },
+        {
+          "@type": "Question",
           "name": "How do I connect Oncofiles to Claude or ChatGPT?",
           "acceptedAnswer": { "@type": "Answer", "text": "In Claude.ai open Settings, Connectors, Add custom connector and paste https://oncofiles.com/mcp, then sign in with Google. In ChatGPT enable Developer Mode under Settings, Connectors, Advanced and add the same URL. Claude Desktop and Claude Code use the same address with an access token. Clients we have not yet re-verified on the new server are marked “coming soon” in the setup steps." }
         },
@@ -714,7 +719,7 @@
     .atlas-video video { display: block; width: 100%; max-width: 600px; height: auto; aspect-ratio: 1 / 1; border-radius: 14px; background: #0c1a1d; }
     .atlas-video figcaption { margin-top: 12px; font-size: 0.88rem; color: var(--ink-3); max-width: 600px; }
 
-    /* ── Chapter 3: four numbered steps ───────────────────── */
+    /* ── Chapter 3: five numbered steps ───────────────────── */
     .step-head { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 20px; align-items: start; margin-bottom: clamp(28px, 4vw, 44px); }
     .step-head p:not(.lead) { margin-top: 12px; }
     .step-n { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 56px; height: 56px; border-radius: 50%; background: var(--turq); color: #000059; font: 700 1.6rem/1 var(--display); }
@@ -737,7 +742,37 @@
     .readme-bar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: #3c4043; color: #e8eaed; font-size: 13px; }
     .readme pre { margin: 0; padding: 14px 16px 16px; font: 12px/1.6 'SFMono-Regular', Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--gd-ink); }
 
-    /* Step 2: where a document goes while it is read */
+    /* Step 2: documents by e-mail (#950): points + a mock of the address card
+       and of one item waiting for approval (invented data) */
+    .mail-grid { display: grid; gap: 32px; align-items: start; }
+    .mail-grid > * { min-width: 0; }
+    @media (min-width: 960px) { .mail-grid { grid-template-columns: minmax(0, 6fr) minmax(0, 5fr); gap: 56px; } }
+    .mail-grid .rules a { font-weight: 600; overflow-wrap: anywhere; }
+    /* the last point may be hidden (trial line): the list draws its own bottom rule */
+    .mail-grid .rules { border-bottom: 1px solid var(--rule); }
+    .mail-grid .rules li:last-child { border-bottom: 0; }
+    .mail-fine { margin-top: 16px; font-size: 0.9rem; color: var(--ink-3); }
+    .mail-mock { display: grid; gap: 16px; max-width: 460px; }
+    .mm-card { background: var(--card); border: 1.5px solid var(--rule-2); border-radius: 12px; box-shadow: var(--lift); padding: 16px 18px; }
+    .mm-label { display: flex; align-items: center; gap: 8px; font: 700 0.85rem/1.3 var(--sans); color: var(--ink-3); }
+    .mm-addr { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 8px; background: var(--bg-2); font: 600 0.95rem/1.4 var(--num); color: var(--ink); overflow-wrap: anywhere; }
+    .mm-who { margin-top: 8px; font-size: 0.82rem; color: var(--ink-3); }
+    .mm-wait { border-color: var(--warn); }
+    /* "needs attention" is a diamond, as on the dashboard (state never colour alone) */
+    .mm-mark { width: 9px; height: 9px; flex: none; background: var(--warn); transform: rotate(45deg); }
+    .mm-from { margin-top: 10px; font-size: 0.9rem; color: var(--ink-2); overflow-wrap: anywhere; }
+    .mm-from b { color: var(--ink); font-weight: 600; }
+    .mm-file { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-top: 10px; padding: 9px 10px; border: 1px solid var(--rule); border-radius: 8px; font-size: 0.9rem; color: var(--ink); }
+    .mm-fi { width: 22px; height: 22px; }
+    .mm-name { overflow-wrap: anywhere; }
+    .mm-size { font-family: var(--num); font-size: 0.82rem; color: var(--ink-3); white-space: nowrap; }
+    .mm-note { margin-top: 10px; font-size: 0.85rem; color: var(--ink-2); }
+    .mm-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .mm-btn { display: inline-flex; align-items: center; min-height: 36px; padding: 6px 14px; border: 1.5px solid var(--ink); border-radius: 8px; font: 700 0.9rem/1.2 var(--sans); color: var(--ink); }
+    .mm-yes { background: var(--turq); border-color: var(--turq); color: #000059; }
+    .mm-cap { font-size: 0.85rem; color: var(--ink-3); }
+
+    /* Step 3: where a document goes while it is read */
     .path { list-style: none; display: grid; gap: 14px; counter-reset: none; }
     .path li { position: relative; padding: 18px 20px; border: 1.5px solid var(--rule-2); border-radius: 14px; background: var(--card); }
     .path li b { display: flex; align-items: center; gap: 8px; color: var(--ink); font-weight: 700; }
@@ -752,7 +787,7 @@
     }
     .path-note { margin-top: 22px; font-size: 0.95rem; max-width: 78ch; }
 
-    /* Step 3: provenance */
+    /* Step 4: provenance */
     .prov-grid { display: grid; gap: 32px; }
     .prov-grid > * { min-width: 0; }
     @media (min-width: 960px) { .prov-grid { grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); gap: 56px; } }
@@ -796,7 +831,7 @@
     .app .note { color: var(--ink-2); font-size: 0.85rem; border-top: 1px solid var(--rule); padding-top: 10px; min-height: 3.6em; }
     .prov-hint { color: var(--ink-3); font-size: 0.88rem; margin-top: 16px; }
 
-    /* Step 4: puzzle pieces around Oncofiles */
+    /* Step 5: puzzle pieces around Oncofiles */
     .vz-intro { max-width: 72ch; }
     .puzzle { margin: 40px auto 0; max-width: 940px; display: grid; gap: 26px; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1fr); grid-template-areas: ". chat ." "docs core std" ". hosp ."; align-items: stretch; }
     .pz { position: relative; border-radius: 14px; padding: 18px 18px 16px; border: 2px solid var(--pz-c); background: var(--pz-bg); min-width: 0; }
@@ -1392,12 +1427,55 @@ Nič sa nemaže, len presúva do koša.
         </div>
       </section>
 
-      <!-- Step 2: reading happens on our own server (details: #privacy) -->
-      <section class="block" id="reading">
+      <!-- Step 2: documents by e-mail (#950). Facts as in inbound_email.py,
+           inbound_quarantine.py and inbound_welcome.py; the trial line shows
+           only while /api/public-config offers the welcome address. -->
+      <section class="block" id="email">
         <div class="band alt">
         <div class="wrap pad">
           <div class="step-head">
             <span class="step-n"><span class="sr-only" data-sk="Krok" data-en="Step">Krok</span> 2</span>
+            <div>
+              <h3 data-sk="Alebo ich pošlite e-mailom" data-en="Or send them by e-mail">Alebo ich pošlite e-mailom</h3>
+              <p data-sk="Každý pacient má súkromnú adresu na dokumenty. Nájdete ju v dashboarde a môžete ju kedykoľvek zmeniť." data-en="Every patient has a private address for documents. You find it in the dashboard and can change it at any time.">Každý pacient má súkromnú adresu na dokumenty. Nájdete ju v dashboarde a môžete ju kedykoľvek zmeniť.</p>
+            </div>
+          </div>
+          <div class="mail-grid">
+            <div>
+              <ul class="rules">
+                <li><b data-sk="Prepošlite výsledky alebo pošlite fotku." data-en="Forward results or send a photo.">Prepošlite výsledky alebo pošlite fotku.</b> <span data-sk="Zo svojej adresy, ktorou sa prihlasujete. Príloha príde nezmenená do priečinka Inbox vo vašom Drive a lokálny model ju prečíta ako každý iný súbor." data-en="From the address you sign in with. The attachment arrives unchanged in the Inbox of your Drive folder, and the local model reads it like any other file.">Zo svojej adresy, ktorou sa prihlasujete. Príloha príde nezmenená do priečinka Inbox vo vašom Drive a lokálny model ju prečíta ako každý iný súbor.</span></li>
+                <li><b data-sk="Zaradiť môžete len vy." data-en="Only you can file.">Zaradiť môžete len vy.</b> <span data-sk="Priamo sa uloží len pošta z vašej adresy, podpísaná vaším poskytovateľom pošty. Prílohy od kohokoľvek iného čakajú na vaše schválenie v dashboarde alebo cez odkaz v upozornení e-mailom. Odosielateľ nedostane žiadnu odpoveď." data-en="Only mail from your own address, signed by your mail provider, is filed directly. Attachments from anyone else wait for your approval in the dashboard or through a link in a notification e-mail. The sender gets no reply.">Priamo sa uloží len pošta z vašej adresy, podpísaná vaším poskytovateľom pošty. Prílohy od kohokoľvek iného čakajú na vaše schválenie v dashboarde alebo cez odkaz v upozornení e-mailom. Odosielateľ nedostane žiadnu odpoveď.</span></li>
+                <li><b data-sk="Bez schválenia ich nečíta žiadny model." data-en="No model reads them before you approve.">Bez schválenia ich nečíta žiadny model.</b> <span data-sk="Súbory čakajúce na schválenie sú u nás šifrované; vy si ich v dashboarde môžete pozrieť. Odmietnuté zostanú 30 dní v koši, potom sa zmažú." data-en="Files waiting for approval are kept encrypted with us; you can look at them in the dashboard. Rejected ones stay in the trash for 30 days, then they are deleted.">Súbory čakajúce na schválenie sú u nás šifrované; vy si ich v dashboarde môžete pozrieť. Odmietnuté zostanú 30 dní v koši, potom sa zmažú.</span></li>
+                <li data-when="mail" hidden><b data-sk="Aj bez pripojeného Drive." data-en="Even before Drive is connected.">Aj bez pripojeného Drive.</b> <span data-sk="Prvý e-mail s prílohou z Gmailu na" data-en="Your first e-mail with an attachment from Gmail to">Prvý e-mail s prílohou z Gmailu na</span> <a data-welcome-address></a> <span data-sk="založí skúšku: dokumenty u nás počkajú šifrované najviac 30 dní a lokálny model ich prečíta. Keď pripojíte Drive, skopírujú sa do vášho priečinka." data-en="starts a trial: the documents wait with us, encrypted, for at most 30 days and the local model reads them. When you connect Drive, they are copied into your folder.">založí skúšku: dokumenty u nás počkajú šifrované najviac 30 dní a lokálny model ich prečíta. Keď pripojíte Drive, skopírujú sa do vášho priečinka.</span></li>
+              </ul>
+              <p class="mail-fine" data-sk="Adresu dajte do poľa Komu alebo Kópia, nie do Skrytej kópie. Na vlastnú poštu dostanete krátke potvrdenie s počtom uložených súborov." data-en="Put the address in To or Cc, not in Bcc. For your own mail you get a short receipt with the number of files stored.">Adresu dajte do poľa Komu alebo Kópia, nie do Skrytej kópie. Na vlastnú poštu dostanete krátke potvrdenie s počtom uložených súborov.</p>
+            </div>
+            <div class="mail-mock" role="img" aria-label="Súkromná adresa na dokumenty a jedna príloha od iného odosielateľa, ktorá čaká na schválenie (vymyslené údaje)" data-sk-label="Súkromná adresa na dokumenty a jedna príloha od iného odosielateľa, ktorá čaká na schválenie (vymyslené údaje)" data-en-label="A private document address and one attachment from another sender waiting for approval (invented data)">
+              <div class="mm-card">
+                <p class="mm-label" data-sk="Adresa na dokumenty" data-en="Document address">Adresa na dokumenty</p>
+                <p class="mm-addr" data-sk="jana.testova-k7m2qd@docs.example" data-en="jane.doe-k7m2qd@docs.example">jana.testova-k7m2qd@docs.example</p>
+                <p class="mm-who" data-sk="Jana Testová, vymyslená pacientka" data-en="Jane Doe, invented patient">Jana Testová, vymyslená pacientka</p>
+              </div>
+              <div class="mm-card mm-wait">
+                <p class="mm-label"><span class="mm-mark" aria-hidden="true"></span><span data-sk="Čaká na vaše schválenie" data-en="Waiting for your approval">Čaká na vaše schválenie</span></p>
+                <p class="mm-from"><span data-sk="Od" data-en="From">Od</span> <b data-sk="laboratorium@nemocnica-prikladov.example" data-en="lab@example-hospital.example">laboratorium@nemocnica-prikladov.example</b></p>
+                <div class="mm-file"><svg class="mm-fi" aria-hidden="true"><use href="#g-pdf"/></svg><span class="mm-name" data-sk="vysledky_15032027.pdf" data-en="results_15032027.pdf">vysledky_15032027.pdf</span><span class="mm-size">184 kB</span></div>
+                <p class="mm-note" data-sk="Odosielateľ nedostal odpoveď. Kým neschválite, súbor nečíta žiadny model." data-en="The sender got no reply. Until you approve, no model reads the file.">Odosielateľ nedostal odpoveď. Kým neschválite, súbor nečíta žiadny model.</p>
+                <div class="mm-actions"><span class="mm-btn mm-yes" data-sk="Schváliť" data-en="Approve">Schváliť</span><span class="mm-btn" data-sk="Odmietnuť" data-en="Reject">Odmietnuť</span></div>
+              </div>
+              <p class="mm-cap" data-sk="Ukážka na vymyslených údajoch." data-en="Shown on invented data.">Ukážka na vymyslených údajoch.</p>
+            </div>
+          </div>
+        </div>
+        </div>
+      </section>
+
+      <!-- Step 3: reading happens on our own server (details: #privacy) -->
+      <section class="block" id="reading">
+        <div class="band">
+        <div class="wrap pad">
+          <div class="step-head">
+            <span class="step-n"><span class="sr-only" data-sk="Krok" data-en="Step">Krok</span> 3</span>
             <div>
               <h3 data-sk="Číta ich lokálny model na našom serveri v EÚ" data-en="A local model reads them on our own server in the EU">Číta ich lokálny model na našom serveri v EÚ</h3>
               <p data-sk="Čítanie skenov (OCR) aj zatriedenie dokumentov beží na lokálnom modeli na našom serveri v EÚ (Slovensko). Obsah dokumentov pri spracovaní na pozadí neopúšťa server." data-en="Reading scans (OCR) and classifying documents runs on a local model on our own server in the EU (Slovakia). Document content does not leave the server during background processing.">Čítanie skenov (OCR) aj zatriedenie dokumentov beží na lokálnom modeli na našom serveri v EÚ (Slovensko). Obsah dokumentov pri spracovaní na pozadí neopúšťa server.</p>
@@ -1413,11 +1491,12 @@ Nič sa nemaže, len presúva do koša.
         </div>
       </section>
 
-      <!-- Step 3: provenance -->
+      <!-- Step 4: provenance -->
       <section class="block" id="provenance">
+        <div class="band alt">
         <div class="wrap pad">
           <div class="step-head">
-            <span class="step-n"><span class="sr-only" data-sk="Krok" data-en="Step">Krok</span> 3</span>
+            <span class="step-n"><span class="sr-only" data-sk="Krok" data-en="Step">Krok</span> 4</span>
             <div>
               <h3 data-sk="Každá hodnota má svoj zdroj a stav overenia" data-en="Every value has its source and a verification state">Každá hodnota má svoj zdroj a stav overenia</h3>
               <p class="lead" data-sk="Ako viem, že číslo v tabuľke je naozaj z mojej správy?" data-en="How do I know a number in the table really comes from my report?">Ako viem, že číslo v tabuľke je naozaj z mojej správy?</p>
@@ -1484,14 +1563,15 @@ Nič sa nemaže, len presúva do koša.
             </div>
           </div>
         </div>
+        </div>
       </section>
 
-      <!-- Step 4: Oncofiles as the missing piece between your AI chat and your records -->
+      <!-- Step 5: Oncofiles as the missing piece between your AI chat and your records -->
       <section class="block" id="vision">
-        <div class="band alt">
+        <div class="band">
         <div class="wrap pad">
           <div class="step-head">
-            <span class="step-n"><span class="sr-only" data-sk="Krok" data-en="Step">Krok</span> 4</span>
+            <span class="step-n"><span class="sr-only" data-sk="Krok" data-en="Step">Krok</span> 5</span>
             <div>
               <h3 data-sk="Vaša AI sa pripája cez MCP" data-en="Your AI connects through MCP">Vaša AI sa pripája cez MCP</h3>
               <p class="lead" data-sk="Chýbajúci dielik skladačky" data-en="The missing piece of the puzzle">Chýbajúci dielik skladačky</p>
@@ -1724,6 +1804,10 @@ Nič sa nemaže, len presúva do koša.
           <details>
             <summary><h4 data-sk="Ako začnem s vlastnými dokumentmi?" data-en="How do I start with my own documents?">Ako začnem s vlastnými dokumentmi?</h4></summary>
             <div class="a"><p data-sk="Prihláste sa na oncofiles.com cez Google, vytvorte pacienta a vyberte priečinok na Google Drive, v ktorom už dokumentáciu máte. Ak sa vám nedarí prihlásiť alebo máte otázky, napíšte nám na peter.fusek@instarea.sk. Ukážku s vymyslenou pacientkou si môžete pozrieť hneď, bez prihlásenia." data-en="Sign in at oncofiles.com with Google, create a patient and pick the Google Drive folder that already holds your documents. If signing in does not work or you have questions, write to us at peter.fusek@instarea.sk. You can look at the demo with an invented patient right away, without signing in.">Prihláste sa na oncofiles.com cez Google, vytvorte pacienta a vyberte priečinok na Google Drive, v ktorom už dokumentáciu máte. Ak sa vám nedarí prihlásiť alebo máte otázky, napíšte nám na peter.fusek@instarea.sk. Ukážku s vymyslenou pacientkou si môžete pozrieť hneď, bez prihlásenia.</p></div>
+          </details>
+          <details>
+            <summary><h4 data-sk="Môžem posielať dokumenty e-mailom?" data-en="Can I send documents by e-mail?">Môžem posielať dokumenty e-mailom?</h4></summary>
+            <div class="a"><p data-sk="Áno. Každý pacient má súkromnú adresu na dokumenty, nájdete ju v dashboarde. Výsledky z laboratória prepošlite alebo fotku pošlite zo svojej adresy, ktorou sa prihlasujete, s touto adresou v poli Komu alebo Kópia (nie v Skrytej kópii): prílohy prídu nezmenené do priečinka Inbox vo vašom Drive a prečítajú sa ako každý iný súbor. Priamo sa uloží len pošta z vašej vlastnej adresy. Prílohy od kohokoľvek iného čakajú na vaše schválenie v dashboarde alebo cez odkaz v upozornení e-mailom; odosielateľ nedostane žiadnu odpoveď a kým neschválite, súbory nečíta žiadny model. Odmietnuté zostanú 30 dní v koši, potom sa zmažú." data-en="Yes. Every patient has a private address for documents, shown in the dashboard. Forward lab results or send a photo from the address you sign in with, with that address in To or Cc (not Bcc): the attachments arrive unchanged in the Inbox of your Drive folder and are read like any other file. Only mail from your own address is filed directly. Attachments from anyone else wait for your approval in the dashboard or through a link in a notification e-mail; the sender gets no reply, and no model reads the files until you approve. Rejected items stay in the trash for 30 days, then they are deleted.">Áno. Každý pacient má súkromnú adresu na dokumenty, nájdete ju v dashboarde. Výsledky z laboratória prepošlite alebo fotku pošlite zo svojej adresy, ktorou sa prihlasujete, s touto adresou v poli Komu alebo Kópia (nie v Skrytej kópii): prílohy prídu nezmenené do priečinka Inbox vo vašom Drive a prečítajú sa ako každý iný súbor. Priamo sa uloží len pošta z vašej vlastnej adresy. Prílohy od kohokoľvek iného čakajú na vaše schválenie v dashboarde alebo cez odkaz v upozornení e-mailom; odosielateľ nedostane žiadnu odpoveď a kým neschválite, súbory nečíta žiadny model. Odmietnuté zostanú 30 dní v koši, potom sa zmažú.</p></div>
           </details>
           <details>
             <summary><h4 data-sk="Ako pripojím Oncofiles ku Claude alebo ChatGPT?" data-en="How do I connect Oncofiles to Claude or ChatGPT?">Ako pripojím Oncofiles ku Claude alebo ChatGPT?</h4></summary>

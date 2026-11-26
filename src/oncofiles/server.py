@@ -3187,6 +3187,10 @@ async def llms_txt(request: Request) -> HTMLResponse:
         f"- Documents stay in the patient's own Google Drive: originals under standard\n"
         f"  names and a .md transcript next to each file. The folder stays readable\n"
         f"  without Oncofiles (no lock-in). Nothing is deleted, at most moved to the trash.\n"
+        f"- Documents by e-mail: each patient has a private address. Mail from the\n"
+        f"  caregiver's own address lands unchanged in the Inbox of the Drive folder;\n"
+        f"  attachments from anyone else wait for the caregiver's approval, the sender\n"
+        f"  gets no reply, and no model reads them before approval.\n"
         f"- OCR and classification run on a local model on our own server in the EU\n"
         f"  (Slovakia). Document content is not sent to a cloud model in background\n"
         f"  processing.\n"
@@ -3275,6 +3279,10 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
         f"- Dokumenty zostávajú vo vlastnom Google Drive pacienta: originály so\n"
         f"  štandardnými názvami a vedľa každého súboru prepis .md. Priečinok sa dá čítať\n"
         f"  aj bez Oncofiles (žiadne viazanie). Nič sa nemaže, nanajvýš sa presunie do koša.\n"
+        f"- Dokumenty e-mailom: každý pacient má súkromnú adresu. Pošta z vlastnej adresy\n"
+        f"  opatrovateľa príde nezmenená do priečinka Inbox v Drive; prílohy od kohokoľvek\n"
+        f"  iného čakajú na jeho schválenie, odosielateľ nedostane odpoveď a pred\n"
+        f"  schválením ich nečíta žiadny model.\n"
         f"- OCR a zatriedenie bežia na lokálnom modeli na našom serveri v EÚ (Slovensko).\n"
         f"  Obsah dokumentov sa pri spracovaní na pozadí neposiela do cloudového modelu.\n"
         f"- Každá laboratórna hodnota má dátum odberu, zdrojový dokument, stranu a riadok\n"
@@ -3445,6 +3453,10 @@ ktoré si viete overiť v zdrojovom dokumente.</p>
 <li><strong>Dokumenty zostávajú vo vašom Google Drive.</strong> Originály so
 štandardnými názvami a vedľa každého súboru prepis .md. Priečinok sa dá čítať aj
 bez Oncofiles, takže môžete kedykoľvek odísť.</li>
+<li><strong>Alebo ich pošlite e-mailom.</strong> Každý pacient má súkromnú adresu
+na dokumenty. Pošta z vašej adresy príde nezmenená do priečinka Inbox vo vašom
+Drive; prílohy od kohokoľvek iného čakajú na vaše schválenie a odosielateľ
+nedostane žiadnu odpoveď.</li>
 <li><strong>Číta ich lokálny model na našom serveri v EÚ (Slovensko).</strong>
 Obsah dokumentov sa pri spracovaní na pozadí neposiela do cloudového modelu.</li>
 <li><strong>Každá hodnota má svoj zdroj.</strong> Dátum odberu, dokument, strana
@@ -3519,6 +3531,10 @@ results so that you can check each one against its source document.</p>
 <li><strong>Your documents stay in your Google Drive.</strong> The originals
 under standard names and a .md transcript next to each file. The folder stays
 readable without Oncofiles, so you can leave at any time.</li>
+<li><strong>Or send them by e-mail.</strong> Every patient has a private address
+for documents. Mail from your own address arrives unchanged in the Inbox of your
+Drive folder; attachments from anyone else wait for your approval, and the sender
+gets no reply.</li>
 <li><strong>A local model reads them on our own server in the EU (Slovakia).</strong>
 Document content is not sent to a cloud model in background processing.</li>
 <li><strong>Every value has its source.</strong> The sample date, the document,
@@ -3787,6 +3803,10 @@ the US. Oncofiles is built and hosted in the EU.</p>
 <li><strong>Your documents stay in your Google Drive.</strong> The originals
 under standard names and a .md transcript next to each file. The folder stays
 readable without Oncofiles, so you can leave at any time.</li>
+<li><strong>Or send them by e-mail.</strong> Every patient has a private address
+for documents. Mail from your own address arrives unchanged in the Inbox of your
+Drive folder; attachments from anyone else wait for your approval, and the sender
+gets no reply.</li>
 <li><strong>A local model reads them on our own server in the EU (Slovakia).</strong>
 Document content is not sent to a cloud model in background processing.</li>
 <li><strong>Every value has its source.</strong> The sample date, the document,
@@ -3881,6 +3901,10 @@ Oncofiles vzniká a beží v EÚ.</p>
 <li><strong>Dokumenty zostávajú vo vašom Google Drive.</strong> Originály so
 štandardnými názvami a vedľa každého súboru prepis .md. Priečinok sa dá čítať aj
 bez Oncofiles, takže môžete kedykoľvek odísť.</li>
+<li><strong>Alebo ich pošlite e-mailom.</strong> Každý pacient má súkromnú adresu
+na dokumenty. Pošta z vašej adresy príde nezmenená do priečinka Inbox vo vašom
+Drive; prílohy od kohokoľvek iného čakajú na vaše schválenie a odosielateľ
+nedostane žiadnu odpoveď.</li>
 <li><strong>Číta ich lokálny model na našom serveri v EÚ (Slovensko).</strong>
 Obsah dokumentov sa pri spracovaní na pozadí neposiela do cloudového modelu.</li>
 <li><strong>Každá hodnota má svoj zdroj.</strong> Dátum odberu, dokument, strana
