@@ -966,6 +966,32 @@ class DocumentMixin:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
+    async def find_same_visit_documents(
+        self,
+        doc_id: int,
+        *,
+        patient_id: str,
+        document_date: str,
+        institution: str,
+        limit: int = 50,
+    ) -> list[Document]:
+        """Other active documents of ``patient_id`` with the same date and institution.
+
+        The deterministic ``same_visit`` rule of ``get_related_documents``
+        (#930): same patient, same ``document_date``, same institution
+        (trimmed, case-insensitive). Read-only, no model call. The caller
+        must not pass an empty or ``Unknown`` institution.
+        """
+        async with self.db.execute(
+            "SELECT * FROM documents WHERE patient_id = ? AND id != ? "
+            "AND deleted_at IS NULL AND document_date = ? "
+            "AND LOWER(TRIM(institution)) = LOWER(TRIM(?)) "
+            "ORDER BY id LIMIT ?",
+            (patient_id, doc_id, document_date, institution, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [d for r in rows if (d := _safe_row_to_document(r)) is not None]
+
     async def get_pending_sync_documents(self, *, patient_id: str) -> list[Document]:
         """Get documents that need syncing (no gdrive_id or pending state)."""
         async with self.db.execute(
