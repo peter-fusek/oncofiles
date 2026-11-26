@@ -205,13 +205,14 @@ def run_block_reason(pid: str) -> str | None:
     return None
 
 
-def patient_work_reason(pid: str) -> str | None:
+def patient_work_reason(pid: str, *, lock_held_by_caller: bool = False) -> str | None:
     """Why a Drive disconnect or an erasure of THIS patient must wait (#856).
 
     Stricter than :func:`run_block_reason`: ANY curated work of the patient
     counts, a dry job included (it holds the patient's Drive token and an LM
     Studio slot), and so does a restore / confirm slot. Another patient's work
-    never does. Codes only.
+    never does. Codes only. ``lock_held_by_caller``: the re-check made while
+    the caller itself holds ``patient_lock(pid)`` (the lock is then not a reason).
     """
     if (_runs.get(pid) or {}).get("state") == "running":
         return "run_in_progress"
@@ -220,7 +221,7 @@ def patient_work_reason(pid: str) -> str | None:
     job = _reocr_jobs.get(pid) or {}
     if job.get("state") == "running":
         return f"{job.get('kind') or 'reocr'}_in_progress"
-    if patient_lock(pid).locked():
+    if not lock_held_by_caller and patient_lock(pid).locked():
         return "patient_lock_held"
     return None
 

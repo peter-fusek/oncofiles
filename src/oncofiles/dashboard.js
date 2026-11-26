@@ -1122,6 +1122,11 @@
           headers: { 'Authorization': authHeader() }
         });
         if (resp.status === 401) { logout(); return; }
+        if (resp.status === 429) {
+          dataRightsStatus('Jeden export už prebieha. Skúste to o chvíľu znova.',
+            'An export is already running. Try again in a moment.');
+          return;
+        }
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         var blob = await resp.blob();
         var url = URL.createObjectURL(blob);
@@ -1175,7 +1180,7 @@
         var data = await resp.json();
         if (data.status === 'not_connected') {
           dataRightsStatus('Google Drive nebol pripojený.', 'Google Drive was not connected.');
-        } else if (data.google_revoke === 'failed' || data.google_revoke === 'skipped_shared_account') {
+        } else if (data.google_revoke === 'failed' || data.google_revoke === 'skipped_shared_or_unknown') {
           dataRightsStatus('Drive je odpojený. Prístup aplikácie môžete skontrolovať aj v nastaveniach účtu Google (Zabezpečenie, aplikácie tretích strán).',
             'Drive is disconnected. You can also check the app’s access in your Google Account (Security, third-party apps).');
         } else {

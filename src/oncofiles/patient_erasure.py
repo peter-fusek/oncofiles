@@ -17,16 +17,19 @@ removed:
    held for the whole erasure;
 3. a verified pre-store copy of the database (``pre_store.make_copy(db,
    "erase")``); no copy, no erasure;
-4. the encrypted files: the patient's quarantine items (through the
-   quarantine purge helper's own path checks) and a trial's held originals;
-   a refused path stops here with the database untouched;
-5. every row of every ``data_rights.REGISTRY`` table, in ONE transaction run
-   as one job on the database thread (no other coroutine's statement can
-   interleave), FK checks deferred to the commit, ``secure_delete`` on;
-   ``patients`` last; ``patient_consents`` with it (decision 2026-11-19);
-6. only then the Google grant (read before step 4) is revoked at Google, by
-   the Drive disconnect's rule: a grant another patient uses is left alone; a
-   failed revoke is reported, the stored token is gone anyway;
+4. the file list and the Google grants are read; then every row of every
+   ``data_rights.REGISTRY`` table is deleted in ONE transaction run as one job
+   on the database thread (no other coroutine's statement can interleave),
+   FK checks deferred to the commit, ``secure_delete`` on; ``patients`` last;
+   ``patient_consents`` with it (decision 2026-11-19). A refusal
+   (``db_busy``) or rollback ends here with nothing touched;
+5. only after the commit the encrypted files go: the patient's quarantine
+   items (through the quarantine purge helper's own path checks) and a
+   trial's held originals; missing files are tolerated, a path that fails its
+   check is left and named in ``leftover_files`` for the operator;
+6. then the Google grant is revoked, by the Drive disconnect's fail-safe
+   rule: only a grant proven unused by any other patient; a failed revoke is
+   reported, the stored token is gone anyway;
 7. one ``activity_log`` row under ``SYSTEM_NO_PATIENT`` with counts, the
    copy's name and the caller's keyed hash: no slug, no patient id, no name.
 
@@ -76,7 +79,7 @@ def _delete_rows_sync(conn, patient_id: str) -> dict[str, int]:
             for rule in data_rights.REGISTRY:
                 table = data_rights._quote(rule.table)
                 cursor = conn.execute(
-                    f"DELETE FROM {table} WHERE {rule.where}", {"pid": patient_id}
+                    f"DELETE FROM {table} WHERE {rule.erase_scope}", {"pid": patient_id}
                 )
                 counts[rule.table] = int(cursor.rowcount or 0)
             conn.commit()
@@ -201,19 +204,14 @@ async def erase_patient(
         except pre_store.PreStoreError as exc:
             logger.warning("erasure: pre-store copy failed (%s)", type(exc).__name__)
             return refused("pre_store_failed")
+        busy = curated.patient_work_reason(patient_id, lock_held_by_caller=True)
+        if busy:  # a job may have started while we waited for the lock
+            return refused(busy)
+        # Everything the rows point at is read BEFORE the transaction; files and
+        # the Google grant are touched only AFTER a successful commit, so a
+        # refused or rolled-back erasure leaves the patient exactly as it was.
         grants = await db.oauth_grants_for_disconnect(patient_id=patient_id)
         items, held = await _files_plan(db, patient_id)  # again, under the locks
-        q = await asyncio.to_thread(inbound_quarantine.erase_items_files, items)
-        if q.get("refused"):
-            logger.warning("erasure: quarantine file path refused patient %s", patient_id[:4])
-            return refused("quarantine_path_refused")
-        held_codes: dict[str, int] = {}
-        for file_id in held:
-            code = await asyncio.to_thread(erase_held_file, file_id)
-            held_codes[code] = held_codes.get(code, 0) + 1
-        if held_codes.get("refused"):
-            logger.warning("erasure: held file path refused patient %s", patient_id[:4])
-            return refused("held_path_refused")
         try:
             removed = await db.db._execute(_delete_rows_sync, db.db._conn, patient_id)
         except ErasureRefusedError as exc:
@@ -221,15 +219,31 @@ async def erase_patient(
         except Exception as exc:  # noqa: BLE001 - rolled back; say why by class only
             logger.warning("erasure: rolled back (%s)", type(exc).__name__)
             return refused("rolled_back")
-        # only after the rows are gone: a rolled-back erasure keeps a working link
+        q = await asyncio.to_thread(inbound_quarantine.erase_items_files, items)
+        held_codes: dict[str, int] = {}
+        held_left: list[str] = []
+        for file_id in held:
+            code = await asyncio.to_thread(erase_held_file, file_id)
+            held_codes[code] = held_codes.get(code, 0) + 1
+            if code == "refused":
+                held_left.append(file_id)
         google = await data_rights.revoke_grants(grants)
     _forget_runtime(patient_id)
+    leftover = {"quarantine_items": q.pop("refused_items", []), "held_files": held_left}
+    if leftover["quarantine_items"] or leftover["held_files"]:
+        # rows are gone; a path that failed its check needs an operator (ids only)
+        logger.warning(
+            "erasure: %d quarantine item dir(s) and %d held file(s) refused by the path check",
+            len(leftover["quarantine_items"]),
+            len(leftover["held_files"]),
+        )
     out = {
         "status": "erased",
         "rows_removed": removed,
         "rows_total": sum(removed.values()),
         "quarantine": q,
         "held_files": held_codes,
+        "leftover_files": leftover,
         "google_revoke": google,
         "pre_store_copy": copy_name,
         "drive_files": "untouched",

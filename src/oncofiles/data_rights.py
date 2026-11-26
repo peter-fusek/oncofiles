@@ -59,11 +59,21 @@ class TableRule:
     """Where ONE table keeps a patient's rows and what export / erasure do."""
 
     table: str
-    where: str  # SQL condition selecting the patient's rows; named parameter :pid
+    # SQL condition (named parameter :pid) selecting the rows an erasure deletes:
+    # every row that touches the patient, also one that links to someone else.
+    erase_scope: str
     export: bool
     reason: str
     exclude: frozenset[str] = field(default_factory=frozenset)  # extra columns left out
     only: tuple[str, ...] | None = None  # export exactly these columns
+    # The rows the export may hand out; None = erase_scope. Must be narrower
+    # wherever a row can point at another patient's row (e.g. a cross-reference
+    # between two documents): the export only includes rows wholly the patient's.
+    export_scope: str | None = None
+
+    @property
+    def export_where(self) -> str:
+        return self.export_scope or self.erase_scope
 
 
 def _direct(table: str, export: bool, reason: str, **kw) -> TableRule:
@@ -93,6 +103,9 @@ REGISTRY: tuple[TableRule, ...] = (
         f"source_document_id IN ({_DOCS}) OR target_document_id IN ({_DOCS})",
         True,
         "links between the patient's documents",
+        # export: BOTH ends the patient's (a stray link to another patient's
+        # document never hands out that document's id); erasure: EITHER end
+        export_scope=f"source_document_id IN ({_DOCS}) AND target_document_id IN ({_DOCS})",
     ),
     TableRule("lab_values", f"document_id IN ({_DOCS})", True, "legacy lab values"),
     TableRule(
@@ -247,7 +260,8 @@ async def count_rows(db, patient_id: str) -> dict[str, int]:
     out: dict[str, int] = {}
     for rule in REGISTRY:
         async with db.db.execute(
-            f"SELECT COUNT(*) FROM {_quote(rule.table)} WHERE {rule.where}", {"pid": patient_id}
+            f"SELECT COUNT(*) FROM {_quote(rule.table)} WHERE {rule.erase_scope}",
+            {"pid": patient_id},
         ) as cursor:
             row = await cursor.fetchone()
         out[rule.table] = int(row[0] or 0) if row else 0
@@ -259,7 +273,7 @@ async def _iter_rows(db, rule: TableRule, columns: list[str], patient_id: str):
     select = ", ".join(_quote(c) for c in columns)
     sql = (
         f"SELECT rowid AS _rid, {select} FROM {_quote(rule.table)} "
-        f"WHERE ({rule.where}) AND rowid > :after ORDER BY rowid LIMIT {EXPORT_PAGE_ROWS}"
+        f"WHERE ({rule.export_where}) AND rowid > :after ORDER BY rowid LIMIT {EXPORT_PAGE_ROWS}"
     )
     after = -1
     while True:
@@ -420,9 +434,10 @@ async def revoke_google(db, patient_id: str) -> str:
     ``no_token`` (nothing stored), ``revoked``, ``already_revoked``, ``failed``
     (network or Google error: the caller still deletes the stored token, and
     the person can remove the app in their Google Account), or
-    ``skipped_shared_account`` (another patient uses the same grant or Google
-    account: revoking would cut that patient's link too). With several rows
-    the least final code wins (failed > skipped > already > revoked).
+    ``skipped_shared_or_unknown`` (another patient uses the same grant or
+    Google account, OR we cannot prove that none does: revoking would cut
+    that patient's link too, so we only delete our own token). With several
+    rows the least final code wins (failed > skipped > already > revoked).
     """
     return await revoke_grants(await db.oauth_grants_for_disconnect(patient_id=patient_id))
 
@@ -436,13 +451,13 @@ async def revoke_grants(grants: list[dict]) -> str:
 
     if not grants:
         return "no_token"
-    order = ["revoked", "already_revoked", "skipped_shared_account", "failed"]
+    order = ["revoked", "already_revoked", "skipped_shared_or_unknown", "failed"]
     worst = "revoked"
     done: set[str] = set()
     for grant in grants:
         token = grant["refresh_token"]
-        if grant["shared"]:
-            code = "skipped_shared_account"
+        if not grant.get("revocable"):  # fail safe: only a grant proven unshared
+            code = "skipped_shared_or_unknown"
         elif token in done:
             continue
         else:
@@ -490,14 +505,21 @@ async def disconnect_drive(db, patient_id: str, *, caller_email: str | None) -> 
     """
     from oncofiles.tools import curated
 
-    busy = curated.patient_work_reason(patient_id)
-    if busy:
-        out = {"status": "refused", "code": busy}
+    async def _refuse(code: str) -> dict:
+        out = {"status": "refused", "code": code}
         await audit(
             db, patient_id=patient_id, tool="drive_disconnect", caller_email=caller_email, data=out
         )
         return out
+
+    busy = curated.patient_work_reason(patient_id)
+    if busy:
+        return await _refuse(busy)
     async with curated.patient_lock(patient_id):
+        # second check under the lock: a job may have started while we waited
+        busy = curated.patient_work_reason(patient_id, lock_held_by_caller=True)
+        if busy:
+            return await _refuse(busy)
         grants = await db.oauth_grants_for_disconnect(patient_id=patient_id)
         removed = await db.delete_oauth_tokens(patient_id=patient_id)
         await db.set_curated_nightly(

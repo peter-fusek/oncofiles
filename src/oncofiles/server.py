@@ -7573,6 +7573,23 @@ async def api_drive_disconnect(request: Request) -> JSONResponse:
     return JSONResponse(result)
 
 
+# #856: one running export per principal (session e-mail, or the operator).
+# Value = monotonic start; an entry older than _EXPORT_STALE_S is ignored (a
+# stream the server never saw end). In memory only, never logged.
+_exports_running: dict[str, float] = {}
+_EXPORT_STALE_S = 900
+_EXPORT_RETRY_AFTER_S = 30
+
+
+async def _export_guarded(principal: str, stream):
+    """Yield the export stream; free the principal's slot however it ends."""
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        _exports_running.pop(principal, None)
+
+
 @mcp.custom_route("/api/patient-export", methods=["GET"])
 async def api_patient_export(request: Request) -> Response:
     """ZIP of everything Oncofiles stores about ONE patient (#856).
@@ -7582,7 +7599,9 @@ async def api_patient_export(request: Request) -> Response:
     the same 404). Streamed in chunks (``data_rights.export_stream``: bounded
     memory, the registry's SQL-filtered rows, no credentials or hashes), with
     ``Cache-Control: no-store``. One ``activity_log`` row per request (the
-    caller's keyed hash, no content).
+    caller's keyed hash, no content). One running export per principal: a
+    second one gets 429 ``export_busy`` + ``Retry-After`` until the first
+    stream ends (or is older than ``_EXPORT_STALE_S``).
     """
     err = _check_dashboard_auth(request)
     if err:
@@ -7599,6 +7618,19 @@ async def api_patient_export(request: Request) -> Response:
     if patient is None:
         return _patient_not_found()
     email, is_admin = _dashboard_caller(request)
+    principal = (email or "").strip().lower() or "operator"
+    started = _exports_running.get(principal)
+    if started is not None and time.monotonic() - started < _EXPORT_STALE_S:
+        return JSONResponse(
+            {
+                "error": "export_busy",
+                "message_sk": "Jeden export už prebieha. Skúste to o chvíľu znova.",
+                "message_en": "An export is already running. Try again in a moment.",
+            },
+            status_code=429,
+            headers={"Retry-After": str(_EXPORT_RETRY_AFTER_S), "Cache-Control": "no-store"},
+        )
+    _exports_running[principal] = time.monotonic()
     await data_rights.audit(
         db_inst,
         patient_id=patient_id,
@@ -7609,7 +7641,7 @@ async def api_patient_export(request: Request) -> Response:
     slug = re.sub(r"[^a-z0-9-]+", "-", (patient.slug or "patient").lower()).strip("-")
     stamp = datetime.now(UTC).strftime("%Y%m%d")
     return StreamingResponse(
-        data_rights.export_stream(db_inst, patient_id),
+        _export_guarded(principal, data_rights.export_stream(db_inst, patient_id)),
         media_type="application/zip",
         headers={
             "Cache-Control": "no-store",

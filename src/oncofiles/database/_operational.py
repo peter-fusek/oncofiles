@@ -342,26 +342,64 @@ class OperationalMixin:
         await self.db.commit()
         return int(cursor.rowcount or 0)
 
-    async def oauth_grants_for_disconnect(self, *, patient_id: str) -> list[dict]:
-        """Refresh tokens of ONE patient with a flag: does another patient use the
-        same grant (same refresh token or the same Google account)? (#856)
+    async def _google_grant_account_hash(self, patient_id: str) -> str | None:
+        """Keyed hash of the Google account whose tokens are stored for a patient.
 
-        Revoking a refresh token at Google ends the grant for that Google
-        account, so a grant another patient still uses is never revoked.
-        Returns ``[{"refresh_token", "shared"}]``; the caller never logs it.
+        The OAuth callback (``google_link.store_google_link``, #591) writes it
+        as ``new_email_hash`` on every STORED link (``google_link`` row, status
+        ok); a stored link replaces the token, so the newest such row names the
+        granting account. ``oauth_tokens.owner_email`` is NOT used: it is the
+        Drive folder owner (``drive_folder_link``), not the granting account.
+        None when unknown (linked before #591, or stored without a hash key).
+        """
+        async with self.db.execute(
+            "SELECT json_extract(input_summary, '$.new_email_hash') FROM activity_log "
+            "WHERE patient_id = ? AND tool_name = 'google_link' AND status = 'ok' "
+            "AND json_valid(input_summary) ORDER BY id DESC LIMIT 1",
+            (patient_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        value = row[0] if row else None
+        return value if isinstance(value, str) and value else None
+
+    async def oauth_grants_for_disconnect(self, *, patient_id: str) -> list[dict]:
+        """Refresh tokens of ONE patient, each with ``revocable`` (#856).
+
+        Revoking a refresh token at Google ends the whole grant of our OAuth
+        client for that Google account, so it may cut another patient's link.
+        Fail safe: ``revocable`` is True only when this patient's granting
+        account is KNOWN and every other patient holding a Google token has a
+        KNOWN, DIFFERENT granting account and a different refresh token.
+        Unknown on either side counts as shared. Returns
+        ``[{"refresh_token", "revocable"}]``; the caller never logs it.
         """
         patient_id = require_patient_id(patient_id)
         async with self.db.execute(
-            "SELECT t.refresh_token AS refresh_token, EXISTS ("
-            "  SELECT 1 FROM oauth_tokens o WHERE o.patient_id != t.patient_id AND ("
-            "    o.refresh_token = t.refresh_token OR ("
-            "      COALESCE(t.owner_email, '') != '' "
-            "      AND lower(COALESCE(o.owner_email, '')) = lower(t.owner_email)))"
-            ") AS shared FROM oauth_tokens t WHERE t.patient_id = ?",
+            "SELECT refresh_token FROM oauth_tokens WHERE patient_id = ?", (patient_id,)
+        ) as cursor:
+            own = [r[0] or "" for r in await cursor.fetchall()]
+        if not own:
+            return []
+        own_account = await self._google_grant_account_hash(patient_id)
+        async with self.db.execute(
+            "SELECT patient_id, refresh_token FROM oauth_tokens WHERE patient_id != ?",
             (patient_id,),
         ) as cursor:
-            rows = await cursor.fetchall()
-        return [{"refresh_token": r[0] or "", "shared": bool(r[1])} for r in rows]
+            others = [(r[0], r[1] or "") for r in await cursor.fetchall()]
+        other_accounts: set[str | None] = set()
+        for other_pid in {pid for pid, _ in others}:
+            other_accounts.add(await self._google_grant_account_hash(other_pid))
+        other_tokens = {tok for _, tok in others}
+        account_unique = own_account is not None and not (
+            None in other_accounts or own_account in other_accounts
+        )
+        return [
+            {
+                "refresh_token": tok,
+                "revocable": bool(tok) and account_unique and tok not in other_tokens,
+            }
+            for tok in own
+        ]
 
     async def update_oauth_folder(
         self,

@@ -827,21 +827,25 @@ def erase_items_files(items: list[tuple[str, int]]) -> dict:
     state. Each item goes through :func:`_purge_item_files`, so the same path
     checks apply (no glob, no recursive delete, a symlink or foreign directory
     is refused and nothing of that item is removed). Blocking
-    (``asyncio.to_thread``). Returns counts only; ``refused`` > 0 tells the
-    caller to stop before touching the database.
+    (``asyncio.to_thread``). Returns counts; ``refused`` > 0 tells the
+    caller to report; ``refused_items`` names those items' uuids (the erasure
+    runs this only after its rows are committed, so a missing file of a retry
+    is tolerated).
     """
     counts: Counter = Counter()
+    refused_items: list[str] = []
     for item_uuid, file_count in items:
         res = _purge_item_files(str(item_uuid), int(file_count))
         if res.refused:
             counts["refused"] += 1
+            refused_items.append(str(item_uuid))
             continue
         counts["files_removed"] += res.removed
         counts["files_missing"] += res.missing
         counts["bytes"] += res.bytes
         if res.dir_kept:
             counts["dirs_kept"] += 1
-    return dict(counts)
+    return {**counts, "refused_items": refused_items}
 
 
 async def purge_due(db, *, limit: int = PURGE_MAX_ITEMS) -> dict:
