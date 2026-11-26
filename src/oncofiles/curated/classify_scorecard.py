@@ -46,7 +46,12 @@ SCORECARD_VERSION = "classify-scorecard-v1"
 KIND = "classification"
 # a change of these does not change what the numbers mean, so a delta is
 # still given; they are listed in ``definition_changed`` for the reader
-INFO_FIELDS = ("prompt_variant", "prompt_version", "sampling", "model")
+INFO_FIELDS = ("prompt_variant", "prompt_version", "sampling")
+# another model (or reasoning effort) is another definition: the aggregate
+# delta is withheld, the per-document delta is still given, labelled
+# ``across_definitions`` (scorecard model override). ``reasoning_effort`` is
+# recorded only when a job overrode it, so earlier baselines stay comparable.
+DEFINITION_FIELDS = ("scorecard_version", "model", "reasoning_effort")
 AGREEMENT_FIELDS = ("doc_type", "date", "institution")
 _HIGHER_IS_BETTER = tuple(f"agreement.{f}.pct_agree" for f in AGREEMENT_FIELDS) + (
     "repeat.pct_stable",
@@ -124,19 +129,26 @@ def prompt_version(prompt_variant: str | None = None) -> str:
 
 def run_once(
     contract, text: str, filed_name: str, *, prompt_variant: str | None = None,
-    sampling: str | None = None, auto_vocab: bool = False,
+    sampling: str | None = None, auto_vocab: bool = False, model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict:  # fmt: skip
     """One production ``propose`` (the request a curated run sends; only
-    ``prompt_variant`` and, under v2, ``sampling`` may override the env for a
-    scorecard job) + ``validate`` on a stored text (blocking; one model
-    slot). Returns counts and codes only."""
+    ``prompt_variant``, under v2 ``sampling``, and ``model`` /
+    ``reasoning_effort`` may override it for a scorecard job, passed
+    explicitly) + ``validate`` on a stored text (blocking; one model slot).
+    Returns counts and codes only."""
     stats: dict = {}
     t0 = time.monotonic()
     out: dict = {"seconds": None, "error_kind": None, "truncated": False}
     try:
+        overrides = {
+            k: v
+            for k, v in (("model", model), ("reasoning_effort", reasoning_effort))
+            if v is not None
+        }
         raw = classify.propose(
-            contract, text, variant=prompt_variant, sampling=sampling, stats=stats
-        )
+            contract, text, variant=prompt_variant, sampling=sampling, stats=stats, **overrides
+        )  # fmt: skip
     except llm.LocalLLMError as exc:
         kind = _error_kind(exc)
         out.update(error_kind=kind, truncated=kind == "truncated")
@@ -279,14 +291,22 @@ def totals(cards: list[dict], *, requested: int = 0, missing: int = 0) -> dict:
     }
 
 
-def versions(*, sampling: str, prompt_variant: str | None = None) -> dict:
-    return {
+def versions(
+    *, sampling: str, prompt_variant: str | None = None, model: str | None = None,
+    reasoning_effort: str | None = None,
+) -> dict:  # fmt: skip
+    """``model`` is the override when given (full id), else ``LOCAL_LLM_MODEL``
+    as before; ``reasoning_effort`` is present only when overridden."""
+    out = {
         "scorecard_version": SCORECARD_VERSION,
         "prompt_variant": classify.prompt_variant(prompt_variant),
         "prompt_version": prompt_version(prompt_variant),
         "sampling": sampling,
-        "model": llm.model_id()[:64],
+        "model": model if model is not None else llm.model_id()[:64],
     }
+    if reasoning_effort is not None:
+        out["reasoning_effort"] = reasoning_effort
+    return out
 
 
 # ── per-document rows (#926 / #942 infra follow-up) ─────────────────────
@@ -395,23 +415,34 @@ def compare(
     current_totals: dict,
     current_per_document: list[dict] | None = None,
 ) -> dict:
-    """``delta`` metric by metric against the baseline report. Only a
-    different ``scorecard_version`` (what the numbers mean) withholds it; a
-    different prompt, sampling or model is exactly what a before/after
-    measures and is listed in ``definition_changed``. With the current
-    per-document rows, ``per_document_delta`` diffs them against the
-    baseline's (``diff_documents``; a baseline persisted before the rows
-    existed gives ``comparable: false``)."""
+    """``delta`` metric by metric against the baseline report. A different
+    ``DEFINITION_FIELDS`` value (``scorecard_version``: what the numbers mean;
+    ``model`` / ``reasoning_effort``: another model is another definition)
+    withholds it (``baseline_comparable: false``); a different prompt or
+    sampling is exactly what a before/after measures and is only listed in
+    ``definition_changed``. With the current per-document rows,
+    ``per_document_delta`` diffs them against the baseline's
+    (``diff_documents``; a baseline persisted before the rows existed gives
+    ``comparable: false``) — also when the aggregate delta is withheld, then
+    labelled ``across_definitions: true`` (per document flips between two
+    models are what a model evaluation compares)."""
     if not baseline:
         return {"baseline_comparable": None, "definition_changed": {}, "delta": None,
                 "per_document_delta": None}  # fmt: skip
     old = baseline.get("versions") if isinstance(baseline.get("versions"), dict) else {}
     changed = {k: [old.get(k), current_versions.get(k)]
-               for k in ("scorecard_version", *INFO_FIELDS)
+               for k in (*DEFINITION_FIELDS, *INFO_FIELDS)
                if old.get(k) != current_versions.get(k)}  # fmt: skip
-    if "scorecard_version" in changed:
+    per_doc = (
+        diff_documents(baseline.get("per_document"), current_per_document)
+        if current_per_document is not None
+        else None
+    )
+    if any(k in changed for k in DEFINITION_FIELDS):
+        if per_doc is not None:
+            per_doc = {**per_doc, "across_definitions": True}
         return {"baseline_comparable": False, "definition_changed": changed, "delta": None,
-                "per_document_delta": None}  # fmt: skip
+                "per_document_delta": per_doc}  # fmt: skip
     prev, cur = flatten(baseline.get("totals") or {}), flatten(current_totals)
     metrics = {}
     for key in sorted(set(prev) | set(cur)):
@@ -432,11 +463,7 @@ def compare(
         "baseline_comparable": True,
         "definition_changed": changed,
         "delta": {"metrics": metrics, "regressions": regressions},
-        "per_document_delta": (
-            diff_documents(baseline.get("per_document"), current_per_document)
-            if current_per_document is not None
-            else None
-        ),
+        "per_document_delta": per_doc,
     }
 
 

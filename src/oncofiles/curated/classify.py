@@ -411,6 +411,8 @@ def propose(
     variant: str | None = None,
     sampling: str | None = None,
     stats: dict | None = None,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict:
     """Ask the local model for the fields (blocking).
 
@@ -419,7 +421,10 @@ def propose(
     explicitly on, the sampling profile of ``sampling_mode(sampling)``, the
     worked examples; ``sampling`` is ignored under v1. ``stats`` (optional)
     receives counts only: ``finish_reason``, token counts of the last call,
-    ``retried``, ``prompt_variant``, ``sampling`` (``legacy`` under v1)."""
+    ``retried``, ``prompt_variant``, ``sampling`` (``legacy`` under v1).
+    ``model`` / ``reasoning_effort``: per-job overrides of the classification
+    scorecard only (dry run, validated there); sent only when given, so a
+    curated run's request is unchanged."""
     chosen = prompt_variant(variant)
     system = system_prompt(contract, chosen)
     user = f"TEXT:\n{text[:MAX_TEXT_CHARS]}"
@@ -428,6 +433,10 @@ def propose(
         kwargs = {"thinking": True, **llm.sampling_profile(SAMPLING_MODES[mode])}
     else:
         mode, kwargs = "legacy", {}
+    if model is not None:
+        kwargs["model"] = model
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
     info: dict = {}
     if stats is not None:
         stats.update(prompt_variant=chosen, sampling=mode, retried=False)

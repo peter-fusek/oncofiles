@@ -53,6 +53,14 @@ CHARS_PER_TOKEN = 3.0  # Slovak/Czech medical text, measured ~3.0-3.5 (2026-11-0
 IMAGE_TOKENS = 3_000  # one page PNG at 150 dpi (vision models tile ~28 px patches)
 MIN_ANSWER_TOKENS = 1_500  # below this the model cannot reason and answer
 
+# What ``chat`` sends as ``reasoning_effort`` unless a caller passes one. Only
+# the dry-run scorecards override it, per job, next to an optional ``model``.
+DEFAULT_REASONING_EFFORT = "low"
+REASONING_EFFORTS = ("none", "low", "medium", "high")
+MODEL_ID_MAX = 200
+_MODEL_ID_RE = re.compile(r"[A-Za-z0-9._:/@-]+")
+MODELS_TIMEOUT_S = 10.0
+
 # Named sampling profiles (#767, #926). The Qwen3.8 model card: thinking
 # T 1.0 / top_p 0.95 / top_k 20, non-thinking T 0.7 / top_p 0.8 / top_k 20 /
 # presence_penalty 1.5; greedy decoding (T 0) makes Qwen3-family models loop,
@@ -207,6 +215,69 @@ def model_id() -> str:
     return config.LOCAL_LLM_MODEL or "unconfigured"
 
 
+def model_override_error(model, reasoning_effort) -> str | None:
+    """Why a per-job ``model`` / ``reasoning_effort`` override is invalid, or
+    None. ``model``: a non-empty string of at most ``MODEL_ID_MAX`` characters
+    from ``[A-Za-z0-9._:/@-]``; ``reasoning_effort``: one of
+    ``REASONING_EFFORTS``. ``None`` = no override for either."""
+    if model is not None and (
+        not isinstance(model, str)
+        or not model
+        or len(model) > MODEL_ID_MAX
+        or not _MODEL_ID_RE.fullmatch(model)
+    ):
+        return (
+            f"model must be 1-{MODEL_ID_MAX} characters of letters, digits or . _ : / @ - "
+            "(an LM Studio model id), or null"
+        )
+    if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
+        return f"reasoning_effort must be one of {list(REASONING_EFFORTS)} or null"
+    return None
+
+
+def _headers() -> dict:
+    headers = {"Content-Type": "application/json"}
+    if config.LOCAL_LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {config.LOCAL_LLM_API_KEY}"
+    return headers
+
+
+def listed_models(*, client: httpx.Client | None = None) -> list[str]:
+    """Model ids the configured LM Studio lists at ``GET /models`` (same base
+    URL and key as ``chat``; blocking, read-only: it never loads or downloads
+    a model). Raises ``LocalLLMTransportError`` when the list is unavailable."""
+    if not config.LOCAL_LLM_BASE_URL:
+        raise LocalLLMTransportError("LOCAL_LLM_BASE_URL not set")
+    require_private_base_url()  # #925
+    own = client is None
+    http = client or httpx.Client(timeout=MODELS_TIMEOUT_S)
+    try:
+        resp = http.get(f"{config.LOCAL_LLM_BASE_URL}/models", headers=_headers())
+    except httpx.HTTPError as exc:
+        raise LocalLLMTransportError(f"local LLM unreachable: {type(exc).__name__}") from exc
+    finally:
+        if own:
+            http.close()
+    if resp.status_code != 200:
+        raise LocalLLMTransportError(f"local LLM HTTP {resp.status_code}")
+    try:
+        data = resp.json().get("data")
+        return [m["id"] for m in data if isinstance(m, dict) and isinstance(m.get("id"), str)]
+    except (AttributeError, TypeError, ValueError, KeyError) as exc:
+        raise LocalLLMTransportError("local LLM returned an unexpected model list") from exc
+
+
+def model_refusal(model: str, *, client: httpx.Client | None = None) -> str | None:
+    """None when ``model`` is listed by the configured LM Studio; else the
+    refusal code ``model_not_loaded``, or ``model_list_unavailable`` when the
+    list cannot be read (fail closed: nothing is started)."""
+    try:
+        ids = listed_models(client=client)
+    except LocalLLMError:
+        return "model_list_unavailable"
+    return None if model in ids else "model_not_loaded"
+
+
 def image_part(png_bytes: bytes, mime: str = "image/png") -> dict:
     b64 = base64.b64encode(png_bytes).decode("ascii")
     return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
@@ -264,7 +335,8 @@ def chat(
     temperature: float = 0.0,
     client: httpx.Client | None = None,
     timeout: float | None = None,
-    reasoning_effort: str = "low",
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT,
+    model: str | None = None,
     thinking: bool | None = None,
     response_format: dict | None = None,
     info: dict | None = None,
@@ -297,7 +369,11 @@ def chat(
     on, no ``/no_think`` is sent anywhere; with ``thinking=False`` the system
     message ends with ``REASONING_OFF_MARKER``, otherwise it is sent bare.
     Only the extractor call path passes it, explicitly per call (never global
-    state); every other caller follows the env. Off = byte-identical request."""
+    state); every other caller follows the env. Off = byte-identical request.
+    ``model`` (``None`` = ``LOCAL_LLM_MODEL``): another LM Studio model id for
+    this call only. Only the dry-run scorecards pass it (validated with
+    ``model_override_error`` and ``model_refusal`` first); every production
+    caller leaves it unset, so its request body is unchanged."""
     if not configured():
         raise LocalLLMTransportError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     require_private_base_url()  # #925: before anything is built or sent
@@ -312,7 +388,7 @@ def chat(
         )
     marker = config.LLM_REASONING_MARKER if reasoning_marker is None else bool(reasoning_marker)
     payload = {
-        "model": config.LOCAL_LLM_MODEL,
+        "model": model or config.LOCAL_LLM_MODEL,
         "temperature": temperature,
         "max_tokens": max_tokens,
         # Qwen3.x reasons before answering and ignores "/no_think" in the SYSTEM
@@ -334,9 +410,7 @@ def chat(
         # The kwarg alone is ignored by LM Studio for Qwen3.x MLX (#689).
         # With the #770 marker the template rule switches thinking off instead.
         payload["messages"][-1]["content"] = _with_no_think(user_content)
-    headers = {"Content-Type": "application/json"}
-    if config.LOCAL_LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {config.LOCAL_LLM_API_KEY}"
+    headers = _headers()
     own = client is None
     http = client or httpx.Client(timeout=timeout or config.LOCAL_LLM_TIMEOUT_S)
     # A caller's client keeps its own timeout unless this call sets one (#767).

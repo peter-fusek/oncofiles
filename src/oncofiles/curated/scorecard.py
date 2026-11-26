@@ -58,6 +58,11 @@ _LEGACY_EXTRACTORS = {
     "extractor_version": "lab", "verifier_version": "lab_verifier",
     "clinical_extractor_version": "clinical", "clinical_verifier_version": "clinical_verifier",
 }  # fmt: skip
+# Per-job model overrides of a dry run (scorecard model override): recorded
+# only when a job overrode them (absent = the configured LOCAL_LLM_MODEL and
+# the default reasoning effort), so earlier baselines stay comparable; a
+# differing value (also absent vs set) is another definition.
+OVERRIDE_FIELDS = ("model", "reasoning_effort")
 REASONING_TOKENS_MAX = 50
 LAB_KIND = "lab"
 
@@ -358,18 +363,24 @@ def _version(value) -> str | int | None:
 
 
 def versions(
-    *, extractor, verifier, clinical_extractor, clinical_verifier
-) -> dict[str, str | int | None]:
+    *, extractor, verifier, clinical_extractor, clinical_verifier, model=None,
+    reasoning_effort=None,
+) -> dict[str, str | int | None]:  # fmt: skip
     """The versions a scorecard's numbers were produced under: this module's,
     the lab extractor + generic verifier (``extractor_version``,
-    ``verifier_version``) and the clinical pair."""
-    return {
+    ``verifier_version``) and the clinical pair; plus ``model`` /
+    ``reasoning_effort`` only when the job overrode them."""
+    out = {
         "scorecard_version": SCORECARD_VERSION,
         "extractor_version": _version(extractor),
         "verifier_version": _version(verifier),
         "clinical_extractor_version": _version(clinical_extractor),
         "clinical_verifier_version": _version(clinical_verifier),
     }
+    for key, value in (("model", model), ("reasoning_effort", reasoning_effort)):
+        if value is not None:
+            out[key] = str(value)[:200]
+    return out
 
 
 def versions_of(report: dict | None) -> dict[str, str | int | None]:
@@ -379,7 +390,10 @@ def versions_of(report: dict | None) -> dict[str, str | int | None]:
     report = report if isinstance(report, dict) else {}
     stored = report.get("versions")
     if isinstance(stored, dict):
-        return {k: _version(stored.get(k)) for k in VERSION_FIELDS}
+        out = {k: _version(stored.get(k)) for k in VERSION_FIELDS}
+        out.update({k: str(stored[k])[:200] for k in OVERRIDE_FIELDS
+                    if isinstance(stored.get(k), str)})  # fmt: skip
+        return out
     legacy = report.get("extractors")
     legacy = legacy if isinstance(legacy, dict) else {}
     out = {k: _version(legacy.get(src)) for k, src in _LEGACY_EXTRACTORS.items()}
@@ -395,6 +409,9 @@ def definition_changed(baseline: dict, current: dict) -> dict[str, list]:
         old, new = baseline.get(k), current.get(k)
         if old is None or new is None or old != new:
             out[k] = [old, new]
+    for k in OVERRIDE_FIELDS:  # absent on both sides = the configured default
+        if baseline.get(k) != current.get(k):
+            out[k] = [baseline.get(k), current.get(k)]
     return out
 
 
