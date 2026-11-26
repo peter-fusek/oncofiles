@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 from unittest.mock import MagicMock
 
@@ -61,7 +62,9 @@ def _facts():
 def _assert_no_values(obj):
     dumped = json.dumps(obj, ensure_ascii=False)
     for v in VALUES:
-        assert v not in dumped, v
+        # whole number only: a timestamp such as "…:46.040409" or a timing
+        # float must not count as the invented value 6.04 (flaky before)
+        assert not re.search(rf"(?<![\d.,]){re.escape(v)}(?![\d])", dumped), v
     for token in (DATE, "2027-03-17", "Dátum", "Q7"):
         assert token not in dumped, token
 
