@@ -14,7 +14,8 @@ across job kinds.
   one, and only files whose name fully matches ``NAME_RE`` — never a glob,
   never anything else in the directory. Erase copies (#856) are also removed
   once older than ``ERASE_MAX_AGE_DAYS`` (30), on every copy and by the daily
-  ``pre_store_erase_retention`` job (maintainer decision 2026-11-26, RUNBOOK).
+  ``pre_store_erase_retention`` loop (``erase_retention``, runs whatever
+  ``SYNC_ENABLED`` says; maintainer decision 2026-11-26, RUNBOOK).
 
 Blocking (file I/O): call through ``asyncio.to_thread``.
 """

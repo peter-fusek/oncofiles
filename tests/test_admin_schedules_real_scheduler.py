@@ -264,7 +264,11 @@ async def test_scheduler_off_lists_every_known_job_as_inactive():
         "switch": "SYNC_ENABLED=false",
     }
     assert {j["id"] for j in body["inactive"]} == set(scheduled_jobs.CATALOGUE)
-    assert {j["reason"] for j in body["inactive"]} == {"sync_disabled"}
+    reasons = {j["id"]: j["reason"] for j in body["inactive"]}
+    # #856: a lifespan loop is never off because of SYNC_ENABLED.
+    for loop_id in scheduled_jobs.BACKGROUND_LOOP_JOBS:
+        assert reasons.pop(loop_id) == "loop_not_running"
+    assert set(reasons.values()) == {"sync_disabled"}
     assert body["curated_loop"]["running"] is False
     assert body["curated_loop"]["reason"] == "google_disabled"
 

@@ -10,6 +10,8 @@ makes starting them idempotent:
   returns the running instance instead of building a second one;
 * ``ensure_curated_loop()`` — the lifespan gets the running loop task back
   instead of creating another;
+* ``ensure_background_loop(name, ...)`` — the same for other boot loops that
+  must run whatever ``SYNC_ENABLED`` says (the #856 erase retention);
 * ``release_*()`` — reference counted, so only the last holder shuts down.
 
 Across processes (a rolling deploy runs the old and new container side by side
@@ -47,6 +49,10 @@ _curated_task: Any = None
 _curated_refs = 0
 _curated_started_at: str | None = None
 _duplicate_logged: set[str] = set()
+# Other boot loops by name (#856 erase retention): task, holders, start time.
+_loops: dict[str, Any] = {}
+_loop_refs: dict[str, int] = {}
+_loop_started_at: dict[str, str] = {}
 
 
 def _log_duplicate_once(kind: str) -> None:
@@ -154,6 +160,43 @@ def release_curated_loop(task: Any) -> bool:
         return True
 
 
+def ensure_background_loop(name: str, factory: Callable[[], Any]) -> tuple[Any, bool]:
+    """Like ``ensure_curated_loop`` for any other named boot loop (e.g. the
+    #856 erase retention): ``(task, started_now)``, one live task per name."""
+    with _lock:
+        task = _loops.get(name)
+        if task is not None and not task.done():
+            _loop_refs[name] = _loop_refs.get(name, 0) + 1
+            _log_duplicate_once(f"{name} loop")
+            return task, False
+        task = factory()
+        _loops[name] = task
+        _loop_refs[name] = 1
+        _loop_started_at[name] = datetime.now(UTC).isoformat(timespec="seconds")
+        _duplicate_logged.discard(f"{name} loop")
+        return task, True
+
+
+def release_background_loop(name: str, task: Any) -> bool:
+    """Drop one holder. True when the caller held the current task last and
+    should cancel it; a stale holder (its task ended, a newer one runs) gets False."""
+    with _lock:
+        if task is None or _loops.get(name) is not task:
+            return False
+        _loop_refs[name] = max(0, _loop_refs.get(name, 0) - 1)
+        if _loop_refs[name]:
+            return False
+        _loops.pop(name, None)
+        _loop_refs.pop(name, None)
+        _loop_started_at.pop(name, None)
+        return True
+
+
+def background_loop_running(name: str) -> bool:
+    task = _loops.get(name)
+    return task is not None and not task.done()
+
+
 def curated_loop_running() -> bool:
     task = _curated_task
     return task is not None and not task.done()
@@ -190,6 +233,12 @@ def status() -> dict:
         "job_count": job_count,
         "curated_loop_running": curated_loop_running(),
         "curated_loop_started_at": _curated_started_at if curated_loop_running() else None,
+        # #856: loops that run whatever SYNC_ENABLED says (name -> started_at)
+        "background_loops": {
+            name: _loop_started_at.get(name)
+            for name in sorted(_loops)
+            if background_loop_running(name)
+        },
     }
 
 
@@ -237,4 +286,7 @@ def _reset_for_tests() -> None:
         _curated_task = None
         _curated_refs = 0
         _curated_started_at = None
+        _loops.clear()
+        _loop_refs.clear()
+        _loop_started_at.clear()
         _duplicate_logged.clear()
