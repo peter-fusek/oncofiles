@@ -325,7 +325,7 @@ def _faq_json_ld() -> list[tuple[str, str]]:
 
 def test_faq_json_ld_equals_the_visible_faq():
     visible, structured = _visible_faq(), _faq_json_ld()
-    assert len(visible) == 14
+    assert len(visible) == 15
     assert visible == structured
 
 
@@ -349,11 +349,13 @@ def test_faq_keeps_every_question_of_both_earlier_lists():
         "How do I know a lab value in Oncofiles is correct?",
         "What happens to my Google Drive folder?",
         "How do I connect Oncofiles to Claude or ChatGPT?",
+        # documents by e-mail (#950)
+        "Can I send documents by e-mail?",
     ):
         assert q in questions, q
     start = LANDING.index('<div class="faq">')
     faq = LANDING[start : LANDING.index("<!-- /faq -->", start)]
-    assert faq.count("<details") == 14 == faq.count("<summary>")
+    assert faq.count("<details") == 15 == faq.count("<summary>")
     assert len(re.findall(r"\sdata-sk=", faq)) == len(re.findall(r"\sdata-en=", faq))
     assert html.unescape(faq).count("oncofiles.com/mcp") == 3  # one answer: SK, EN, shown text
 
@@ -543,7 +545,7 @@ def test_self_service_is_hidden_until_onboarding_is_open():
 
 def test_email_cta_is_gated_and_the_address_is_not_in_the_markup():
     mails = _when("mail")
-    assert len(mails) == 2 and all(" hidden" in t for t in mails)
+    assert len(mails) == 3 and all(" hidden" in t for t in mails)  # hero, #email, #join
     hero = LANDING[_at("top") : _at("photos")]
     assert "send your first e-mail with an attachment from Gmail to" in hero
     body = LANDING[LANDING.index("<body>") : LANDING.rindex("<script>")]
@@ -602,3 +604,37 @@ async def test_llms_and_topic_pages_have_no_invitation_condition():
     source = _flat((SRC / "server.py").read_text(encoding="utf-8"))
     for old in _OLD_INVITE:
         assert old not in en and old not in sk and old not in source, old
+
+
+# ── Documents by e-mail (#950) ────────────────────────────────────────────
+
+
+def test_email_section_is_a_step_of_how_it_works():
+    assert _at("how-it-works") < _at("folder") < _at("email") < _at("reading") < _at("setup")
+    block = LANDING[_at("email") : _at("reading")]
+    tag = LANDING[LANDING.rindex("<", 0, _at("email")) : LANDING.index(">", _at("email"))]
+    assert tag == '<section class="block" id="email"'
+    assert re.search(r"<h3\b", block) and not re.search(r"<h2\b", block)
+    # the steps stay numbered 1..5 in page order
+    chapter = LANDING[_at("how-it-works") : _at("setup")]
+    steps = re.findall(r'<span class="step-n">.*?</span> (\d)</span>', chapter)
+    ids = ["folder", "email", "reading", "provenance", "vision"]
+    assert steps == [str(ids.index(name) + True) for name in ids]
+
+
+def test_email_section_states_the_rules_and_shows_only_invented_data():
+    block = LANDING[_at("email") : _at("reading")]
+    for en in (
+        "Only you can file.",
+        "The sender gets no reply.",
+        "Rejected ones stay in the trash for 30 days, then they are deleted.",
+        "Put the address in To or Cc, not in Bcc.",
+    ):
+        assert en in block, en
+    # the trial line names the welcome address only through the config
+    trial = re.search(r'<li data-when="mail" hidden>.*?</li>', block, re.S).group(0)
+    assert "<a data-welcome-address></a>" in trial and "30 days" in trial
+    # the mock uses reserved example domains only, never a real address
+    addresses = re.findall(r"[\w.+-]+@[\w.-]+", block)
+    assert addresses and all(a.endswith(".example") for a in addresses), addresses
+    assert 'data-en="Shown on invented data."' in block
