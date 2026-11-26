@@ -272,7 +272,7 @@ class Projector:
             res["interpretation"] = [
                 {"coding": [{"system": t.OBS_INTERPRETATION, "code": interp,
                              "display": t.INTERPRETATION_DISPLAY[interp]}],
-                 "text": row.get("flag") or interp}
+                 "text": t.printed_flag(row) or interp}
             ]  # fmt: skip
         return _clean(res)
 

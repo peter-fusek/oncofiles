@@ -17,7 +17,15 @@ from fastmcp import Context
 
 from oncofiles.curated.facts_rules import _unit_key
 from oncofiles.database._facts import LLM_LAB_FAMILY
-from oncofiles.fact_labels import LLM_NOTE, flag_source, group_llm, is_llm, label_row, norm
+from oncofiles.fact_labels import (
+    FLAG_GENERIC,
+    LLM_NOTE,
+    flag_source,
+    group_llm,
+    is_llm,
+    label_row,
+    norm,
+)
 from oncofiles.tools._helpers import _gdrive_url, _get_db, _is_admin_caller, _resolve_patient_id
 
 READ_ONLY = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
@@ -509,6 +517,8 @@ def _stats(points: list[dict]) -> dict | None:
         if isinstance(last["value"], int | float) and isinstance(first["value"], int | float)
         else None,
         "out_of_range": sum(1 for p in points if p.get("flag")),
+        # #929: of those, flagged against a generic range, not the lab's own
+        "out_of_range_generic": sum(1 for p in points if p.get("flag_source") == FLAG_GENERIC),
     }
 
 
@@ -642,8 +652,10 @@ async def timeline(
     sizes), planned (next cycle, examination or visit), lab, tumor_marker.
     Dates are ISO (YYYY-MM-DD). Every row links its source document and page;
     ``date_source = document`` means no date was printed for the item and the
-    document date is shown. Every row has ``method`` and ``verification_label``:
-    ``llm-clinical`` rows (diagnoses, treatments, doses, procedures, lesion
+    document date is shown. A flagged value has ``flag_source``: ``printed``
+    (the lab's own range or mark) or ``generic`` (computed from a generic
+    range because the lab printed none; say so). Every row has ``method`` and
+    ``verification_label``: ``llm-clinical`` rows (diagnoses, treatments, doses, procedures, lesion
     sizes, biomarkers, planned dates) were read by the local model; only their
     text was checked against the page, while the interpretation (which line is
     the diagnosis, a current vs a historical regimen) is the model's and is not
@@ -720,7 +732,9 @@ async def fact_series(
     """How values developed over time, e.g. codes=["PLT","CEA"], in canonical units.
 
     Returns each value with its source (document, page, Drive link) and
-    statistics (min, max, first, last, change, out-of-range count). Unverified
+    statistics (min, max, first, last, change, out-of-range count; of those,
+    ``out_of_range_generic`` were flagged against a generic range, not the
+    lab's own: every point says so in ``flag_source``). Unverified
     values are listed separately and excluded from the statistics unless
     include_unverified=true; ``latest_any`` is the newest value of any
     verification (say which). ``duplicates`` lists every hidden point (exact

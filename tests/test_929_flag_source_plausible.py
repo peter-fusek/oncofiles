@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from oncofiles import facts_timeline
 from oncofiles.curated import verifier
 from oncofiles.curated.facts_rules import (
     Vocabulary,
@@ -264,3 +265,104 @@ async def test_fhir_observation_with_a_generic_flag_has_no_interpretation(world)
 @pytest.mark.parametrize("flag", ["H", "L"])
 def test_fhir_printed_flag_keeps_its_interpretation(flag):
     assert term.interpretation_code({"flag": flag}) == flag
+
+
+# ── follow-up: timeline readers, fact_series stats, FHIR text, corrections ──
+
+
+async def test_timeline_rows_carry_flag_source(db, curated_env):  # noqa: F811
+    await tool.index_patient(db, PATIENT_A_UUID)
+    ctx = _Ctx(db)
+    rows = json.loads(await cf.timeline(ctx))["rows"]
+    flagged = [r for r in rows if r.get("flag")]
+    assert flagged and all(r["flag_source"] == "printed" for r in flagged)
+    assert all(r["flag_source"] is None for r in rows if not r.get("flag"))
+
+    await _make_hgb_generic(db)
+    hgb_ids = await _fact_ids(db, "HGB")
+    rows = json.loads(await cf.timeline(ctx))["rows"]
+    flagged = [r for r in rows if r.get("flag")]
+    hgb = [r for r in flagged if r["entity"] == "fact" and r["entity_id"] in hgb_ids]
+    assert hgb and all(r["flag_source"] == "generic" for r in hgb)
+    others = [r for r in flagged if r not in hgb]
+    assert others and all(r["flag_source"] == "printed" for r in others)
+
+
+async def _fact_ids(db, code: str) -> set[int]:
+    async with db.db.execute(
+        "SELECT id FROM clinical_records WHERE patient_id = ? AND code = ? AND deleted_at IS NULL",
+        (PATIENT_A_UUID, code),
+    ) as cur:
+        return {r[0] for r in await cur.fetchall()}
+
+
+async def test_timeline_summary_spells_out_a_generic_flag(db, curated_env):  # noqa: F811
+    await tool.index_patient(db, PATIENT_A_UUID)
+    await _make_hgb_generic(db)
+    rows = await facts_timeline.fact_rows(db, PATIENT_A_UUID)
+    generic = [r for r in rows if r["flag_source"] == "generic"]
+    printed = [r for r in rows if r["flag_source"] == "printed"]
+    assert generic and printed
+    for r in generic:
+        assert f"[{r['flag']}, generic range]" in facts_timeline.summary_of(r)
+    for r in printed:
+        summary = facts_timeline.summary_of(r)
+        assert f"[{r['flag']}]" in summary and "generic" not in summary
+
+
+def test_summary_of_a_printed_flag_is_unchanged():
+    row = {"value": "6.1", "unit": "g/L", "flag": "H", "detail": "x"}
+    assert facts_timeline.summary_of(row) == "6.1 g/L [H] · x"
+    assert facts_timeline.summary_of({**row, "flag_source": "printed"}) == "6.1 g/L [H] · x"
+    assert facts_timeline.summary_of({**row, "flag": None}) == "6.1 g/L · x"
+
+
+async def test_fact_series_counts_generic_flags_apart(db, curated_env):  # noqa: F811
+    await tool.index_patient(db, PATIENT_A_UUID)
+    ctx = _Ctx(db)
+    stats = json.loads(await cf.fact_series(ctx, codes=["HGB"]))["series"]["HGB"]["stats"]
+    assert stats["out_of_range"] >= 1 and stats["out_of_range_generic"] == 0
+    await _make_hgb_generic(db)
+    stats = json.loads(await cf.fact_series(ctx, codes=["HGB"]))["series"]["HGB"]["stats"]
+    assert stats["out_of_range_generic"] == stats["out_of_range"] >= 1
+
+
+def test_fhir_printed_flag_helper():
+    generic = {"flag": "H", "metadata_json": json.dumps({"flag_source": "generic"})}
+    assert term.printed_flag(generic) is None
+    assert term.printed_flag({"flag": " L ", "metadata_json": "{}"}) == "L"
+    assert term.printed_flag({"flag": None}) is None
+
+
+async def test_fhir_explicit_code_with_a_generic_flag_uses_the_code_as_text(world):  # noqa: F811
+    db, ids = world
+    await db.db.execute(
+        "UPDATE clinical_records SET interpretation_code = 'A', metadata_json = "
+        "json_set(COALESCE(metadata_json, '{}'), '$.flag_source', 'generic') WHERE id = ?",
+        (ids["hgb"],),
+    )
+    await db.db.commit()
+    obs = (await _index(db)).get("Observation", derived_id("clinical_records", ids["hgb"]))
+    (interp,) = obs["interpretation"]
+    assert interp["coding"][0]["code"] == "A" and interp["text"] == "A"
+
+
+async def test_a_corrected_value_drops_the_generic_label(db, curated_env):  # noqa: F811
+    await tool.index_patient(db, PATIENT_A_UUID)
+    await _make_hgb_generic(db)
+    (fid,) = sorted(await _fact_ids(db, "HGB"))[:1]
+    async with db.db.execute("SELECT value_num FROM clinical_records WHERE id = ?", (fid,)) as cur:
+        (value,) = await cur.fetchone()
+    out = await db.correct_fact(
+        fid, patient_id=PATIENT_A_UUID, agent_user="test", reason="digit", value_num=value + 1
+    )
+    assert out["status"] == "corrected"
+    async with db.db.execute(
+        "SELECT flag, metadata_json FROM clinical_records WHERE patient_id = ? AND code = 'HGB' "
+        "AND deleted_at IS NULL ORDER BY id DESC LIMIT 1",
+        (PATIENT_A_UUID,),
+    ) as cur:
+        flag, meta = await cur.fetchone()
+    assert "flag_source" not in json.loads(meta or "{}")
+    # no printed range: a corrected value gets no flag, never a generic one
+    assert flag is None

@@ -13,8 +13,10 @@ themselves) and ``treatment_event`` (a legacy table, part of the fallback).
 
 from __future__ import annotations
 
-from oncofiles.fact_labels import label_row
+from oncofiles.fact_labels import FLAG_GENERIC, label_row
 
+# how a generic flag is spelled out in a text summary (#929)
+GENERIC_RANGE_TEXT = "generic range"
 # timeline_v entities that are not facts-model rows for these readers
 NON_FACT_ENTITIES = ("document", "treatment_event")
 # timeline_v kinds a legacy ``treatment_events`` filter maps to
@@ -47,8 +49,15 @@ async def fact_rows(
 
 
 def summary_of(row: dict) -> str:
-    """``value unit [flag] · detail`` of a timeline row, empty parts left out."""
+    """``value unit [flag] · detail`` of a timeline row, empty parts left out.
+
+    A flag computed from a generic range (#929, ``flag_source = generic``,
+    set by ``timeline_rows``) is written ``[H, generic range]`` so the text
+    never passes it off as the lab's own mark."""
     value = " ".join(str(x) for x in (row.get("value"), row.get("unit")) if x not in (None, ""))
     if row.get("flag"):
-        value = f"{value} [{row['flag']}]".strip()
+        mark = row["flag"]
+        if row.get("flag_source") == FLAG_GENERIC:
+            mark = f"{mark}, {GENERIC_RANGE_TEXT}"
+        value = f"{value} [{mark}]".strip()
     return " · ".join(x for x in (value, str(row.get("detail") or "")) if x)
