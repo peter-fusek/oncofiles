@@ -222,7 +222,8 @@
  <button type="button" class="view-btn is-active" id="view-btn-list" data-action="setDocView|list" aria-pressed="true"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2" y="3.5" width="3" height="3" rx="0.8"/><rect x="7" y="4" width="11" height="2" rx="1"/><rect x="2" y="8.5" width="3" height="3" rx="0.8"/><rect x="7" y="9" width="11" height="2" rx="1"/><rect x="2" y="13.5" width="3" height="3" rx="0.8"/><rect x="7" y="14" width="11" height="2" rx="1"/></svg><span class="view-btn-label" data-sk="Zoznam" data-en="List">Zoznam</span></button>
  <button type="button" class="view-btn" id="view-btn-grid" data-action="setDocView|grid" aria-pressed="false"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2.5" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="2.5" y="11" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="11" width="6.5" height="6.5" rx="1.2"/></svg><span class="view-btn-label" data-sk="Mriežka" data-en="Grid">Mriežka</span></button>
  </div>
- <button type="button" class="copy-btn" id="export-btn" data-action="downloadManifest" data-sk="Stiahnuť údaje (JSON)" data-en="Download data (JSON)">Stiahnuť údaje (JSON)</button>
+ <!-- #856: the one export button, the full ZIP (caregiver, or an admin for the selected patient); in /demo it only explains itself -->
+ <button type="button" class="copy-btn" id="patient-export-btn" data-action="downloadPatientExport" data-sk="Stiahnuť všetky údaje (ZIP)" data-en="Download all data (ZIP)">Stiahnuť všetky údaje (ZIP)</button>
  <button type="button" class="btn-primary" id="upload-btn" data-action="toggleUploadPanel" aria-expanded="false" aria-controls="upload-panel" data-sk="Pridať dokumenty" data-en="Add documents">Pridať dokumenty</button>
  </div>
  <!-- #921: add documents (hidden in the admin read-only view; in /demo nothing is sent) -->
@@ -293,14 +294,13 @@
  </section>
 
  <!--app-only-->
- <!-- #856 data rights: export (caregiver, or an admin for the selected patient) and Drive disconnect (caregiver only) -->
+ <!-- #856 data rights: where the export lives (its button is in the docs toolbar) and Drive disconnect (caregiver only) -->
  <section class="panel data-rights" id="data-rights-card" aria-labelledby="data-rights-title">
  <div class="section-head">
  <h2 id="data-rights-title" data-sk="Vaše údaje" data-en="Your data">Vaše údaje</h2>
  </div>
- <p class="section-lead" data-sk="Stiahnite si všetko, čo Oncofiles o pacientovi ukladá (ZIP so súbormi JSON). Pôvodné súbory sú vo vašom Google Drive a zostávajú tam." data-en="Download everything Oncofiles stores about the patient (a ZIP of JSON files). Your original files are in your Google Drive and stay there.">Stiahnite si všetko, čo Oncofiles o pacientovi ukladá (ZIP so súbormi JSON). Pôvodné súbory sú vo vašom Google Drive a zostávajú tam.</p>
+ <p class="section-lead" data-sk="Tlačidlo „Stiahnuť všetky údaje (ZIP)“ pri zozname dokumentov stiahne všetko, čo Oncofiles o pacientovi ukladá (ZIP so súbormi JSON). Pôvodné súbory sú vo vašom Google Drive a zostávajú tam." data-en="The “Download all data (ZIP)” button above the document list downloads everything Oncofiles stores about the patient (a ZIP of JSON files). Your original files are in your Google Drive and stay there.">Tlačidlo „Stiahnuť všetky údaje (ZIP)“ pri zozname dokumentov stiahne všetko, čo Oncofiles o pacientovi ukladá (ZIP so súbormi JSON). Pôvodné súbory sú vo vašom Google Drive a zostávajú tam.</p>
  <div class="inbound-actions">
- <button type="button" class="copy-btn" id="patient-export-btn" data-action="downloadPatientExport" data-sk="Stiahnuť všetky údaje (ZIP)" data-en="Download all data (ZIP)">Stiahnuť všetky údaje (ZIP)</button>
  <button type="button" class="copy-btn" id="drive-disconnect-btn" data-action="disconnectDrive" data-sk="Odpojiť Google Drive" data-en="Disconnect Google Drive">Odpojiť Google Drive</button>
  </div>
  <p class="inbound-terms" data-sk="Odpojenie zruší prístup Oncofiles k vášmu Google Drive a zastaví spracovanie. Súbory na Drive zostanú bez zmeny; dokumenty a údaje v Oncofiles zostanú, kým nepožiadate o vymazanie. Vymazanie všetkých údajov o pacientovi si vyžiadate e-mailom (do 30 dní), pozri zásady ochrany súkromia." data-en="Disconnecting ends Oncofiles' access to your Google Drive and stops processing. Your Drive files stay unchanged; documents and data in Oncofiles stay until you ask for deletion. To have all data about the patient deleted, write to us by e-mail (within 30 days), see the privacy policy.">Odpojenie zruší prístup Oncofiles k vášmu Google Drive a zastaví spracovanie. Súbory na Drive zostanú bez zmeny; dokumenty a údaje v Oncofiles zostanú, kým nepožiadate o vymazanie. Vymazanie všetkých údajov o pacientovi si vyžiadate e-mailom (do 30 dní), pozri zásady ochrany súkromia.</p>

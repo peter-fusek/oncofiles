@@ -662,7 +662,6 @@
       }
       if (path === '/api/patients') return d.patients;
       if (path === '/api/patient-budget') return { show_pill: false };
-      if (path === '/api/manifest') return { generated_at: new Date().toISOString(), invented: true, documents: (d.documents || {}).documents || [] };
       if (path.indexOf('/api/doc-detail/') === 0) {
         var detailId = path.split('/').pop();
         return (d.details || {})[detailId] || { error: 'not found' };
@@ -1101,7 +1100,8 @@
     }
 
     // #856 data rights: the export ZIP (caregiver, or an admin for the selected
-    // patient) and the caregiver's Drive disconnect (armed second click, no dialog).
+    // patient; the one export button, in the docs toolbar) and the caregiver's
+    // Drive disconnect (armed second click, no dialog).
     var disconnectArmed = null;
 
     function dataRightsStatus(sk, en) {
@@ -1112,18 +1112,26 @@
       el.hidden = false;
     }
 
+    // The one export button (docs toolbar): progress on the button itself,
+    // a failure in the error banner. The button label is restored afterwards.
+    var EXPORT_LABEL_SK = 'Stiahnuť všetky údaje (ZIP)';
+    var EXPORT_LABEL_EN = 'Download all data (ZIP)';
+
+    function exportFailed(sk, en) {
+      showError(dashLang === 'sk' ? sk : en);
+    }
+
     async function downloadPatientExport() {
       if (DEMO || !currentPatientId) return;
       var btn = document.getElementById('patient-export-btn');
-      if (btn) btn.disabled = true;
-      dataRightsStatus('Pripravujem export…', 'Preparing the export…');
+      if (btn) { btn.disabled = true; setI18n(btn, 'Pripravujem export…', 'Preparing the export…'); }
       try {
         var resp = await fetch('/api/patient-export?patient_id=' + encodeURIComponent(currentPatientId), {
           headers: { 'Authorization': authHeader() }
         });
         if (resp.status === 401) { logout(); return; }
         if (resp.status === 429) {
-          dataRightsStatus('Jeden export už prebieha. Skúste to o chvíľu znova.',
+          exportFailed('Jeden export už prebieha. Skúste to o chvíľu znova.',
             'An export is already running. Try again in a moment.');
           return;
         }
@@ -1137,12 +1145,11 @@
         a.click();
         document.body.removeChild(a);
         setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-        dataRightsStatus('Export je stiahnutý.', 'The export has been downloaded.');
       } catch (e) {
-        dataRightsStatus('Export sa nepodaril. Skúste to znova neskôr.',
+        exportFailed('Export sa nepodaril. Skúste to znova neskôr.',
           'The export failed. Try again later.');
       } finally {
-        if (btn) btn.disabled = false;
+        if (btn) { btn.disabled = false; setI18n(btn, EXPORT_LABEL_SK, EXPORT_LABEL_EN); }
       }
     }
 
@@ -5815,21 +5822,6 @@
 
         psContainer.appendChild(row);
       });
-    }
-
-    async function downloadManifest() {
-      try {
-        var data = await apiFetch('/api/manifest');
-        var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url;
-        a.download = 'oncofiles-export.json';
-        a.click();
-        URL.revokeObjectURL(url);
-      } catch (e) {
-        showError((dashLang === 'sk' ? 'Export sa nepodaril: ' : 'The export failed: ') + e.message);
-      }
     }
 
     function updateLastRefreshed() {
