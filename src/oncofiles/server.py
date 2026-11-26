@@ -2959,6 +2959,23 @@ async def og_image_png(request: Request) -> Response:
     )
 
 
+_ICON_PNG: bytes | None = None
+
+
+@mcp.custom_route("/icon-256.png", methods=["GET"])
+async def icon_png(request: Request) -> Response:
+    """256 px PNG of the favicon. The MCP Registry entry (server.json `icons`)
+    points here: registry clients must support PNG, SVG is optional."""
+    global _ICON_PNG  # noqa: PLW0603
+    if _ICON_PNG is None:
+        _ICON_PNG = (Path(__file__).parent / "icon-256.png").read_bytes()
+    return Response(
+        _ICON_PNG,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 # Self-hosted web fonts (#695): every page view used to send the visitor's IP
 # to Google Fonts. The woff2 files, their @font-face sheet and the OFL licenses
 # live in src/oncofiles/fonts/. Only files present in that folder at import

@@ -2,15 +2,25 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.peter-fusek/oncofiles",
   "title": "Oncofiles",
-  "description": "AI-powered medical document management for cancer patients. Google Drive, Gmail, Calendar via MCP.",
+  "description": "Medical reports from your Google Drive; every lab value traced to its source. Local OCR, EU server.",
+  "websiteUrl": "https://oncofiles.com",
+  "icons": [
+    {
+      "src": "https://oncofiles.com/icon-256.png",
+      "mimeType": "image/png",
+      "sizes": ["256x256"]
+    },
+    {
+      "src": "https://oncofiles.com/favicon.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": ["any"]
+    }
+  ],
   "repository": {
     "url": "https://github.com/peter-fusek/oncofiles",
     "source": "github"
   },
-  "version": "5.0.0",
-  "version_detail": {
-    "version": "5.0.0"
-  },
+  "version": "5.18.1",
   "remotes": [
     {
       "type": "streamable-http",
