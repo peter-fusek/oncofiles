@@ -62,6 +62,8 @@ def _row_to_oauth_token(row: Any) -> OAuthToken:
         gdrive_folder_name=_safe_get(row, "gdrive_folder_name"),
         owner_email=_safe_get(row, "owner_email"),
         granted_scopes=_safe_get(row, "granted_scopes", "[]"),
+        google_account_hash=_safe_get(row, "google_account_hash"),
+        google_account_hash_v=_safe_get(row, "google_account_hash_v"),
         created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
         updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
     )

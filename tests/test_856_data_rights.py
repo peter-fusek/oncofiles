@@ -16,7 +16,7 @@ import re
 import sqlite3
 import uuid
 import zipfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -147,13 +147,15 @@ async def two(db: Database) -> Database:
     return db
 
 
-async def _link(db, pid, account_hash):
-    """A stored Google link as the OAuth callback records it (#591): the granting
-    account's keyed hash in a ``google_link`` activity_log row."""
+async def _link(db, pid, account_hash, version=None):
+    """The granting account as the OAuth callback stores it with the token
+    (migration 104): keyed hash + hash version on the oauth_tokens row."""
+    from oncofiles.google_link import GOOGLE_ACCOUNT_HASH_VERSION
+
     await db.db.execute(
-        "INSERT INTO activity_log (session_id, agent_id, tool_name, input_summary, "
-        "status, patient_id) VALUES ('google-link', 'dashboard', 'google_link', ?, 'ok', ?)",
-        (json.dumps({"event": "link", "new_email_hash": account_hash}), pid),
+        "UPDATE oauth_tokens SET google_account_hash = ?, google_account_hash_v = ? "
+        "WHERE patient_id = ?",
+        (account_hash, GOOGLE_ACCOUNT_HASH_VERSION if version is None else version, pid),
     )
     await db.db.commit()
 
@@ -634,8 +636,119 @@ async def test_disconnect_refused_while_a_run_is_active(two, fake_revoke):
 
 
 async def _fresh_link_rows(db):
-    await db.db.execute("DELETE FROM activity_log WHERE tool_name = 'google_link'")
+    """Every token's granting account unknown (a link from before migration 104)."""
+    await db.db.execute(
+        "UPDATE oauth_tokens SET google_account_hash = NULL, google_account_hash_v = NULL"
+    )
     await db.db.commit()
+
+
+async def test_an_old_hash_version_counts_as_unknown(two, fake_revoke):
+    await _link(two, A, "a" * 64, version=0)
+    out = await data_rights.disconnect_drive(two, A, caller_email=A_EMAIL)
+    assert out["google_revoke"] == "skipped_shared_or_unknown" and fake_revoke == []
+    assert await _token(two, A) is None  # our own token is deleted anyway
+
+
+async def test_another_patients_old_hash_version_blocks_the_revoke(two, fake_revoke):
+    await _link(two, B, "b" * 64, version=0)
+    out = await data_rights.disconnect_drive(two, A, caller_email=A_EMAIL)
+    assert out["google_revoke"] == "skipped_shared_or_unknown" and fake_revoke == []
+
+
+async def test_the_audit_log_never_decides_a_revoke(two, fake_revoke):
+    """A google_link audit row naming a unique account does not make an unknown
+    token revocable (the decision reads only oauth_tokens)."""
+    await _fresh_link_rows(two)
+    await two.db.execute(
+        "INSERT INTO activity_log (session_id, agent_id, tool_name, input_summary, "
+        "status, patient_id) VALUES ('google-link', 'dashboard', 'google_link', ?, 'ok', ?)",
+        (json.dumps({"event": "link", "new_email_hash": "c" * 64}), A),
+    )
+    await two.db.commit()
+    out = await data_rights.disconnect_drive(two, A, caller_email=A_EMAIL)
+    assert out["google_revoke"] == "skipped_shared_or_unknown" and fake_revoke == []
+
+
+def _id_token(email: str) -> str:
+    import base64
+
+    claims = base64.urlsafe_b64encode(
+        json.dumps({"email": email, "email_verified": True}).encode()
+    ).decode()
+    return f"x.{claims.rstrip('=')}.y"
+
+
+async def _callback_link(db, pid, email, monkeypatch, *, audit_fails=False):
+    from oncofiles import google_link
+
+    monkeypatch.setenv("AUDIT_EMAIL_HASH_SECRET", "synthetic-856-hash-key")
+
+    async def _boom(entry):
+        raise sqlite3.OperationalError("audit insert failed")
+
+    tokens = {
+        "access_token": f"access-{pid[-4:]}",
+        "refresh_token": f"refresh-{pid[-4:]}",
+        "expires_in": 3600,
+        "scope": "https://www.googleapis.com/auth/drive",
+        "id_token": _id_token(email),
+    }
+    audit = patch.object(db, "insert_activity_log", _boom) if audit_fails else nullcontext()
+    with audit:
+        stored, reason = await google_link.store_google_link(
+            db,
+            patient_id=pid,
+            tokens=tokens,
+            service="drive",
+            principal_kind="session",
+            privileged=True,
+            allowed_account_hashes={google_link.email_hash(email)},
+            source="test",
+        )
+    return stored, reason
+
+
+async def test_callback_stores_the_account_hash_with_the_token(two, monkeypatch, fake_revoke):
+    from oncofiles import google_link
+
+    await two.db.execute("DELETE FROM oauth_tokens WHERE patient_id IN (?, ?)", (A, B))
+    await two.db.commit()
+    stored, reason = await _callback_link(two, A, "granting-a@example.test", monkeypatch)
+    assert stored, reason
+    token = await two.get_oauth_token(A)
+    assert token.google_account_hash == google_link.email_hash("granting-a@example.test")
+    assert token.google_account_hash_v == google_link.GOOGLE_ACCOUNT_HASH_VERSION
+    async with two.db.execute("SELECT * FROM oauth_tokens WHERE patient_id = ?", (A,)) as cur:
+        row = dict(await cur.fetchone())
+    assert "granting-a@example.test" not in json.dumps(row, default=str)  # hash only
+    # B linked with another account: A's grant is provably unshared -> revoked
+    assert (await _callback_link(two, B, "granting-b@example.test", monkeypatch))[0]
+    out = await data_rights.disconnect_drive(two, A, caller_email=A_EMAIL)
+    assert out["google_revoke"] == "revoked" and fake_revoke == [f"refresh-{A[-4:]}"]
+
+
+async def test_relink_with_another_account_replaces_the_hash(two, monkeypatch, fake_revoke):
+    """A later link with the SAME account as B makes A's grant shared."""
+    await two.db.execute("DELETE FROM oauth_tokens WHERE patient_id IN (?, ?)", (A, B))
+    await two.db.commit()
+    await _callback_link(two, A, "granting-a@example.test", monkeypatch)
+    await _callback_link(two, B, "family@example.test", monkeypatch)
+    await _callback_link(two, A, "family@example.test", monkeypatch)
+    out = await data_rights.disconnect_drive(two, A, caller_email=A_EMAIL)
+    assert out["google_revoke"] == "skipped_shared_or_unknown" and fake_revoke == []
+
+
+async def test_a_failed_audit_insert_does_not_change_the_decision(two, monkeypatch, fake_revoke):
+    await two.db.execute("DELETE FROM oauth_tokens WHERE patient_id IN (?, ?)", (A, B))
+    await two.db.commit()
+    await _callback_link(two, B, "granting-b@example.test", monkeypatch)
+    stored, _ = await _callback_link(
+        two, A, "granting-a@example.test", monkeypatch, audit_fails=True
+    )
+    assert stored
+    out = await data_rights.disconnect_drive(two, A, caller_email=A_EMAIL)
+    assert out["google_revoke"] == "revoked" and len(fake_revoke) == 1
 
 
 @pytest.mark.parametrize(

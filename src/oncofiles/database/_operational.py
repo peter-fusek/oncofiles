@@ -255,8 +255,9 @@ class OperationalMixin:
             """
             INSERT INTO oauth_tokens
                 (patient_id, provider, access_token, refresh_token, token_expiry,
-                 gdrive_folder_id, gdrive_folder_name, owner_email, granted_scopes, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                 gdrive_folder_id, gdrive_folder_name, owner_email, granted_scopes,
+                 google_account_hash, google_account_hash_v, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
             ON CONFLICT(patient_id, provider) DO UPDATE SET
                 access_token = excluded.access_token,
                 refresh_token = excluded.refresh_token,
@@ -266,6 +267,10 @@ class OperationalMixin:
                     excluded.gdrive_folder_name, oauth_tokens.gdrive_folder_name),
                 owner_email = COALESCE(excluded.owner_email, oauth_tokens.owner_email),
                 granted_scopes = excluded.granted_scopes,
+                -- #856: the account of THIS token, never kept from an older one
+                -- (no COALESCE): a token stored without it is unknown.
+                google_account_hash = excluded.google_account_hash,
+                google_account_hash_v = excluded.google_account_hash_v,
                 updated_at = excluded.updated_at
             """,
             (
@@ -278,6 +283,8 @@ class OperationalMixin:
                 token.gdrive_folder_name,
                 token.owner_email,
                 token.granted_scopes,
+                token.google_account_hash,
+                token.google_account_hash_v,
             ),
         )
         await self.db.commit()
@@ -342,63 +349,53 @@ class OperationalMixin:
         await self.db.commit()
         return int(cursor.rowcount or 0)
 
-    async def _google_grant_account_hash(self, patient_id: str) -> str | None:
-        """Keyed hash of the Google account whose tokens are stored for a patient.
-
-        The OAuth callback (``google_link.store_google_link``, #591) writes it
-        as ``new_email_hash`` on every STORED link (``google_link`` row, status
-        ok); a stored link replaces the token, so the newest such row names the
-        granting account. ``oauth_tokens.owner_email`` is NOT used: it is the
-        Drive folder owner (``drive_folder_link``), not the granting account.
-        None when unknown (linked before #591, or stored without a hash key).
-        """
-        async with self.db.execute(
-            "SELECT json_extract(input_summary, '$.new_email_hash') FROM activity_log "
-            "WHERE patient_id = ? AND tool_name = 'google_link' AND status = 'ok' "
-            "AND json_valid(input_summary) ORDER BY id DESC LIMIT 1",
-            (patient_id,),
-        ) as cursor:
-            row = await cursor.fetchone()
-        value = row[0] if row else None
-        return value if isinstance(value, str) and value else None
-
     async def oauth_grants_for_disconnect(self, *, patient_id: str) -> list[dict]:
         """Refresh tokens of ONE patient, each with ``revocable`` (#856).
 
         Revoking a refresh token at Google ends the whole grant of our OAuth
         client for that Google account, so it may cut another patient's link.
-        Fail safe: ``revocable`` is True only when this patient's granting
-        account is KNOWN and every other patient holding a Google token has a
-        KNOWN, DIFFERENT granting account and a different refresh token.
-        Unknown on either side counts as shared. Returns
-        ``[{"refresh_token", "revocable"}]``; the caller never logs it.
+        Decided ONLY from ``oauth_tokens.google_account_hash`` (+ ``_v``), which
+        the OAuth callback writes in the same upsert as the token (migration
+        104); never from the audit log, and never from ``owner_email`` (the
+        Drive folder owner). Fail safe: a row is ``revocable`` only when its own
+        hash is known at the current version, EVERY token row of another
+        patient has a known current-version hash that differs, and no such row
+        holds the same refresh token. NULL or another version = unknown =
+        shared. Returns ``[{"refresh_token", "revocable"}]``; never logged.
         """
+        from oncofiles.google_link import GOOGLE_ACCOUNT_HASH_VERSION
+
         patient_id = require_patient_id(patient_id)
+
+        def known(h, v) -> str | None:
+            return h if (isinstance(h, str) and h and v == GOOGLE_ACCOUNT_HASH_VERSION) else None
+
         async with self.db.execute(
-            "SELECT refresh_token FROM oauth_tokens WHERE patient_id = ?", (patient_id,)
-        ) as cursor:
-            own = [r[0] or "" for r in await cursor.fetchall()]
-        if not own:
-            return []
-        own_account = await self._google_grant_account_hash(patient_id)
-        async with self.db.execute(
-            "SELECT patient_id, refresh_token FROM oauth_tokens WHERE patient_id != ?",
+            "SELECT refresh_token, google_account_hash, google_account_hash_v "
+            "FROM oauth_tokens WHERE patient_id = ?",
             (patient_id,),
         ) as cursor:
-            others = [(r[0], r[1] or "") for r in await cursor.fetchall()]
-        other_accounts: set[str | None] = set()
-        for other_pid in {pid for pid, _ in others}:
-            other_accounts.add(await self._google_grant_account_hash(other_pid))
-        other_tokens = {tok for _, tok in others}
-        account_unique = own_account is not None and not (
-            None in other_accounts or own_account in other_accounts
-        )
+            own = [(r[0] or "", known(r[1], r[2])) for r in await cursor.fetchall()]
+        if not own:
+            return []
+        async with self.db.execute(
+            "SELECT refresh_token, google_account_hash, google_account_hash_v "
+            "FROM oauth_tokens WHERE patient_id != ?",
+            (patient_id,),
+        ) as cursor:
+            others = [(r[0] or "", known(r[1], r[2])) for r in await cursor.fetchall()]
+        other_accounts = {h for _, h in others}
+        other_tokens = {tok for tok, _ in others}
         return [
             {
                 "refresh_token": tok,
-                "revocable": bool(tok) and account_unique and tok not in other_tokens,
+                "revocable": bool(tok)
+                and account is not None
+                and None not in other_accounts
+                and account not in other_accounts
+                and tok not in other_tokens,
             }
-            for tok in own
+            for tok, account in own
         ]
 
     async def update_oauth_folder(
