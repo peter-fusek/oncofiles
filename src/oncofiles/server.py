@@ -8504,7 +8504,12 @@ async def api_admin_curated_report(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/api/admin/curated/nightly", methods=["POST"])
 async def api_admin_curated_nightly(request: Request) -> JSONResponse:
-    """Turn the nightly run on/off for one patient."""
+    """Turn automatic processing on/off for one patient (#665).
+
+    The flag (``curated_settings.nightly_enabled``; path and field names kept
+    for compatibility) enrols the patient in the startup index, continuous
+    processing and the nightly sweep, not only the nightly run.
+    """
     err = _require_admin(request)
     if err:
         return err
