@@ -150,9 +150,12 @@ def test_erase_retention_without_a_directory_is_zero(tmp_path, monkeypatch):
     assert pre_store.prune_expired_erase_copies() == 0
 
 
-def test_erase_retention_job_is_scheduled_daily():
+def test_erase_retention_runs_as_a_lifespan_loop_not_an_apscheduler_job():
+    """#856: the only owner is the lifespan loop (tests/test_856_erase_retention_loop.py)."""
     with open(server.__file__, encoding="utf-8") as fh:
-        assert 'id="pre_store_erase_retention"' in fh.read()
+        src = fh.read()
+    assert 'id="pre_store_erase_retention"' not in src
+    assert "ensure_background_loop(" in src and "erase_retention_loop" in src
     from oncofiles.scheduled_jobs import CATALOGUE
 
     assert "pre_store_erase_retention" in CATALOGUE
