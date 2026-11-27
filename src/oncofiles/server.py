@@ -2538,10 +2538,15 @@ class _OncofilesMCP(FastMCP):
     def http_app(self, path=None, *args, **kwargs):
         import fastmcp as _fastmcp
 
+        from oncofiles.mcp_anon import install_anon_catalog
         from oncofiles.tool_surface import install_ops_route
 
         app = super().http_app(path, *args, **kwargs)
-        install_ops_route(app, path if path is not None else _fastmcp.settings.streamable_http_path)
+        mcp_path = path if path is not None else _fastmcp.settings.streamable_http_path
+        install_ops_route(app, mcp_path)
+        # #1004: anonymous initialize / tools/list (user surface); after the
+        # ops route, which keeps the plain auth wrapper
+        install_anon_catalog(app, mcp_path)
         return app
 
 
