@@ -3254,7 +3254,8 @@ async def llms_txt(request: Request) -> HTMLResponse:
     tools_count = _count_tools()
     return HTMLResponse(
         f"# Oncofiles\n"
-        f"> Medical records where every number has a source\n"
+        f"> Find any result in your medical reports in seconds,"
+        f" with the report and page it is from\n"
         f"\n"
         f"## About\n"
         f"Oncofiles is an open-source MCP (Model Context Protocol) server for cancer\n"
@@ -3331,7 +3332,8 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
     tools_count = _count_tools()
     return HTMLResponse(
         f"# Oncofiles\n"
-        f"> Zdravotné záznamy, v ktorých má každé číslo svoj zdroj\n"
+        f"> Každý výsledok z lekárskych správ nájdete za pár sekúnd,"
+        f" aj so správou a stranou, z ktorej je\n"
         f"\n"
         f"## O projekte\n"
         f"Oncofiles je open-source MCP (Model Context Protocol) server pre onkologických\n"

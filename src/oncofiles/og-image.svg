@@ -9,9 +9,9 @@
   <circle cx="1090" cy="470" r="330" fill="#33d6d6"/>
   <text class="w" x="80" y="128" font-size="52" font-weight="700" fill="#ffffff" letter-spacing="-1.8">oncofiles<tspan fill="#ff4646">.</tspan></text>
   <text class="w" font-size="74" font-weight="700" fill="#ffffff" letter-spacing="-1.6">
-    <tspan x="80" y="282">Medical records</tspan>
-    <tspan x="80" y="366">where every number</tspan>
-    <tspan x="80" y="450">has a source</tspan>
+    <tspan x="80" y="282">Find any result</tspan>
+    <tspan x="80" y="366">in your medical</tspan>
+    <tspan x="80" y="450">reports in seconds</tspan>
   </text>
   <text class="w" x="80" y="548" font-size="28" font-weight="300" fill="#d6dcf0">oncofiles.com</text>
   <g class="w">
