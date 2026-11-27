@@ -169,11 +169,18 @@ async def test_loop_reads_the_threshold_once_at_start_in_a_thread(monkeypatch):
         threaded.append(fn)
         return await real_to_thread(fn, *a, **k)
 
+    from oncofiles import memory_ceiling
+
+    def fake_ceiling(soft):
+        calls.append(f"ceiling:{soft}")
+
     monkeypatch.setattr(M, "resolve_threshold", fake_resolve)
+    monkeypatch.setattr(memory_ceiling, "resolve", fake_ceiling)
     monkeypatch.setattr(M.asyncio, "to_thread", spy_to_thread)
     monkeypatch.setattr(M.MEMORY_CHECK, "loop", fake_loop)
     await M.memory_check_loop(asyncio.Semaphore(1))
-    assert calls == ["resolve"] and threaded == [fake_resolve]
+    # #1012: the /health levels are resolved right after, in a thread, against it
+    assert calls == ["resolve", "ceiling:1228"] and threaded == [fake_resolve, fake_ceiling]
     assert (M.MEMORY_CHECK.threshold_mb, M.MEMORY_CHECK.threshold_source) == (1228, "cgroup")
     assert seen["grace"] == M.FIRST_RUN_DELAY_S
 

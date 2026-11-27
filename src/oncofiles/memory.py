@@ -42,7 +42,7 @@ _rss_started_at: float = 0.0
 
 # Graceful restart tracking (OF-2)
 MEMORY_RESTART_THRESHOLD_MB = int(os.environ.get("MEMORY_RESTART_THRESHOLD_MB", "420"))
-HARD_RSS_CEILING_MB = int(os.environ.get("HARD_RSS_CEILING_MB", "600"))
+# The /health hard ceiling (HARD_RSS_CEILING_MB) lives in memory_ceiling (#1012).
 
 
 async def acquire_query_slot(label: str) -> None:

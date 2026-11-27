@@ -28,8 +28,9 @@ It was an APScheduler interval job, which never starts in production
   ``memory.max``, v1 ``memory.limit_in_bytes``; ``cgroup``); else the old
   ``DEFAULT_THRESHOLD_MB`` (``default``).
 
-The ``/health`` hard ceiling (``HARD_RSS_CEILING_MB``) is unchanged and stays
-the scheduler-independent last resort. First run ``FIRST_RUN_DELAY_S`` (seven
+The ``/health`` hard ceiling stays the scheduler-independent failsafe; its
+levels are resolved at this loop's start from the same cgroup read
+(``memory_ceiling``, #1012), above this threshold. First run ``FIRST_RUN_DELAY_S`` (seven
 minutes) after the start, as the APScheduler job had (#366: the startup import
 spike must not count), which is past the startup grace.
 """
@@ -241,8 +242,13 @@ async def memory_check_iteration(semaphore: Any = None) -> dict[str, int]:
 
 
 async def memory_check_loop(semaphore: Any = None, *, grace_s: float | None = None) -> None:
+    from oncofiles import memory_ceiling
+
     threshold, source = await asyncio.to_thread(resolve_threshold)
     MEMORY_CHECK.threshold_mb, MEMORY_CHECK.threshold_source = threshold, source
+    # #1012: the /health ceiling from the same cgroup read, checked against this
+    # threshold; /health only reads the stored levels.
+    await asyncio.to_thread(memory_ceiling.resolve, threshold)
     logger.info(
         "memory_check: threshold %d MB (%s), restart %s",
         threshold,
