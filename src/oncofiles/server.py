@@ -2570,12 +2570,42 @@ async def landing(request: Request) -> HTMLResponse:
 # ── Legal pages (required for Google OAuth verification) ─────────────────────
 
 
-def _legal_page(title: str, body_html: str) -> str:
+# #1008: every legal page exists in English and in Slovak (same sections, same
+# anchors); the two must change together, tests lock both.
+_LEGAL_PAIRS = {"/privacy": "/sk/privacy", "/terms": "/sk/terms"}
+_LEGAL_CONTACT = "peter.fusek@instarea.sk"
+
+
+def _legal_page(title: str, body_html: str, *, lang: str = "en", path: str | None = None) -> str:
+    alternates = switch = ""
+    if path is not None:
+        en_path = path if lang == "en" else next(e for e, s in _LEGAL_PAIRS.items() if s == path)
+        sk_path = _LEGAL_PAIRS[en_path]
+        alternates = (
+            f'\n<link rel="canonical" href="https://oncofiles.com{path}">'
+            f'\n<link rel="alternate" hreflang="en" href="https://oncofiles.com{en_path}">'
+            f'\n<link rel="alternate" hreflang="sk" href="https://oncofiles.com{sk_path}">'
+        )
+        switch = (
+            f'<p class="lang"><a href="{sk_path}" hreflang="sk" lang="sk">Slovensky</a></p>\n'
+            if lang == "en"
+            else f'<p class="lang"><a href="{en_path}" hreflang="en" lang="en">English</a></p>\n'
+        )
+    if lang == "sk":
+        footer = (
+            f'<footer><a href="/">← Oncofiles</a> · <a href="mailto:{_LEGAL_CONTACT}">Kontakt</a>'
+            '\n · Vytvorila <a href="https://www.instarea.com">Instarea</a></footer>'
+        )
+    else:
+        footer = (
+            f'<footer><a href="/">← Oncofiles</a> · <a href="mailto:{_LEGAL_CONTACT}">Contact</a>'
+            '\n · Built by <a href="https://www.instarea.com">Instarea</a></footer>'
+        )
     return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="{lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} — Oncofiles</title>
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">{alternates}
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   max-width: 720px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.7; color: #1a1a1a; }}
@@ -2585,11 +2615,11 @@ h2 {{ font-size: 1.3rem; margin-top: 2rem; }}
 a {{ color: #2563eb; }}
 footer {{ margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #e5e5e5;
   font-size: 0.85rem; color: #666; }}
+.lang {{ float: right; margin: 0; font-size: 0.9rem; }}
 </style></head><body>
-<h1>{title}</h1>
+{switch}<h1>{title}</h1>
 {body_html}
-<footer><a href="/">← Oncofiles</a> · <a href="mailto:peter.fusek@instarea.sk">Contact</a>
- · Built by <a href="https://www.instarea.com">Instarea</a></footer>
+{footer}
 </body></html>"""
 
 
@@ -2616,9 +2646,10 @@ async def privacy_policy(request: Request) -> HTMLResponse:
     if _PRIVACY_HTML is None:
         _PRIVACY_HTML = _legal_page(
             "Privacy Policy",
-            """
+            path="/privacy",
+            body_html="""
 <p class="meta">Effective: March 25, 2026 · Last updated: November 27, 2026 ·
-Consent version 2026-11-27.2</p>
+Consent version 2026-11-27.3</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2696,22 +2727,6 @@ plain text of such an e-mail is kept with them,
 encrypted, for the same period and deleted together with the files, and the caregiver's
 dashboard shows a small preview picture of each attachment. Documents removed after an
 unclaimed trial can still be restored from encrypted backups for up to 6 months.</p>
-<p lang="sk"><strong>Dokumenty poslané e-mailom.</strong> Každý pacient môže mať súkromnú
-e-mailovú adresu pre dokumenty. Kto pošle dokumenty na túto adresu, súhlasí s
-<a href="/terms">podmienkami používania</a> a so spracovaním týchto dokumentov podľa týchto
-zásad; odosielateľ dostane e-mail, ktorý to uvádza, s odkazom na podmienky. Do priečinka
-pacienta sa pridajú len prílohy poslané z adresy opatrovateľa pacienta (s odosielateľom
-potvrdeným poštovým systémom) a spracujú sa ako každý iný dokument. Text e-mailu opatrovateľa
-sa neukladá a žiadny text e-mailu nečíta AI model. Dokumenty, ktoré na adresu pacienta pošle
-ktokoľvek iný než
-opatrovateľ, čakajú zašifrované v karanténe, kým ich opatrovateľ neschváli alebo neodmietne,
-najviac 7 dní; odmietnuté položky a položky nerozhodnuté ani po 7 dňoch zostávajú 30 dní
-v koši a potom sa vymažú (schválené sa zaradia ako zvyčajne) a odosielateľ nedostane žiadnu
-odpoveď. Aby sa opatrovateľ mohol
-rozhodnúť, čistý text takého e-mailu sa uchováva spolu s nimi, zašifrovaný, rovnako dlho a
-vymaže sa spolu so súbormi; na nástenke opatrovateľa sa zobrazí malý náhľad každej prílohy.
-Dokumenty odstránené po nevyužitej skúšobnej dobe sa ešte najviac 6 mesiacov dajú obnoviť
-zo šifrovaných záloh.</p>
 <p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
 unrelated to managing your medical documents.</p>
 
@@ -2822,9 +2837,10 @@ async def terms_of_service(request: Request) -> HTMLResponse:
     if _TERMS_HTML is None:
         _TERMS_HTML = _legal_page(
             "Terms of Service",
-            """
+            path="/terms",
+            body_html="""
 <p class="meta">Effective: March 25, 2026 · Last updated: November 27, 2026 ·
-Consent version 2026-11-27.2</p>
+Consent version 2026-11-27.3</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
@@ -2859,13 +2875,6 @@ e-mail saying so, with the link to these terms. Only attachments from the patien
 address are added to the patient's folder. The address lets anyone who knows it send documents
 to the patient, never read them: keep it private, and create a new one on the dashboard if it
 gets into the wrong hands.</p>
-<p lang="sk"><strong>Dokumenty poslané e-mailom.</strong> Kto pošle dokumenty na e-mailovú
-adresu pacienta pre dokumenty, súhlasí s týmito podmienkami a so spracovaním týchto dokumentov
-podľa <a href="/privacy">zásad ochrany súkromia</a>. Dokumenty sa čítajú hneď, bez osobitnej
-obrazovky so súhlasom; odosielateľ dostane e-mail, ktorý to uvádza, s odkazom na tieto
-podmienky. Do priečinka pacienta sa pridajú len prílohy z adresy opatrovateľa pacienta. Adresa
-umožňuje každému, kto ju pozná, dokumenty pacientovi poslať, nikdy nie čítať: nezverejňujte ju,
-a ak sa dostane do nesprávnych rúk, vytvorte si na prehľade novú.</p>
 
 <h2 id="account">4. Account and Access</h2>
 <ul>
@@ -2911,6 +2920,36 @@ When we change what you agree to when creating a patient, the consent version ch
 """,
         )
     return HTMLResponse(_TERMS_HTML)
+
+
+@mcp.custom_route("/sk/privacy", methods=["GET"])
+async def privacy_policy_sk(request: Request) -> HTMLResponse:
+    """Slovak version of /privacy (#1008): same sections and anchors."""
+    from oncofiles import legal_sk
+
+    return HTMLResponse(
+        _legal_page(
+            legal_sk.PRIVACY_TITLE,
+            legal_sk.PRIVACY_BODY.replace("__CONTACT__", _LEGAL_CONTACT),
+            lang="sk",
+            path="/sk/privacy",
+        )
+    )
+
+
+@mcp.custom_route("/sk/terms", methods=["GET"])
+async def terms_of_service_sk(request: Request) -> HTMLResponse:
+    """Slovak version of /terms (#1008): same sections and anchors."""
+    from oncofiles import legal_sk
+
+    return HTMLResponse(
+        _legal_page(
+            legal_sk.TERMS_TITLE,
+            legal_sk.TERMS_BODY.replace("__CONTACT__", _LEGAL_CONTACT),
+            lang="sk",
+            path="/sk/terms",
+        )
+    )
 
 
 # ── Static assets ─────────────────────────────────────────────────────────────
@@ -3166,11 +3205,16 @@ async def sitemap_xml(request: Request) -> HTMLResponse:
         '<xhtml:link rel="alternate" hreflang="sk" href="https://oncofiles.com/demo"/>'
         '<xhtml:link rel="alternate" hreflang="en" href="https://oncofiles.com/demo?lang=en"/>'
         "</url>\n"
-        f"  <url><loc>https://oncofiles.com/privacy</loc><lastmod>{today}</lastmod>"
-        "<priority>0.5</priority><changefreq>monthly</changefreq></url>\n"
-        f"  <url><loc>https://oncofiles.com/terms</loc><lastmod>{today}</lastmod>"
-        "<priority>0.5</priority><changefreq>monthly</changefreq></url>\n"
-        f"  <url><loc>https://oncofiles.com/onkologia</loc><lastmod>{today}</lastmod>"
+        + "".join(
+            f"  <url><loc>https://oncofiles.com{loc}</loc><lastmod>{today}</lastmod>"
+            "<priority>0.5</priority><changefreq>monthly</changefreq>"
+            f'<xhtml:link rel="alternate" hreflang="en" href="https://oncofiles.com{en}"/>'
+            f'<xhtml:link rel="alternate" hreflang="sk" href="https://oncofiles.com{sk}"/>'
+            "</url>\n"
+            for en, sk in _LEGAL_PAIRS.items()
+            for loc in (en, sk)
+        )
+        + f"  <url><loc>https://oncofiles.com/onkologia</loc><lastmod>{today}</lastmod>"
         "<priority>0.7</priority><changefreq>monthly</changefreq>"
         '<xhtml:link rel="alternate" hreflang="sk" href="https://oncofiles.com/onkologia"/>'
         '<xhtml:link rel="alternate" hreflang="en" href="https://oncofiles.com/oncology"/>'

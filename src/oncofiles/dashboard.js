@@ -145,6 +145,10 @@
           el.textContent = text;
         }
       });
+      // Links with a page per language (#1008: /sk/privacy vs /privacy)
+      document.querySelectorAll('[data-sk-href][data-en-href]').forEach(function(el) {
+        el.setAttribute('href', el.getAttribute('data-' + dashLang + '-href'));
+      });
       // Placeholder i18n for inputs
       document.querySelectorAll('[data-sk-placeholder][data-en-placeholder]').forEach(function(el) {
         el.placeholder = dashLang === 'sk' ? el.getAttribute('data-sk-placeholder') : el.getAttribute('data-en-placeholder');
@@ -2625,7 +2629,7 @@
 
     // #857: version of the privacy + terms text the consent checkbox refers to.
     // Must equal oncofiles.patient_consent.CONSENT_VERSION (a test keeps them equal).
-    var CONSENT_VERSION = '2026-11-27.2';
+    var CONSENT_VERSION = '2026-11-27.3';
 
     async function wizardStep1Submit() {
       var btn = document.getElementById('wiz-create-btn');

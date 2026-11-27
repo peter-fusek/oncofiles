@@ -77,6 +77,7 @@
     document.documentElement.lang = lang;
     document.querySelectorAll('[data-sk][data-en]').forEach(function (n) { n.textContent = n.getAttribute('data-' + lang); });
     document.querySelectorAll('[data-sk-label][data-en-label]').forEach(function (n) { n.setAttribute('aria-label', n.getAttribute('data-' + lang + '-label')); });
+    document.querySelectorAll('[data-sk-href][data-en-href]').forEach(function (n) { n.setAttribute('href', n.getAttribute('data-' + lang + '-href')); });
     var b = document.getElementById('lang-toggle');
     if (b) b.textContent = lang === 'sk' ? 'EN' : 'SK';
   }

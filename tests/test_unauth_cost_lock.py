@@ -133,6 +133,8 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("/oncoteam", "oncoteam_page"): "static HTML",
     ("/privacy", "privacy_policy"): "static HTML",
     ("/terms", "terms_of_service"): "static HTML",
+    ("/sk/privacy", "privacy_policy_sk"): "static HTML (#1008, Slovak)",
+    ("/sk/terms", "terms_of_service_sk"): "static HTML (#1008, Slovak)",
     ("/favicon.svg", "favicon_svg"): "static asset",
     ("/og-image.svg", "og_image_svg"): "static asset",
     ("/og-image.png", "og_image_png"): "static asset",
