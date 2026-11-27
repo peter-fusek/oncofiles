@@ -30,7 +30,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from oncofiles import erase_retention
+from oncofiles import erase_retention, holding_loops
 
 # Human descriptions by job id: (group, name sk, name en, desc sk, desc en).
 # A lookup only — whether a job is shown depends on the running scheduler.
@@ -135,21 +135,24 @@ CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
         "Spracuje dokumenty poslané e-mailom, ktoré čakajú vo fronte (aj po reštarte)",
         "Process documents sent by e-mail that wait in the queue (also after a restart)",
     ),
-    "holding_extract": (
+    # Lifespan loops (oncofiles.holding_loops), not APScheduler jobs (#999).
+    holding_loops.EXTRACT_JOB_ID: (
         "pipeline",
         "Čítanie dokumentov skúšobného účtu",
         "Trial document reading",
-        "Lokálnym modelom prečíta dokumenty poslané na welcome@, ktoré ešte čakajú",
-        "Read documents sent to welcome@ that still wait, with the local model",
+        "Lokálnym modelom prečíta dokumenty poslané na welcome@, ktoré ešte čakajú "
+        "(beží aj pri SYNC_ENABLED=false)",
+        "Read documents sent to welcome@ that still wait, with the local model "
+        "(runs also with SYNC_ENABLED=false)",
     ),
-    "holding_move": (
+    holding_loops.MOVE_JOB_ID: (
         "pipeline",
         "Presun dokumentov skúšobného účtu do Drive",
         "Trial documents to Drive",
         "Po pripojení Drive skopíruje dokumenty skúšobného účtu do priečinka na nové "
-        "súbory a pošle e-mail, keď sú dokumenty pripravené",
+        "súbory a pošle e-mail, keď sú dokumenty pripravené (beží aj pri SYNC_ENABLED=false)",
         "After Drive is connected, copy trial documents into the inbox folder and send "
-        "the e-mail when documents are ready",
+        "the e-mail when documents are ready (runs also with SYNC_ENABLED=false)",
     ),
     "pipeline_integrity": (
         "pipeline",
@@ -228,7 +231,20 @@ _LEGACY_ONLY = {
 _NIGHTLY_ONLY = {"nightly_ai_pipeline", "weekly_discovery_pipeline"}
 # Catalogue ids that are lifespan loops, not APScheduler jobs: they run whatever
 # SYNC_ENABLED says, so the scheduler's off reason never applies to them (#856).
-BACKGROUND_LOOP_JOBS = {erase_retention.JOB_ID}
+BACKGROUND_LOOP_JOBS = {erase_retention.JOB_ID, *holding_loops.JOBS}
+
+
+def background_loop_state(job_id: str) -> dict:
+    """In-memory telemetry of one lifespan loop (#856, #999)."""
+    if job_id == erase_retention.JOB_ID:
+        return erase_retention.status()
+    return holding_loops.JOBS[job_id].status()
+
+
+def _background_loop_trigger(job_id: str) -> dict:
+    if job_id == erase_retention.JOB_ID:
+        return {"kind": "cron", "cadence": "daily", "text": erase_retention.SCHEDULE_TEXT}
+    return holding_loops.JOBS[job_id].trigger()
 
 
 def describe(job_id: str) -> dict:
@@ -390,8 +406,8 @@ def build_jobs(scheduler: Any, tracker: dict | None, flags: dict) -> dict:
 def background_loop_entry(job_id: str, *, running: bool, state: dict) -> dict:
     """A lifespan loop shown in the same shape as a registered job (#856).
 
-    Running → an entry for ``jobs`` (``registered: True``, its daily slot as a
-    cron trigger, telemetry from the loop's own state); not running → an entry
+    Running → an entry for ``jobs`` (``registered: True``, its daily slot or
+    interval as the trigger, telemetry from the loop's own state); not running → an entry
     for ``inactive`` with reason ``loop_not_running``.
     """
     if not running:
@@ -400,7 +416,7 @@ def background_loop_entry(job_id: str, *, running: bool, state: dict) -> dict:
         "id": job_id,
         **describe(job_id),
         "registered": True,
-        "trigger": {"kind": "cron", "cadence": "daily", "text": erase_retention.SCHEDULE_TEXT},
+        "trigger": _background_loop_trigger(job_id),
         "next_run_at": state.get("next_run_at"),
         **_telemetry(state),
     }

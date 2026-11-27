@@ -681,11 +681,9 @@ class DocumentMixin:
         """Indexed curated rows of a patient: gdrive_id → {id, sidecar_modified, deleted}."""
         import json as _json
 
-        async with self.db.execute(
-            "SELECT id, gdrive_id, structured_metadata, deleted_at FROM documents "
-            "WHERE patient_id = ? AND file_id LIKE 'gdrive:%'",
-            (patient_id,),
-        ) as cursor:
+        from oncofiles.holding_sql import CURATED_MIRROR_ROWS_SQL, is_foreign_mirror
+
+        async with self.db.execute(CURATED_MIRROR_ROWS_SQL, (patient_id,)) as cursor:
             rows = await cursor.fetchall()
         out: dict[str, dict] = {}
         for r in rows:
@@ -708,7 +706,7 @@ class DocumentMixin:
                 # legacy row it converted) shares the "gdrive:" prefix but is
                 # not a curated mirror row. An interrupted curated insert has
                 # no metadata yet, so it still counts as the indexer's own.
-                "foreign": bool(meta) and "curated" not in meta and meta.get("source") != "curated",
+                "foreign": is_foreign_mirror(meta),
             }
         return out
 

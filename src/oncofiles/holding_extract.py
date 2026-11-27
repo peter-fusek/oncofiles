@@ -46,8 +46,9 @@ Rules (the #855 capacity rules, and the shared LM Studio, infra review):
   original file name, so its own logs cannot carry it.
 
 Runs: right after a document is stored (:func:`kick`) and every
-``WORKER_INTERVAL_MIN`` minutes (scheduler job ``holding_extract``,
-``local_only_task``). DB calls stay on the event loop, one after the other;
+``WORKER_INTERVAL_MIN`` minutes (the ``holding_extract`` lifespan loop,
+``holding_loops``, ``local_only_task``; independent of APScheduler, #999).
+DB calls stay on the event loop, one after the other;
 only decryption, the page count and the extractor run in a worker thread.
 Nothing is deleted. Logs: document ids, counts, reason codes and
 ``patient_id[:4]`` only.

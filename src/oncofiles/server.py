@@ -437,6 +437,29 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         ),
     )
 
+    # #999 / #950: the holding mover (phase three) and reader (phase two) were
+    # APScheduler jobs, which never start in prod (SYNC_ENABLED=false). These
+    # loops are now their only periodic owner (first run after the startup
+    # grace); the event-driven kicks stay. One per process.
+    from oncofiles.holding_loops import EXTRACT_JOB_ID as HOLDING_EXTRACT_JOB
+    from oncofiles.holding_loops import MOVE_JOB_ID as HOLDING_MOVE_JOB
+    from oncofiles.holding_loops import holding_extract_loop, holding_move_loop
+
+    holding_move_task, _ = scheduler_singleton.ensure_background_loop(
+        HOLDING_MOVE_JOB,
+        lambda: asyncio.create_task(
+            # literal job name: the #925 lock reads it (== HOLDING_MOVE_JOB, tested)
+            local_only_task("holding_move", holding_move_loop)(db, _sync_semaphore)
+        ),
+    )
+    holding_extract_task, _ = scheduler_singleton.ensure_background_loop(
+        HOLDING_EXTRACT_JOB,
+        lambda: asyncio.create_task(
+            # literal job name: the #925 lock reads it (== HOLDING_EXTRACT_JOB, tested)
+            local_only_task("holding_extract", holding_extract_loop)(db)
+        ),
+    )
+
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         # #784: one curated loop per process; a second lifespan gets the same task.
@@ -470,6 +493,12 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         _release_curated_loop(curated_nightly_task)
         if scheduler_singleton.release_background_loop(ERASE_RETENTION_JOB, erase_retention_task):
             erase_retention_task.cancel()
+        for _name, _task in (
+            (HOLDING_MOVE_JOB, holding_move_task),
+            (HOLDING_EXTRACT_JOB, holding_extract_task),
+        ):
+            if scheduler_singleton.release_background_loop(_name, _task):
+                _task.cancel()
         if scheduler and scheduler_singleton.release_scheduler(scheduler):
             scheduler.shutdown(wait=False)
             logger.info("Sync scheduler stopped")
@@ -2379,52 +2408,10 @@ def _start_sync_scheduler(
         next_run_time=datetime.now(),
     )
 
-    # #950 phase 2: local reading of welcome@ holding-store documents. The job
-    # only starts the background drain (``holding_extract.kick``), which reads
-    # one document at a time on the local model and never holds
-    # _sync_semaphore while the model works (minutes per scan).
-    async def _run_holding_extract():
-        from oncofiles import holding_extract
-
-        holding_extract.kick(db)
-
-    from oncofiles.holding_extract import WORKER_INTERVAL_MIN as HOLDING_INTERVAL_MIN
-
-    scheduler.add_job(
-        local_only_task("holding_extract", _run_holding_extract),
-        IntervalTrigger(minutes=HOLDING_INTERVAL_MIN),
-        id="holding_extract",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=60,
-        next_run_time=datetime.now(),
-    )
-
-    # #950 phase 3: copy a trial's held files into its curated inbox once it
-    # connected Drive (one file at a time, create-only, read back), flag held
-    # rows whose curated mirror exists, send due "ready" e-mails. Also kicked
-    # by connect_folder right after a trial connects. Never deletes anything.
-    async def _run_holding_move():
-        from oncofiles import holding_move
-
-        try:
-            async with _sync_semaphore:
-                await holding_move.run_pending(db)
-        except Exception:
-            logger.exception("holding move run failed")
-            raise
-
-    from oncofiles.holding_move import WORKER_INTERVAL_MIN as HOLDING_MOVE_INTERVAL_MIN
-
-    scheduler.add_job(
-        local_only_task("holding_move", _run_holding_move),
-        IntervalTrigger(minutes=HOLDING_MOVE_INTERVAL_MIN),
-        id="holding_move",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=60,
-        next_run_time=datetime.now(),
-    )
+    # #950 phases two and three: holding_extract and holding_move are NOT
+    # APScheduler jobs (#999): they must run while SYNC_ENABLED=false, so their
+    # only periodic owner is the lifespan loops (oncofiles.holding_loops); the
+    # event-driven kicks (holding_*.kick) are unchanged.
 
     # OF-1/OF-2: Periodic memory check — reclaim memory + graceful restart.
     # Start after 7 min to avoid false positives from startup sync spike (#366).
@@ -4268,6 +4255,30 @@ async def readiness(request: Request) -> JSONResponse:
                 )
             },
         }
+        # #999: the holding mover and reader loops (in-memory, counts only).
+        from oncofiles import holding_loops
+
+        for job_id, job in holding_loops.JOBS.items():
+            st = job.status()
+            jobs[job_id] = {
+                "loop_running": scheduler_singleton.background_loop_running(job_id),
+                **{
+                    k: st[k]
+                    for k in (
+                        "schedule",
+                        "next_run_at",
+                        "last_run_at",
+                        "last_ok",
+                        "last_error",
+                        "last_error_type",
+                        "running",
+                        "runs",
+                        "errors",
+                        "last_summary",
+                        "last_counts",
+                    )
+                },
+            }
         result["jobs"] = jobs
         # #441 Layer 6: cluster-wide AI cost in the last 24h. Cheap aggregate
         # query — operator-only, like the rest of the readiness payload.
@@ -6194,21 +6205,18 @@ def _schedules_payload(lifespan_tracker: dict | None) -> dict:
         "integrity_check": ENABLE_INTEGRITY_CHECK,
     }
     built = scheduled_jobs.build_jobs(scheduler, tracker, flags)
-    # #856: lifespan loops (not APScheduler jobs) are shown in the same lists.
-    from oncofiles import erase_retention
-
-    loop_entry = scheduled_jobs.background_loop_entry(
-        erase_retention.JOB_ID,
-        running=scheduler_singleton.background_loop_running(erase_retention.JOB_ID),
-        state=erase_retention.status(),
-    )
-    if loop_entry.get("registered"):
-        built["jobs"].append(loop_entry)
-        built["jobs"].sort(
-            key=lambda j: (j["next_run_at"] is None, j["next_run_at"] or "", j["id"])
+    # #856 / #999: lifespan loops (not APScheduler jobs) are shown in the same lists.
+    for job_id in sorted(scheduled_jobs.BACKGROUND_LOOP_JOBS):
+        loop_entry = scheduled_jobs.background_loop_entry(
+            job_id,
+            running=scheduler_singleton.background_loop_running(job_id),
+            state=scheduled_jobs.background_loop_state(job_id),
         )
-    else:
-        built["inactive"].append(loop_entry)
+        if loop_entry.get("registered"):
+            built["jobs"].append(loop_entry)
+        else:
+            built["inactive"].append(loop_entry)
+    built["jobs"].sort(key=lambda j: (j["next_run_at"] is None, j["next_run_at"] or "", j["id"]))
     nightly_enabled, nightly_hour, _ = nightly_settings()
     curated = scheduled_jobs.curated_loop_entry(
         running=scheduler_singleton.curated_loop_running(),
