@@ -335,7 +335,7 @@ _COPY: dict[str, dict] = {
         "h1": "From medical reports to an interactive 3D explanation",
         "lede": (
             "Oncofiles is not only for oncology patients. Here a person with back, knee and "
-            "shoulder trouble had Claude turn his orthopaedic reports into a 3D model of the "
+            "shoulder trouble had Claude turn their orthopaedic reports into a 3D model of the "
             "findings and exercises to take to a physiotherapist."
         ),
         "real": (
