@@ -105,7 +105,7 @@ async def _consent_rows(db: Database) -> list[dict]:
 
 
 def test_consent_version_is_the_approved_one():
-    assert CONSENT_VERSION == "2026-11-27.2"
+    assert CONSENT_VERSION == "2026-11-27.3"
 
 
 @pytest.mark.usefixtures("api")
@@ -290,7 +290,7 @@ async def test_privacy_matches_the_pipeline():
     assert "whole Google" in html and "only the folder you choose" in html
     assert "hasn't verified this app" in html and "at most 100" in html
     # consent record, access log, rights
-    assert "Consent version 2026-11-27.2" in html
+    assert "Consent version 2026-11-27.3" in html
     assert "keyed hash of your\ne-mail address" in html or "keyed hash of your e-mail" in html
     assert "GDPR Art. 9(2)(a)" in html
     assert "within 30 days" in html
@@ -322,7 +322,7 @@ async def test_privacy_numbers_match_the_code():
 
 async def test_terms_record_consent_and_manual_rights():
     html = await _text(server.terms_of_service)
-    assert "Consent version 2026-11-27.2" in html
+    assert "Consent version 2026-11-27.3" in html
     assert "legal guardian" in html
     assert "within 30 days" in html
     assert "cannot connect their own Google Drive yet" in html  # ONBOARDING_MODE=closed
@@ -335,32 +335,43 @@ async def test_terms_and_privacy_state_consent_by_sending():
     document address means agreeing to the terms; SK and EN, version bumped."""
     terms = await _text(server.terms_of_service)
     privacy = await _text(server.privacy_policy)
+    terms_sk = _flat(await _text(server.terms_of_service_sk))
+    privacy_sk = _flat(await _text(server.privacy_policy_sk))
     assert 'id="by-email"' in terms and 'id="by-email"' in privacy
+    assert 'id="by-email"' in terms_sk and 'id="by-email"' in privacy_sk
     assert (
         "Whoever sends documents to a patient's document e-mail address agrees to these terms"
         in (terms.replace("\n", " "))
     )
+    # #1008: the Slovak text lives on the Slovak pages
     assert "Kto pošle dokumenty na e-mailovú adresu pacienta pre dokumenty, súhlasí s týmito" in (
-        terms.replace("\n", " ")
+        terms_sk
     )
     flat = privacy.replace("\n", " ")
     assert "Whoever sends documents to that address agrees to the" in flat
-    assert "Kto pošle dokumenty na túto adresu, súhlasí s" in flat
+    assert "Kto pošle dokumenty na túto adresu, súhlasí s" in privacy_sk
     assert "The text of the caregiver's e-mail is not stored, and no e-mail text is read by" in flat
-    assert "Text e-mailu opatrovateľa sa neukladá a žiadny text e-mailu nečíta AI model" in flat
+    assert "Text e-mailu opatrovateľa sa neukladá a žiadny text e-mailu nečíta AI model" in (
+        privacy_sk
+    )
     # #976 (consent version 2026-11-22.2): the quarantined mail's text and previews
     assert "the plain text of such an e-mail is kept with them, encrypted, for the same" in flat
     assert "period and deleted together with the files" in flat
-    assert "čistý text takého e-mailu sa uchováva spolu s nimi, zašifrovaný, rovnako dlho" in flat
-    assert "vymaže sa spolu so súbormi" in flat
+    assert "čistý text takého e-mailu sa uchováva spolu s nimi, zašifrovaný, rovnako dlho" in (
+        privacy_sk
+    )
+    assert "vymaže sa spolu so súbormi" in privacy_sk
     # #950 quarantine (maintainer decision 2026-11-22, consent version 2026-11-22)
     assert "anyone other than the caregiver are held encrypted in quarantine" in flat
     assert "30-day trash and are then deleted (approved ones are filed normally)" in flat
     assert "the sender gets no reply" in flat
-    assert "ktokoľvek iný než opatrovateľ, čakajú zašifrované v karanténe" in flat
-    assert "30 dní v koši a potom sa vymažú" in flat
-    assert "odosielateľ nedostane žiadnu odpoveď" in flat
-    assert "Consent version 2026-11-27.2" in terms and "Consent version 2026-11-27.2" in privacy
+    assert "ktokoľvek iný než opatrovateľ, čakajú zašifrované v karanténe" in privacy_sk
+    assert "30 dní v koši a potom sa vymažú" in privacy_sk
+    assert "odosielateľ nedostane žiadnu odpoveď" in privacy_sk
+    # #950 (maintainer decision 2026-11-27): seven days to decide
+    assert "for at most 7 days" in flat and "najviac 7 dní" in privacy_sk
+    assert "Consent version 2026-11-27.3" in terms and "Consent version 2026-11-27.3" in privacy
+    assert "Verzia súhlasu 2026-11-27.3" in terms_sk and "Verzia súhlasu 2026-11-27.3" in privacy_sk
 
 
 async def test_privacy_states_backup_restore_after_an_unclaimed_trial():
@@ -372,5 +383,47 @@ async def test_privacy_states_backup_restore_after_an_unclaimed_trial():
     )
     assert (
         "Dokumenty odstránené po nevyužitej skúšobnej dobe sa ešte najviac 6 mesiacov dajú "
-        "obnoviť zo šifrovaných záloh." in flat
+        "obnoviť zo šifrovaných záloh." in _flat(await _text(server.privacy_policy_sk))
     )
+
+
+def _flat(html: str) -> str:
+    return " ".join(html.split())
+
+
+async def test_slovak_privacy_matches_the_pipeline():
+    """#1008: every claim test_privacy_matches_the_pipeline / _numbers_match_the_code
+    locks on /privacy is also stated on /sk/privacy."""
+    from oncofiles import app_log, dashboard_audit, pre_store
+
+    html = _flat(await _text(server.privacy_policy_sk))
+    assert "na lokálnom AI modeli na našom vlastnom serveri na Slovensku (EÚ)" in html
+    assert "neposiela vaše dokumenty žiadnej cloudovej AI službe" in html
+    assert "<strong>Google Drive</strong>" in html and "vaše pôvodné súbory" in html
+    assert "k celému vášmu Google Drive" in html
+    assert "len priečinok, ktorý pre pacienta vyberiete" in html
+    assert "Google túto aplikáciu neoveril" in html and "najviac 100" in html
+    assert "kľúčovaný odtlačok (hash) vašej e-mailovej adresy" in html
+    assert "čl. 9 ods. 2 písm. a) GDPR" in html
+    assert "do 30 dní" in html
+    assert "nemôžu pripojiť vlastný Google Drive" in html and "na pozvánku" in html
+    assert "bežné zdravotné záznamy" in html and "stav overenia" in html
+    assert "uchovávané obmedzený čas" in html
+    assert pre_store.KEEP == 5 and "len 5 najnovších" in html
+    assert app_log.DEFAULT_RETENTION_DAYS == 7 and "uchováva sa 7 dní" in html
+    assert "Serverové logy sa automaticky rotujú a uchovávajú najviac 30 dní." in html
+    assert dashboard_audit.DEFAULT_RETENTION_DAYS == 90
+    assert "automaticky vymažú po 90 dňoch" in html
+    assert "záznam prístupov do dashboardu po 90 dňoch" in html
+    assert "Oncofiles nikdy nič natrvalo nemaže" in html
+    assert "nikdy nie s menom pacienta" in html and "sledovací pixel" in html
+
+
+async def test_slovak_terms_record_consent_and_manual_rights():
+    html = _flat(await _text(server.terms_of_service_sk))
+    assert "Verzia súhlasu 2026-11-27.3" in html
+    assert "zákonný zástupca" in html
+    assert "do 30 dní" in html
+    assert "nemôžu pripojiť vlastný Google Drive" in html and "na pozvánku" in html
+    assert "500 dokumentov na pacienta" in html
+    assert "nikdy natrvalo nemaže súbory" in html

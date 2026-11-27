@@ -147,6 +147,7 @@ logger = logging.getLogger(__name__)
 INBOUND_DOMAIN = "docs.oncofiles.com"
 OWN_DOMAINS = frozenset({"oncofiles.com", INBOUND_DOMAIN})
 TERMS_URL = "https://oncofiles.com/terms"
+TERMS_URL_SK = "https://oncofiles.com/sk/terms"  # #1008: the Slovak lines link the Slovak page
 
 TOKEN_LEN = 6  # maintainer decision 2026-11-22 (was 10), ~30 bits
 LEGACY_TOKEN_LEN = 10  # rows written before migration 100 (token_length NULL)
@@ -1737,7 +1738,7 @@ REASON_TEXT: dict[str, tuple[str, str]] = {
 
 TERMS_SENTENCE_SK = (
     "Poslaním dokumentov na túto adresu súhlasíte s podmienkami používania "
-    "a so spracovaním týchto údajov: " + TERMS_URL
+    "a so spracovaním týchto údajov: " + TERMS_URL_SK
 )
 TERMS_SENTENCE_EN = (
     "By sending documents to this address you agree to the terms of service "

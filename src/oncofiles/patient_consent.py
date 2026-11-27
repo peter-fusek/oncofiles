@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-CONSENT_VERSION = "2026-11-27.2"  # #706: server logs kept at most 30 days
+CONSENT_VERSION = "2026-11-27.3"  # #1008: Slovak /sk/privacy and /sk/terms
 
 # ``patient_consents.kind`` (migration 097): ``wizard`` = the #857 checkbox,
 # ``by_sending`` = consent by sending documents to welcome@ (#950 phase 2,
