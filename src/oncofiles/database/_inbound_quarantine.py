@@ -11,6 +11,8 @@ deletes a row (#734): the purge (migration 102) only marks the row after
 
 from __future__ import annotations
 
+from oncofiles import inbound_sql as q
+
 from ._base import DatabaseBase
 from ._tenant import require_patient_id
 
@@ -170,21 +172,13 @@ class InboundQuarantineMixin(DatabaseBase):
     async def quarantine_patients_due(self, *, since: str) -> list[str]:
         """Patients with pending items received since ``since`` that no
         notification announced yet (the scheduler's digest sweep)."""
-        async with self.db.execute(
-            """SELECT DISTINCT patient_id FROM inbound_quarantine
-               WHERE state = 'pending' AND notified_at IS NULL AND received_at >= ?""",
-            (since,),
-        ) as cursor:
+        async with self.db.execute(q.QUARANTINE_PATIENTS_DUE_SQL, (since,)) as cursor:
             rows = await cursor.fetchall()
         return [r[0] for r in rows]
 
     async def quarantine_unnotified(self, *, patient_id: str, since: str) -> list[dict]:
         async with self.db.execute(
-            f"""SELECT {_COLS} FROM inbound_quarantine
-                WHERE patient_id = ? AND state = 'pending' AND notified_at IS NULL
-                  AND received_at >= ?
-                ORDER BY received_at, id""",
-            (patient_id, since),
+            f"SELECT {_COLS} " + q.QUARANTINE_UNNOTIFIED_FROM, (patient_id, since)
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(r) for r in rows]
@@ -193,20 +187,14 @@ class InboundQuarantineMixin(DatabaseBase):
         self, *, patient_id: str, sender_hash: str
     ) -> str | None:
         async with self.db.execute(
-            """SELECT MAX(notified_at) FROM inbound_quarantine
-               WHERE patient_id = ? AND sender_hash = ? AND notified_at IS NOT NULL""",
-            (patient_id, sender_hash),
+            q.QUARANTINE_LAST_NOTICE_SQL, (patient_id, sender_hash)
         ) as cursor:
             row = await cursor.fetchone()
         return row[0] if row and row[0] else None
 
     async def quarantine_notices_since(self, *, patient_id: str, since: str) -> int:
         """Notification e-mails sent for the patient since ``since``."""
-        async with self.db.execute(
-            """SELECT COUNT(DISTINCT notice_key) FROM inbound_quarantine
-               WHERE patient_id = ? AND notified_at >= ? AND notice_key IS NOT NULL""",
-            (patient_id, since),
-        ) as cursor:
+        async with self.db.execute(q.QUARANTINE_NOTICES_SINCE_SQL, (patient_id, since)) as cursor:
             row = await cursor.fetchone()
         return int(row[0] or 0)
 
@@ -431,8 +419,8 @@ class InboundQuarantineMixin(DatabaseBase):
         cursor = await self.db.execute(
             """UPDATE inbound_quarantine
                SET state = 'expired', decided_at = ?, decided_by = NULL, decided_via = 'expiry'
-               WHERE state = 'pending' AND COALESCE(restored_at, received_at) < ?
-                 AND (claimed_at IS NULL OR claimed_at < ?)""",
+               WHERE """
+            + q.QUARANTINE_EXPIRE_WHERE,
             (at, before, stale_before),
         )
         if cursor.rowcount:
@@ -459,15 +447,7 @@ class InboundQuarantineMixin(DatabaseBase):
         whose every file was filed. Never a pending item (a restored item is
         pending). Oldest decision first."""
         async with self.db.execute(
-            """SELECT id, patient_id, item_uuid, state, file_count, filed_count, decided_at
-               FROM inbound_quarantine
-               WHERE files_purged_at IS NULL AND decided_at IS NOT NULL
-                 AND (
-                   (state IN ('rejected', 'expired') AND decided_at < ?)
-                   OR (? IS NOT NULL AND state = 'approved' AND decided_at < ?
-                       AND filed_count >= file_count)
-                 )
-               ORDER BY decided_at, id LIMIT ?""",
+            q.QUARANTINE_PURGE_CANDIDATES_SQL,
             (trash_before, approved_before, approved_before, int(limit)),
         ) as cursor:
             rows = await cursor.fetchall()
