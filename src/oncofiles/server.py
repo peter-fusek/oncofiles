@@ -4087,18 +4087,14 @@ async def health(request: Request) -> JSONResponse:
     Used by the Coolify healthcheck and UptimeRobot.  Must never block on
     external I/O so the process is never killed by a slow dependency.
     """
-    # Hard RSS ceiling — last-resort failsafe independent of scheduler health.
-    # sys.exit(1) makes Railway see a failed healthcheck → immediate replace.
-    from oncofiles.memory import HARD_RSS_CEILING_MB
+    # Hard RSS ceiling (#1012) — failsafe independent of scheduler health. Above
+    # the ceiling: graceful SIGTERM when idle, else keep answering 200 (degraded
+    # on operator /readiness) so Coolify never replaces the container mid-work;
+    # above the last resort: SIGTERM always. In memory only, no DB.
+    from oncofiles import memory_ceiling
 
     _rss_now = get_rss_mb()
-    if _rss_now > HARD_RSS_CEILING_MB:
-        logger.critical(
-            "Hard RSS ceiling: %.1f MB > %d MB — forcing restart via health probe",
-            _rss_now,
-            HARD_RSS_CEILING_MB,
-        )
-        sys.exit(1)
+    memory_ceiling.check(_rss_now, _sync_semaphore)
 
     result: dict = {"status": "ok", "version": VERSION}
     # #708: config only (flag + key presence), no DB — the nightly AI phases
@@ -4229,6 +4225,9 @@ async def readiness(request: Request) -> JSONResponse:
             return JSONResponse(result)
 
         result["memory_rss_mb"] = round(get_rss_mb(), 1)
+        from oncofiles import memory_ceiling
+
+        result["memory"] = memory_ceiling.status()  # #1012: ok | degraded, levels
         from oncofiles.onboarding_gate import onboarding_mode
 
         result["onboarding"] = onboarding_mode()  # #852, mode only
