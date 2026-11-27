@@ -196,6 +196,52 @@ def test_sigterm_is_sent_once(tmp_path, kills, idle):  # noqa: F811
     assert len(kills) == 1 and C.status()["exit_sent"] is True
 
 
+async def test_levels_are_resolved_at_loop_start_before_the_first_sleep(
+    tmp_path,
+    monkeypatch,
+    kills,  # noqa: F811
+    idle,  # noqa: F811
+):
+    """Infra check on #1013: /health and /readiness must not run on the
+    defaults for the first seven minutes (the first-run delay)."""
+    mcl = memory_check_loop
+    f = _cgroup(tmp_path, str(LIMIT))
+    missing = tmp_path / "missing"
+    monkeypatch.delenv(mcl.THRESHOLD_ENV, raising=False)
+    monkeypatch.setattr(mcl, "CGROUP_V2_MAX", f)
+    monkeypatch.setattr(mcl, "CGROUP_V1_LIMIT", missing)
+    real = mcl.resolve_threshold
+    monkeypatch.setattr(mcl, "resolve_threshold", lambda: real({}, unified=f, legacy=missing))
+    ticks: list[int] = []
+
+    async def no_tick(_semaphore=None):
+        ticks.append(1)
+        return {}
+
+    monkeypatch.setattr(mcl, "memory_check_iteration", no_tick)
+    mcl._reset_for_tests()
+    assert C.status()["ceiling_source"] == "default"
+    task = asyncio.create_task(mcl.memory_check_loop(asyncio.Semaphore(1)))
+    try:
+        for _ in range(200):
+            if C.status()["ceiling_source"] == "cgroup":
+                break
+            await asyncio.sleep(0.01)
+        st = C.status()
+        assert (st["ceiling_mb"], st["last_resort_mb"]) == (CEIL, LAST)
+        assert st["ceiling_source"] == "cgroup" and st["limit_mb"] == LIMIT_MB
+        assert mcl.MEMORY_CHECK.threshold_source == "cgroup"
+        assert mcl.MEMORY_CHECK.threshold_mb == int(LIMIT_MB * mcl.CGROUP_SHARE)
+        # still inside the first-run delay: no tick has run
+        assert ticks == [] and mcl.MEMORY_CHECK.status()["runs"] == 0
+        assert not task.done()
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        mcl._reset_for_tests()
+
+
 def test_before_the_loop_resolves_env_and_defaults_apply(kills, idle):  # noqa: F811
     st = C.status()
     assert st["ceiling_mb"] == C.DEFAULT_CEILING_MB and st["limit_mb"] is None
