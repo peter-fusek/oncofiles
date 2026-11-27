@@ -390,3 +390,11 @@ def test_production_callers_never_pass_a_model():
 def test_write_paths_still_refuse_a_model_override():
     with pytest.raises(ValueError, match="only on a dry run"):
         llm_extract_call.refuse_overrides_on_write(write=True, model=BENCH_MODEL)
+
+
+def test_a_thinking_directive_echoed_into_the_reading_is_counted_never_shown():
+    new = "Hemoglobin 140\n/no_think\nNote [[reasoning:off]]\nplain line"
+    page = rc.compare_page("Hemoglobin 140", new)
+    assert page["directive_echo_lines_new"] == 2
+    assert rc.compare_page("Hemoglobin 140", "Hemoglobin 140")["directive_echo_lines_new"] == 0
+    assert "directive_echo_lines_new" in rc.PAGE_KEYS

@@ -52,7 +52,15 @@ def compare_page(today: str, new: str) -> dict:
         "dates_only_new": len(new_dates - old_dates),
         "uncertain_lines_today": sum("[?]" in ln for ln in (today or "").splitlines()),
         "uncertain_lines_new": sum("[?]" in ln for ln in (new or "").splitlines()),
+        # A model without Qwen's template rules may echo a thinking directive
+        # into its transcription (benching another OCR model); count only.
+        "directive_echo_lines_new": sum(
+            any(m in ln.lower() for m in DIRECTIVE_MARKERS) for ln in (new or "").splitlines()
+        ),
     }
+
+
+DIRECTIVE_MARKERS = ("/no_think", "/think", "[[reasoning")
 
 
 PAGE_KEYS = tuple(compare_page("", ""))
