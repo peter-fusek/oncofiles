@@ -1008,7 +1008,9 @@ def _sex_generic(facts: list[dict], sex: str | None) -> list[dict]:
 
 # Values computed from other values of the same panel (#672): two different
 # draws can land on the same number, so they never count as matching evidence.
-DERIVED_CODES = frozenset({"OSMO", "EGFR", "CA_CORR", "SII", "NLR", "TIBC", "TSAT"})
+DERIVED_CODES = frozenset(
+    {"OSMO", "EGFR", "CA_CORR", "SII", "NLR", "TIBC", "TSAT", "TIBC_CALC", "TSAT_CALC"}
+)
 
 
 def _fact_meta(r: dict) -> dict:

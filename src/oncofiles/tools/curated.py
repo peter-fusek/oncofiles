@@ -2778,11 +2778,13 @@ async def _compare_targets(db, pid: str, ids: list[int]) -> tuple[list[dict], li
 
 
 async def _reocr_compare_job(
-    db, pid: str, docs: list[dict], counts: dict[int, dict[str, int]], skipped: list[dict]
-) -> None:
+    db, pid: str, docs: list[dict], counts: dict[int, dict[str, int]], skipped: list[dict],
+    *, model: str | None = None,
+) -> None:  # fmt: skip
     """Background part of ``curated_reocr_compare``. Writes NOTHING: no Drive
     (two downloads per document), no DB row (not even a run row), no index.
-    One document and one vision call at a time: one LM Studio slot."""
+    One document and one vision call at a time: one LM Studio slot.
+    ``model``: the validated per-job override, passed explicitly per call."""
     from oncofiles import config
     from oncofiles.cloud_guard import local_only
     from oncofiles.curated import reocr_compare
@@ -2816,7 +2818,8 @@ async def _reocr_compare_job(
                 own = gdrive.dedicated_copy()
                 try:
                     with local_only("curated re-OCR compare"):
-                        return reocr_compare.compare_one(DriveOps(own), d, vocab, parallel=1)
+                        return reocr_compare.compare_one(DriveOps(own), d, vocab, parallel=1,
+                                                         model=model)  # fmt: skip
                 finally:
                     own.close()
 
@@ -2833,23 +2836,39 @@ async def _reocr_compare_job(
         for k in ("agree", "value_differs", "missing_in_new", "missing_in_today"):
             totals[f"facts_{k}"] = sum(r["facts"][k] for r in done)
         job.update(state="done", report={
-            "dry_run": True, "compared": len(done), "totals": totals, "warnings": warnings,
-            "documents": [*report, *skipped],
+            "dry_run": True, "settings": _compare_settings(model), "compared": len(done),
+            "totals": totals, "warnings": warnings, "documents": [*report, *skipped],
         })  # fmt: skip
     except Exception as exc:
         logger.exception("re-OCR compare failed for %s", pid)
         job.update(state="failed", error=type(exc).__name__,
-                   report={"dry_run": True, "documents": [*report, *skipped]})  # fmt: skip
+                   report={"dry_run": True, "settings": _compare_settings(model),
+                           "documents": [*report, *skipped]})  # fmt: skip
     finally:
         job["finished_at"] = datetime.now(UTC).isoformat()
 
 
-async def start_reocr_compare(db, pid: str, document_ids: list[int], *, actor: str = "mcp") -> dict:
+def _compare_settings(model: str | None) -> dict:
+    """The compare's effective model and its per-job override (ids only)."""
+    from oncofiles.curated import llm
+
+    return {"model": model or llm.model_id(),
+            "overrides": {"model": model} if model is not None else {}}  # fmt: skip
+
+
+async def start_reocr_compare(
+    db, pid: str, document_ids: list[int], *, actor: str = "mcp", model: str | None = None
+) -> dict:
     """Start a dry re-OCR compare (#883) in the background; ``pid`` is resolved.
-    Explicit ids only, at most ``COMPARE_MAX_DOCS``; more is refused, not cut."""
+    Explicit ids only, at most ``COMPARE_MAX_DOCS``; more is refused, not cut.
+    ``model``: a per-job LM Studio model for every call of the read (benching
+    a separate OCR model), validated and checked ``loaded`` exactly like the
+    scorecards' override before any job, slot or Drive call."""
     from oncofiles.curated import llm
     from oncofiles.curated.reocr_compare import COMPARE_MAX_DOCS
 
+    if err := llm.model_override_error(model, None):
+        return {"error": err}
     ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))
     if not ids:
         return {"error": "document_ids is required"}
@@ -2857,6 +2876,8 @@ async def start_reocr_compare(db, pid: str, document_ids: list[int], *, actor: s
         return {"error": f"too many documents: at most {COMPARE_MAX_DOCS} per job"}
     if not llm.configured():
         return {"error": "local model not configured (LOCAL_LLM_BASE_URL/MODEL)"}
+    if refused := await _model_override_refusal(model):
+        return refused
     busy = "busy: a run, re-OCR, re-read or other job is in progress for this patient"
     if _busy(pid) or run_block_reason(pid):
         return {"error": busy}
@@ -2869,12 +2890,13 @@ async def start_reocr_compare(db, pid: str, document_ids: list[int], *, actor: s
     job = {
         "state": "running", "kind": COMPARE_KIND, "dry_run": True, "passes": 2,
         "started_at": datetime.now(UTC).isoformat(), "actor": actor, "skipped": skipped,
+        **_compare_settings(model),
         "documents": [{"document_id": d["id"], "category": d.get("category"),
                        "machine_facts": (counts.get(d["id"]) or {}).get("machine", 0)}
                       for d in docs],
     }  # fmt: skip
     return await _launch(
-        db, pid, job, lambda: _reocr_compare_job(db, pid, docs, counts, skipped),
+        db, pid, job, lambda: _reocr_compare_job(db, pid, docs, counts, skipped, model=model),
         dry_run=True, busy=busy,
     )  # fmt: skip
 
@@ -2883,6 +2905,7 @@ async def curated_reocr_compare(
     ctx: Context,
     document_ids: list[int],
     patient_slug: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Dry audit of re-OCR'd sidecars (#883): read again, compare, write nothing.
 
@@ -2903,6 +2926,18 @@ async def curated_reocr_compare(
     minutes per page.
     Admin-only (it spends the shared local model on an audit), and
     ``patient_slug`` is required: there is no implicit patient.
+
+    Args:
+        document_ids: curated documents (explicit ids, at most 10).
+        patient_slug: the patient (required).
+        model: LM Studio model id for this job only, to bench a separate OCR
+            model through the same path (1-200 of ``A-Za-z0-9._:/@-``); null
+            = LOCAL_LLM_MODEL. Every call of the read uses it (orientation
+            question, both passes, the second-pass halves, the near-empty
+            retry). Refused (``model_not_loaded``) unless the configured LM
+            Studio reports it ``loaded`` at its native ``/api/v0/models``
+            (``model_state_unknown`` when that list is unavailable); nothing
+            is loaded or downloaded. Echoed in the report's ``settings``.
     """
     from oncofiles.tools._helpers import _require_admin_or_raise
 
@@ -2913,7 +2948,7 @@ async def curated_reocr_compare(
     if not (patient_slug or "").strip():
         return json.dumps({"error": "patient_slug is required"})
     pid = await _resolve_patient_id(patient_slug, ctx)
-    out = await start_reocr_compare(_get_db(ctx), pid, document_ids)
+    out = await start_reocr_compare(_get_db(ctx), pid, document_ids, model=model)
     return json.dumps(out, ensure_ascii=False)
 
 

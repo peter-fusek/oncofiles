@@ -164,6 +164,28 @@ async def test_og_image_png_headers():
     assert resp.body[:8] == b"\x89PNG\r\n\x1a\n"
 
 
+async def test_registry_icon_and_server_json():
+    """server.json (MCP Registry entry) names a website and icons this app serves."""
+    import json
+
+    from oncofiles.server import icon_png
+
+    resp = await icon_png(_req("/icon-256.png"))
+    assert resp.media_type == "image/png"
+    body = resp.body
+    assert body[:8] == b"\x89PNG\r\n\x1a\n"
+    # IHDR: width and height are the first two big-endian ints after the tag
+    assert int.from_bytes(body[16:20], "big") == 256
+    assert int.from_bytes(body[20:24], "big") == 256
+
+    entry = json.loads((SRC.parents[1] / "server.json").read_text(encoding="utf-8"))
+    assert entry["websiteUrl"] == "https://oncofiles.com"
+    assert 1 <= len(entry["description"]) <= 100  # registry schema limit
+    srcs = {i["src"] for i in entry["icons"]}
+    assert srcs == {"https://oncofiles.com/icon-256.png", "https://oncofiles.com/favicon.svg"}
+    assert "version_detail" not in entry  # not in the 2025-12-11 schema
+
+
 # ── Demo honesty + i18n (#605 visual review) ──────────────────────────
 
 DASHBOARD_HTML = (SRC / "dashboard.html").read_text(encoding="utf-8")

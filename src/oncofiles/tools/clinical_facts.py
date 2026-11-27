@@ -142,8 +142,20 @@ def _feed_kinds(kinds: list[str] | None) -> tuple[list[str], list[str]]:
     return known, unknown
 
 
-def _feed_fact(r: dict, fact_id: str, at: str, conversions: dict, ref: dict | None = None) -> dict:
+def _feed_fact(
+    r: dict,
+    fact_id: str,
+    at: str,
+    conversions: dict,
+    ref: dict | None = None,
+    unit: dict | None = None,
+) -> dict:
     obs = {**_observation(r, conversions), **(ref or {})}
+    if _unit_key(r.get("unit")) and obs["unit"] is not None:
+        obs["unit_source"] = UNIT_PRINTED
+    elif unit and obs["value"] is not None:
+        # #672: the same lab's unit, as printed there; the value stays as printed
+        obs.update(unit)
     row: dict = {"id": fact_id, "code": r["code"], "at": at}
     if r["code"] is None:
         row["label"] = r["label_original"]  # uncoded: the printed label
@@ -152,8 +164,9 @@ def _feed_fact(r: dict, fact_id: str, at: str, conversions: dict, ref: dict | No
         row["at_from"] = meta["date_range_start"]
     if meta.get("date_range_end"):
         row["at_to"] = meta["date_range_end"]
-    for key in ("value", "value_text", "unit", "ref_low", "ref_high"):
-        if obs[key] is not None:
+    for key in ("value", "value_text", "unit", "unit_source", "unit_document_id",
+                "ref_low", "ref_high"):  # fmt: skip
+        if obs.get(key) is not None:
             row[key] = obs[key]
     if obs["ref_low"] is not None or obs["ref_high"] is not None:
         # where the range was printed (#899): never a generic or computed one
@@ -431,8 +444,95 @@ REF_SAME_LAB = "same_lab_other_doc"
 _REF_DONOR_VERIFICATION = ("machine", "verified", "corrected")
 
 
+# ── where a unit comes from (#672) ──
+# ``printed``: the fact's own printed unit (converted to the canonical unit
+# where it converts). ``inferred_same_lab``: the value was printed WITHOUT a
+# unit (a report quoting a lab result), and the same lab printed this code with
+# exactly one unit in its trusted facts; the offer names the donor document.
+# Read time only: the stored row is never changed, and neither the value nor
+# the flag is ever recomputed from an inferred unit.
+UNIT_PRINTED = "printed"
+UNIT_SAME_LAB = "inferred_same_lab"
+
+
+def _canonical_units(vocab: list[dict]) -> dict[str, str]:
+    return {r["code"]: r.get("unit_canonical") or "" for r in vocab}
+
+
+def _day_of(r: dict) -> date | None:
+    try:
+        return date.fromisoformat((r["effective_at"] or "")[:10])
+    except ValueError:
+        return None
+
+
+def _unit_scale(code: str | None, unit: str | None, row_canonical: str | None,
+                conversions: dict, canon: dict) -> tuple:  # fmt: skip
+    """A unit as (canonical unit, factor) when it is the code's canonical unit
+    or converts to it, else ("raw", unit). Two units are one unit for a raw
+    number exactly when their scales are equal ("G/l" = "10^9/L"; "g/dl" is
+    not "g/L")."""
+    key = _unit_key(unit)
+    target = _unit_key(canon.get(code or "") or row_canonical)
+    if key == target:
+        return (target, 1.0)
+    factor = conversions.get(code or "", {}).get(key)
+    return (target, float(factor)) if factor is not None else ("raw", key)
+
+
+def _unit_sources(
+    rows: list[dict], conversions: dict, canon: dict
+) -> tuple[dict[int, dict], set[int]]:
+    """Row id → ``{unit, unit_source, unit_document_id}`` for every coded
+    numeric fact printed WITHOUT a unit that can take one from the same lab,
+    plus the ids of such facts whose lab printed the code in more than one
+    unit (no offer: the number's scale is unknown). Pass every row of the
+    patient, as for ``_ref_sources``.
+
+    A donor is a numeric fact of the same code with a printed unit whose
+    reading is trusted (never ``unverified``), at the same institution
+    (``COALESCE(organizations.code, documents.institution)``; unknown → no
+    offer). The donor's printed spelling is offered; the nearest day wins,
+    then the earlier day, then the lower row id, so every page agrees.
+    """
+
+    def scale(r: dict) -> tuple:
+        code, unit = r.get("code"), r.get("unit")
+        return _unit_scale(code, unit, r.get("unit_canonical"), conversions, canon)
+
+    donors: dict[tuple, list[tuple]] = {}
+    for r in rows:
+        if (
+            r.get("code") and r.get("institution") and r.get("value_num") is not None
+            and _unit_key(r.get("unit")) and r["verification"] in _REF_DONOR_VERIFICATION
+            and (d := _day_of(r))
+        ):  # fmt: skip
+            donors.setdefault((r["institution"], r["code"]), []).append((d, r["id"], r))
+    offers: dict[int, dict] = {}
+    ambiguous: set[int] = set()
+    for r in rows:
+        if not r.get("code") or r.get("value_num") is None or _unit_key(r.get("unit")):
+            continue
+        d0 = _day_of(r)
+        pool = donors.get((r.get("institution"), r["code"])) if r.get("institution") else None
+        if not pool or d0 is None:
+            continue
+        if len({scale(src) for _, _, src in pool}) > 1:
+            ambiguous.add(r["id"])
+            continue
+        _, _, _, src = min(((abs((d - d0).days), d, rid, src) for d, rid, src in pool),
+                           key=lambda c: c[:3])  # fmt: skip
+        offers[r["id"]] = {"unit": src["unit"], "unit_source": UNIT_SAME_LAB,
+                           "unit_document_id": src["source_document_id"]}  # fmt: skip
+    return offers, ambiguous
+
+
 def _ref_sources(
-    rows: list[dict], twins: dict[int, tuple[dict, dict, dict]], conversions: dict
+    rows: list[dict],
+    twins: dict[int, tuple[dict, dict, dict]],
+    conversions: dict,
+    units: tuple[dict[int, dict], set[int]] | None = None,
+    canon: dict | None = None,
 ) -> dict[int, dict]:
     """Row id → ``{ref_low, ref_high, ref_source, ref_document_id}`` for every
     numeric fact printed WITHOUT a range that can take one from another
@@ -445,8 +545,25 @@ def _ref_sources(
     institution on both documents (none → no offer), the same code and unit,
     and another document; the nearest day wins, then the earlier day, then the
     lower row id, so every page of the feed gives the same answer.
+
+    With ``units`` (``_unit_sources``, #672) a value printed without a unit
+    takes a same-lab range only when its unit is not ambiguous and, when a
+    unit is inferred, only in that unit's scale: a range in the canonical unit
+    is never offered to a raw number printed in another unit.
     """
+    offers, ambiguous = units or ({}, set())
     obs = {r["id"]: _observation(r, conversions) for r in rows}
+
+    def unit_mismatch(r: dict) -> bool:
+        if r["id"] in ambiguous:
+            return True
+        offer = offers.get(r["id"])
+        if offer is None:
+            return False
+        code, row_canon = r.get("code"), r.get("unit_canonical")
+        return _unit_scale(code, offer["unit"], row_canon, conversions, canon or {}) != (
+            _unit_scale(code, obs[r["id"]]["unit"], row_canon, conversions, canon or {})
+        )
 
     def has(r: dict) -> bool:
         o = obs[r["id"]]
@@ -463,12 +580,7 @@ def _ref_sources(
         return {"ref_low": o["ref_low"], "ref_high": o["ref_high"], "ref_source": source,
                 "ref_document_id": src["source_document_id"]}  # fmt: skip
 
-    def day(r: dict) -> date | None:
-        try:
-            return date.fromisoformat((r["effective_at"] or "")[:10])
-        except ValueError:
-            return None
-
+    day = _day_of
     out: dict[int, dict] = {}
     # 1. the same measurement, printed with its range in the hidden duplicate
     for _, (entry, gone, keep) in sorted(twins.items()):
@@ -484,7 +596,7 @@ def _ref_sources(
         if r.get("code") and r.get("institution") and donor(r) and (d := day(r)):
             donors.setdefault((r["institution"], r["code"], unit(r)), []).append((d, r["id"], r))
     for r in rows:
-        if r["id"] in out or has(r) or obs[r["id"]]["value"] is None:
+        if r["id"] in out or has(r) or obs[r["id"]]["value"] is None or unit_mismatch(r):
             continue
         d0 = day(r)
         pool = donors.get((r.get("institution"), r.get("code"), unit(r))) if d0 else None
@@ -741,14 +853,31 @@ async def fact_series(
     duplicate, report quote, or same value inside a printed date range) with
     both documents. A value printed under a date range carries
     ``date_precision="range"`` with ``at_from``/``at_to``: for a range, ``at``
-    is the latest possible day, not a sample date. Read-only.
+    is the latest possible day, not a sample date. Each point has
+    ``unit_source``: ``printed`` (its own printed unit), or
+    ``inferred_same_lab`` for a value printed without a unit when the same lab
+    printed this code in exactly one unit: then the point carries that ``unit``
+    and the donor ``unit_document_id``, an offer, never converted; a point
+    whose inferred unit is not the series unit is left out of the statistics
+    (``stats_excluded_inferred_unit``). No ``unit_source``: no unit printed or
+    inferred. Read-only.
     """
     pid = await _resolve_patient_id(patient_slug, ctx)
-    rows = await _get_db(ctx).fact_series_rows(
-        patient_id=pid, codes=[c.upper() for c in codes], date_from=date_from, date_to=date_to
+    db = _get_db(ctx)
+    codes = [c.upper() for c in codes]
+    rows = await db.fact_series_rows(
+        patient_id=pid, codes=codes, date_from=date_from, date_to=date_to
     )
+    vocab = await db.fact_code_vocabulary()
+    conversions, canon = _conversions(vocab), _canonical_units(vocab)
+    # unit donors may sit outside the date window (#672): look at every row of these codes
+    donors = (
+        await db.fact_series_rows(patient_id=pid, codes=codes) if date_from or date_to else rows
+    )
+    offers, _ = _unit_sources(donors, conversions, canon)
     rows, duplicates = _dedupe(rows)
     out: dict = {}
+    off_scale: set[int] = set()  # inferred unit in another scale than the series unit
     for r in rows:
         s = out.setdefault(
             r["code"],
@@ -772,10 +901,21 @@ async def fact_series(
             "evidence": r["evidence"],
             "source": _source(r),
         }
+        offer = offers.get(r["id"])
+        if _unit_key(r["unit"]):
+            point["unit_source"] = UNIT_PRINTED
+        elif offer is not None:
+            point.update(offer)  # the value is never converted from it
+            scale = _unit_scale(r["code"], offer["unit"], r["unit_canonical"], conversions, canon)
+            if scale[1] != 1.0 or scale[0] == "raw":
+                off_scale.add(id(point))
         verified = r["verification"] != "unverified"
         (s["values"] if verified or include_unverified else s["unverified"]).append(point)
     for s in out.values():
-        s["stats"] = _stats(s["values"])
+        # a raw number in another unit would bend min/max/change: listed, not counted
+        s["stats"] = _stats([p for p in s["values"] if id(p) not in off_scale])
+        if excluded := sum(1 for p in s["values"] if id(p) in off_scale):
+            s["stats_excluded_inferred_unit"] = excluded
         s["stats_include_unverified"] = include_unverified
         # the newest value of any verification, so "current" is never months old (#635)
         newest = max(s["values"] + s["unverified"], key=lambda p: p["at"] or "", default=None)
@@ -788,6 +928,9 @@ async def fact_series(
                     "at_from",
                     "at_to",
                     "value",
+                    "unit",
+                    "unit_source",
+                    "unit_document_id",
                     "flag",
                     "flag_source",
                     "verification",
@@ -887,8 +1030,9 @@ async def dashboard_feed(
     """Compact facts for a patient's dashboard: one row per fact, plus its source documents.
 
     Facts only, never interpretation: no evidence text, no statistics. Returns
-    {facts: [{id, code, at, value, value_text, unit, ref_low, ref_high, ref_source,
-    ref_document_id, flag, verification, document_id, page}], documents: [{id, title, date,
+    {facts: [{id, code, at, value, value_text, unit, unit_source, unit_document_id, ref_low,
+    ref_high, ref_source, ref_document_id, flag, verification, document_id, page}],
+    documents: [{id, title, date,
     category, institution, url}], duplicates: [...], generated_at, next_cursor}.
 
     * ``id`` is a stable fact id (UUID): the same fact keeps it across re-indexing.
@@ -909,8 +1053,15 @@ async def dashboard_feed(
       to be marked as such, not this value's own range. ``flag`` is only ever
       the one printed or derived from the value's own range. No range and no
       ``ref_source`` means none of the three exists.
+    * ``unit_source`` says where a unit comes from: ``printed`` = this value's
+      own printed unit; ``inferred_same_lab`` = the value was printed without
+      a unit, and the same lab printed this code in exactly one unit (shown,
+      as printed there, with the donor ``unit_document_id``): an offer to be
+      marked as such. The value and flag are never converted or recomputed
+      from an inferred unit. No ``unit_source`` = no unit was printed and none
+      could be inferred; a ``unit`` then is the code's canonical unit, assumed.
     * ``documents`` lists only the documents the returned facts cite (also as
-      ``ref_document_id``); ``url`` opens the original in Drive.
+      ``ref_document_id`` / ``unit_document_id``); ``url`` opens the original in Drive.
     * ``kinds`` defaults to ["lab"] (lab values, tumour markers, vital signs).
       Also accepted: biomarker, genetic_variant, imaging / lesion (CT lesion
       sizes, code LESION_SIZE in mm), condition, treatment, medication,
@@ -965,9 +1116,12 @@ async def dashboard_feed(
             dated.append((at, r["fhir_id"] or computed[r["id"]], r))
     fact_ids = {r["id"]: (at, fact_id) for at, fact_id, r in dated}
     twins = _hidden_twins([r for _, _, r in dated]) if dedupe else {}
-    conversions = _conversions(await db.fact_code_vocabulary())
+    vocab = await db.fact_code_vocabulary()
+    conversions, canon = _conversions(vocab), _canonical_units(vocab)
     # like the dedupe, over every row of the patient: a donor may be on any day
-    refs = _ref_sources([r for _, _, r in dated], twins, conversions) if dedupe else {}
+    every = [r for _, _, r in dated]
+    units = _unit_sources(every, conversions, canon) if dedupe else ({}, set())
+    refs = _ref_sources(every, twins, conversions, units, canon) if dedupe else {}
 
     # One stream ordered by (at, id): kept facts and hidden duplicates alike.
     # The hidden set does not depend on the cursor, so every position is
@@ -992,8 +1146,11 @@ async def dashboard_feed(
         docs_ = [r["source_document_id"]]
         if twin:
             docs_.append(twin[2]["source_document_id"])
-        elif r["id"] in refs:
-            docs_.append(refs[r["id"]]["ref_document_id"])
+        else:
+            if r["id"] in refs:
+                docs_.append(refs[r["id"]]["ref_document_id"])
+            if r["id"] in units[0]:
+                docs_.append(units[0][r["id"]]["unit_document_id"])
         return [d for d in docs_ if d]
 
     doc_ids = sorted({d for item in window for d in cited(item)})
@@ -1016,7 +1173,9 @@ async def dashboard_feed(
     for item in window:
         at, fact_id, r, twin = item
         if twin is None:
-            entry = _feed_fact(r, fact_id, at, conversions, refs.get(r["id"]))
+            entry = _feed_fact(
+                r, fact_id, at, conversions, refs.get(r["id"]), units[0].get(r["id"])
+            )
             target = out["facts"]
         else:
             entry, target = _feed_duplicate(twin, fact_id, at, fact_ids), out["duplicates"]

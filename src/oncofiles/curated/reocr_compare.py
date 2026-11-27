@@ -52,7 +52,15 @@ def compare_page(today: str, new: str) -> dict:
         "dates_only_new": len(new_dates - old_dates),
         "uncertain_lines_today": sum("[?]" in ln for ln in (today or "").splitlines()),
         "uncertain_lines_new": sum("[?]" in ln for ln in (new or "").splitlines()),
+        # A model without Qwen's template rules may echo a thinking directive
+        # into its transcription (benching another OCR model); count only.
+        "directive_echo_lines_new": sum(
+            any(m in ln.lower() for m in DIRECTIVE_MARKERS) for ln in (new or "").splitlines()
+        ),
     }
+
+
+DIRECTIVE_MARKERS = ("/no_think", "/think", "[[reasoning")
 
 
 PAGE_KEYS = tuple(compare_page("", ""))
@@ -113,13 +121,17 @@ def _totals(pages: list[dict]) -> dict:
     return {k: sum(p[k] for p in pages) for k in PAGE_KEYS}
 
 
-def compare_one(drive, d: dict, vocab, *, reader=None, parallel: int = 1) -> dict:
+def compare_one(
+    drive, d: dict, vocab, *, reader=None, parallel: int = 1, model: str | None = None
+) -> dict:
     """Blocking. Read one curated document again and compare (see module doc).
 
     ``d``: id, filename, gdrive_id, mime_type, structured_metadata (a
     ``curated_reocr_candidates`` row). ``drive`` is only ever asked to
     ``download``. ``reader`` defaults to ``reocr.reread_isolated`` (looked
-    up at call time) with re-OCR settings: two passes, ``purpose="reocr"``."""
+    up at call time) with re-OCR settings: two passes, ``purpose="reocr"``.
+    ``model`` (validated by the tool): another loaded LM Studio model for
+    every call of this read, passed to the reader only when given."""
     reader = reader or reocr.reread_isolated
     cur = (d.get("structured_metadata") or {}).get("curated") or {}
     res: dict = {"document_id": d["id"], "result": "compared", "error": None}
@@ -131,7 +143,8 @@ def compare_one(drive, d: dict, vocab, *, reader=None, parallel: int = 1) -> dic
     res["source_matches_index"] = (md5 == cur["source_md5"]) if cur.get("source_md5") else None
     today = raw_side.decode("utf-8", errors="replace")
     rr = reader(d["filename"], source, d.get("mime_type") or "", passes=2, doc_ref=d["id"],
-                parallel=parallel, purpose="reocr")  # fmt: skip
+                parallel=parallel, purpose="reocr",
+                **({"model": model} if model is not None else {}))  # fmt: skip
     summary, warnings = reocr.report_usage(d["id"], getattr(rr, "llm_passes", None) or [])
     res.update(summary, warnings=warnings)  # #884: per-pass records (counts, sizes, sha)
     if rr.error or not any((p or "").strip() for p in rr.pages):

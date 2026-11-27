@@ -286,6 +286,7 @@ async def test_feed_shape_documents_and_unverified(db, curated_env):
     allowed = {"id", "code", "label", "at", "at_from", "at_to", "value", "value_text", "unit",
                "ref_low", "ref_high", "flag", "verification", "document_id", "page",
                "ref_source", "ref_document_id",  # the two optional keys of #899
+               "unit_source", "unit_document_id",  # where the unit comes from (#672)
                "flag_source"}  # with every flag (#929)  # fmt: skip
     for f in out["facts"]:
         assert ("ref_source" in f) == ("ref_low" in f or "ref_high" in f)
