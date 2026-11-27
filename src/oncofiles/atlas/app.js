@@ -110,7 +110,9 @@ const P = o => new T.MeshPhysicalMaterial(Object.assign({ envMapIntensity: .9 },
 const nScale = s => new T.Vector2(s, s);
 /* všetky materiály berú farbu z vrcholov: tie nesú tón tkaniva a zapečené zatienenie (ambient occlusion) */
 const M = {
-  skin: P({ color: 0xffffff, vertexColors: true, roughness: .52, sheen: .6, sheenColor: 0xffc2a8, sheenRoughness: .55, clearcoat: .12, clearcoatRoughness: .6, specularIntensity: .45, normalMap: sheenTex.normal, normalScale: nScale(.12) }),
+  /* koža z oboch strán: pri ohybe bedra okolo 90° (mŕtvy chrobák, kľak na štyroch) sa lineárne miešanie kostí
+     prevráti koža zadnej strany stehna a v podpazuší naruby; s jednou stranou tam bola vidieť diera */
+  skin: P({ side: T.DoubleSide, color: 0xffffff, vertexColors: true, roughness: .52, sheen: .6, sheenColor: 0xffc2a8, sheenRoughness: .55, clearcoat: .12, clearcoatRoughness: .6, specularIntensity: .45, normalMap: sheenTex.normal, normalScale: nScale(.12) }),
   bone: P({ color: 0xffffff, vertexColors: true, roughness: 1, roughnessMap: boneTex.rough, normalMap: boneTex.normal, normalScale: nScale(.4), map: boneTex.albedo, clearcoat: .1, clearcoatRoughness: .55, sheen: .35, sheenColor: 0xf2dcc0, sheenRoughness: .7, specularIntensity: .55 }),
   boneGhost: P({ color: 0xe6d8bd, roughness: .7, transparent: true, opacity: .14, depthWrite: false }),
   cart: P({ color: 0xd2e2ea, vertexColors: true, roughness: .22, normalMap: sheenTex.normal, normalScale: nScale(.08), clearcoat: 1, clearcoatRoughness: .08, sheen: .5, sheenColor: 0xbfe1ff, sheenRoughness: .35, transparent: true, opacity: .9 }),
@@ -360,10 +362,17 @@ function buildFigure(D) {
   const body = new T.SkinnedMesh(geo, M.skin); body.castShadow = true; body.receiveShadow = true; body.frustumCulled = false;
   G.add(body); G.updateMatrixWorld(true);
   const skeleton = new T.Skeleton(JN.map(k => J[k])); body.bind(skeleton);
+  /* vnútorná strana stehna (normála k strednej čiare tela) sa nezvýrazňuje: hlboko v slabine, v tieni,
+     tmavočervená pôsobila ako rana; cviky zvýrazňujú prednú, zadnú alebo bočnú stranu */
+  const nor = geo.attributes.normal, thighJ = { [JN.indexOf('lHip')]: -Math.sign(X.joints.lHip[0]), [JN.indexOf('rHip')]: -Math.sign(X.joints.rHip[0]) };
   function highlight(names) {
     const on = new Set(names.map(k => JN.indexOf(PART[k])));
     for (let v = 0; v < n; v++) {
-      let t = 0; for (let k = 0; k < 4; k++) if (on.has(ji[v * 4 + k])) t += sw[v * 4 + k];
+      let t = 0;
+      for (let k = 0; k < 4; k++) {
+        const j = ji[v * 4 + k]; if (!on.has(j)) continue;
+        const side = thighJ[j]; t += sw[v * 4 + k] * (side ? 1 - sstep(.15, .6, side * nor.getX(v)) : 1);
+      }
       _col.copy(C.skin).lerp(C.skinShade, clamp(cav[v] * 1.6, 0, .7)).lerp(C.skinHL, .72 * smooth(t));
       const f = clamp(1 - .5 * cav[v], .72, 1.06);
       col[v * 3] = _col.r * f; col[v * 3 + 1] = _col.g * f; col[v * 3 + 2] = _col.b * f;
