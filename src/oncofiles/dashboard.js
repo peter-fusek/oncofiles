@@ -4938,7 +4938,7 @@
     var THUMB_BATCH = 24;
     var DOC_VIEW_KEY = 'oncofiles_doc_view';
     var SVG_NS = 'http://www.w3.org/2000/svg';
-    var docView = readDocView();       // list | grid, remembered per browser
+    var docView = readDocView();       // grid (default) | list, remembered per browser
     var thumbCache = new Map();        // 'id:s' | 'id:l' -> {src, src_en?} | null (no preview)
     var thumbWanted = [];              // small previews to ask for, in order
     var thumbInFlight = [];            // cache keys ('id:size') of the one request under way
@@ -4958,8 +4958,9 @@
     };
 
     function readDocView() {
-      try { return localStorage.getItem(DOC_VIEW_KEY) === 'grid' ? 'grid' : 'list'; }
-      catch (e) { return 'list'; }
+      // grid by default (maintainer 2026-11-27); a remembered "list" stays
+      try { return localStorage.getItem(DOC_VIEW_KEY) === 'list' ? 'list' : 'grid'; }
+      catch (e) { return 'grid'; }
     }
 
     function findDoc(id) {
