@@ -416,6 +416,7 @@ def _vision_passes(
     content: bytes, ext: str, dpis: list[int], client, *, parallel: int = 1,
     second_pass_pages: Collection[int] | None = None, adaptive: bool = False,
     usage: list[dict] | None = None, retry_thin: bool = False, diag: dict | None = None,
+    model: str | None = None,
 ) -> list[list[str | None]]:  # fmt: skip
     """One answer list per DPI. Memory-bounded (#667): one page is rendered,
     sent and freed at a time. With ``parallel`` ≥ 2 (#593) the passes of that
@@ -461,6 +462,12 @@ def _vision_passes(
     prompt; the longer answer stands. A blank page (``is_blank``) is never
     retried. Only ``llm.chat``'s return value (the ``content`` channel) is
     ever used as text; ``info`` is read for token counts only.
+
+    ``model`` (``None`` = ``LOCAL_LLM_MODEL``): another loaded LM Studio model
+    for every call of this read (passes, halves, the retry, the orientation
+    question and its probe readings). Only the dry re-OCR compare passes it
+    (validated by the tool first); it is sent only when given, so every
+    production request body is unchanged, and the usage records then carry it.
     """
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -472,6 +479,7 @@ def _vision_passes(
     retried: set[int] = set()  # 1-based pages with a thinking-off retry
 
     tiles = second_pass_tiles()
+    over = {"model": model} if model is not None else {}
 
     def call(part: dict, i: int, total: int, k: int = 0, retry: bool = False,
              probe: bool = False, tile: tuple[int, int] | None = None,
@@ -496,6 +504,7 @@ def _vision_passes(
                 client=client,
                 info=info,
                 **mode,
+                **over,
             )
             return text, (info.get("reasoning_tokens"), info.get("completion_tokens"))
         except Exception as exc:
@@ -516,6 +525,7 @@ def _vision_passes(
                         rec.update(tile=tile[0], tiles=tile[1])
                     if meta:
                         rec.update(meta)
+                    rec.update(over)
                     with lock:
                         usage.append(rec)
                 except Exception as rec_exc:
@@ -560,10 +570,10 @@ def _vision_passes(
             asked[0] += 1
             record: dict = {}
             try:
-                return orientation.ask_rotation(image, client=client, record=record)
+                return orientation.ask_rotation(image, client=client, record=record, **over)
             finally:
                 if usage is not None and record:  # #882: the question itself, counts only
-                    rec = {"page": i + 1, "pass": 0, "kind": "orientation", **record}
+                    rec = {"page": i + 1, "pass": 0, "kind": "orientation", **record, **over}
                     if recheck:
                         rec["recheck"] = True
                     with lock:
@@ -816,15 +826,18 @@ def reocr_dpis(passes: int, purpose: str = "reocr") -> list[int]:
 def reread(
     name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None,
     parallel: int = 1, second_pass_pages: Collection[int] | None = None,
-    purpose: str = "reocr",
+    purpose: str = "reocr", model: str | None = None,
 ) -> Reread:  # fmt: skip
     """Read a source again, locally. Never raises. ``doc_ref`` (a document id)
     is what logs show: filenames can carry names or diagnoses.
     ``second_pass_pages`` (1-based, ``None`` = all): see ``_vision_passes``;
     only the verify-only re-read passes it, and only in adaptive mode.
     ``purpose``: "reocr" (default, text written back) or "reread" (verify-only);
-    it picks the dpi settings (``reocr_dpis``)."""
+    it picks the dpi settings (``reocr_dpis``).
+    ``model``: see ``_vision_passes`` (dry re-OCR compare only); the
+    ``engine`` then names that model."""
     ext = extract_mod._ext(name)
+    engine = model or llm.model_id()
     usage: list[dict] = []  # per-pass LLM usage (#800), kept also when a pass fails
     try:
         if ext in extract_mod.TEXT_EXTS:
@@ -849,7 +862,7 @@ def reread(
             answers = _vision_passes(
                 content, ext, dpis, client, parallel=parallel, adaptive=adaptive,
                 second_pass_pages=second_pass_pages if adaptive else None, usage=usage,
-                retry_thin=purpose == "reocr", diag=diag,
+                retry_thin=purpose == "reocr", diag=diag, model=model,
             )  # fmt: skip
         seconds = round(time.monotonic() - t0, 1)
         first, hand = _strip_handwritten(answers[0])
@@ -862,7 +875,7 @@ def reread(
             first, flagged = reconcile(first, second)
             per_page = [1 if s is None else 2 for s in second]
             skipped = [i for i, s in enumerate(second, start=1) if s is None]
-        return Reread(first, "vision2" if passes >= 2 else "vision", llm.model_id(), hand, flagged,
+        return Reread(first, "vision2" if passes >= 2 else "vision", engine, hand, flagged,
                       seconds=seconds, parallel=parallel, dpi=dpis, passes_per_page=per_page,
                       skipped_second_pass_pages=skipped, llm_passes=usage,
                       page_ink=diag.get("page_ink", []),
@@ -874,7 +887,7 @@ def reread(
                       chart_pages=charts, rotated_region_pages=regions,
                       ocr_version=extract_mod.OCR_VERSION)  # fmt: skip
     except llm.LocalLLMError as exc:
-        return Reread([], "none", llm.model_id(), error=str(exc),
+        return Reread([], "none", engine, error=str(exc),
                       llm_passes=_by_page_and_pass(usage))  # fmt: skip
     except Exception as exc:  # corrupt file, codec, …
         logger.warning("re-OCR failed for doc %s", doc_ref, exc_info=True)
@@ -885,7 +898,7 @@ def reread(
 def reread_isolated(
     name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None,
     parallel: int = 1, second_pass_pages: Collection[int] | None = None,
-    purpose: str = "reocr",
+    purpose: str = "reocr", model: str | None = None,
 ) -> Reread:  # fmt: skip
     """``reread`` in a short-lived child process (#667).
 
@@ -893,7 +906,8 @@ def reread_isolated(
     the server's RSS returns to its baseline after every document. The child
     (``reocr_child``) gets only an allowlisted environment, never a secret, and
     reads inside ``local_only``. Never raises: a failed child is a failed
-    document, not a failed job."""
+    document, not a failed job. ``model`` (dry re-OCR compare only) rides in
+    the header only when given, so every production header is unchanged."""
     import json as _json
     import subprocess
     import sys
@@ -912,6 +926,7 @@ def reread_isolated(
                 "second_pass_pages": (
                     None if second_pass_pages is None else sorted(second_pass_pages)
                 ),
+                **({"model": model} if model is not None else {}),
             },
             default=str,  # fmt: skip
         ).encode()

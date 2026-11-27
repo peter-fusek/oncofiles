@@ -344,7 +344,9 @@ def parse_orientation(answer: str | None) -> Guess:
     return Guess(angle, obj["confident"])
 
 
-def ask_rotation(png: bytes, *, client=None, record: dict | None = None) -> Guess:
+def ask_rotation(
+    png: bytes, *, client=None, record: dict | None = None, model: str | None = None
+) -> Guess:
     """The model's report of how the page is turned (never a transcription).
     A per-call failure is "no answer", which makes the caller read both ways;
     an unreachable model fails again on the transcription call itself.
@@ -353,7 +355,10 @@ def ask_rotation(png: bytes, *, client=None, record: dict | None = None) -> Gues
     ``seconds``, ``prompt_tokens``, ``completion_tokens``, ``reasoning_tokens``,
     ``finish``, ``valid`` (a parseable answer), ``confident``, the sent image's
     ``width`` / ``height``, and ``error`` (exception class) on a failure.
-    Never the answer text."""
+    Never the answer text.
+    ``model`` (``None`` = ``LOCAL_LLM_MODEL``): another loaded LM Studio model
+    for this call only; only the dry re-OCR compare passes it, and only then
+    is it sent, so every production request is unchanged."""
     try:
         small = _render(png, 0, ORIENT_MAX_SIDE)
     except Exception as exc:  # not a decodable image: nothing to ask about
@@ -370,6 +375,7 @@ def ask_rotation(png: bytes, *, client=None, record: dict | None = None) -> Gues
             thinking=False,
             client=client,
             **({"info": info} if info is not None else {}),
+            **({"model": model} if model is not None else {}),
         )
         guess = parse_orientation(answer)
     except llm.LocalLLMError as exc:
