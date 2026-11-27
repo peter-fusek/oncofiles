@@ -35,6 +35,7 @@ from oncofiles import (
     erase_retention,
     holding_loops,
     inbound_loop,
+    memory_check_loop,
     oauth_cleanup_loop,
 )
 
@@ -226,12 +227,15 @@ CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
         "Úvodný import kalendára po štarte servera",
         "Initial calendar import after the server starts",
     ),
-    "memory_check": (
+    # Lifespan loop (oncofiles.memory_check_loop), not an APScheduler job (#999).
+    memory_check_loop.JOB_ID: (
         "infra",
         "Kontrola pamäte",
         "Memory monitor",
-        "Kontrola RSS pamäte, uvoľnenie alebo riadený reštart pri prahu",
-        "Check RSS memory, reclaim or restart gracefully at the threshold",
+        "Kontrola RSS pamäte, uvoľnenie alebo riadený reštart pri prahu "
+        "(beží aj pri SYNC_ENABLED=false)",
+        "Check RSS memory, reclaim or restart gracefully at the threshold "
+        "(runs also with SYNC_ENABLED=false)",
     ),
 }
 
@@ -248,12 +252,14 @@ _NIGHTLY_ONLY = {"nightly_ai_pipeline", "weekly_discovery_pipeline"}
 # Catalogue ids that are lifespan loops, not APScheduler jobs: they run whatever
 # SYNC_ENABLED says, so the scheduler's off reason never applies to them (#856).
 # The loops on oncofiles.interval_job (IntervalJob, and DailyJob for the
-# access log retention and the OAuth token cleanup) by job id.
+# access log retention and the OAuth token cleanup; IntervalJob for the
+# memory check) by job id.
 INTERVAL_LOOPS = {
     **holding_loops.JOBS,
     **inbound_loop.JOBS,
     **access_log_loop.JOBS,
     **oauth_cleanup_loop.JOBS,
+    **memory_check_loop.JOBS,
 }
 BACKGROUND_LOOP_JOBS = {erase_retention.JOB_ID, *INTERVAL_LOOPS}
 
