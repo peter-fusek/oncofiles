@@ -218,9 +218,9 @@ _COPY: dict[str, dict] = {
         "video_label": "Video: ukážka pohybového atlasu",
         "h1": "Z lekárskych správ interaktívne 3D vysvetlenie",
         "lede": (
-            "Oncofiles nie je len pre onkologických pacientov. Inak zdravý človek ho môže "
-            "použiť ako zdroj faktov pre vysvetlenie bežného zdravotného problému a pre návrhy "
-            "cvikov, ktoré si vezme k fyzioterapeutovi."
+            "Oncofiles nie je len pre onkologických pacientov. Tu si človek s ťažkosťami s "
+            "chrbtom, kolenom a ramenom nechal v Claude zo svojich ortopedických správ postaviť "
+            "3D model nálezu a cviky, ktoré si vezme k fyzioterapeutovi."
         ),
         "real": (
             "<p><b>Skutočný prípad, nie ukážkové dáta.</b> Ide o vlastný nález Petra Fuseka, "
@@ -334,9 +334,9 @@ _COPY: dict[str, dict] = {
         "video_label": "Video: the movement atlas in use",
         "h1": "From medical reports to an interactive 3D explanation",
         "lede": (
-            "Oncofiles is not only for oncology patients. An otherwise healthy person can use it "
-            "as the source of facts for an explanation of an everyday health problem, and for "
-            "exercise suggestions to take to a physiotherapist."
+            "Oncofiles is not only for oncology patients. Here a person with back, knee and "
+            "shoulder trouble had Claude turn his orthopaedic reports into a 3D model of the "
+            "findings and exercises to take to a physiotherapist."
         ),
         "real": (
             "<p><b>A real case, not demo data.</b> These are the own findings of Peter Fusek, "

@@ -133,7 +133,7 @@
  <strong class="notice-title" data-sk="Dedičná genetika:" data-en="Hereditary genetics:">Dedičná genetika:</strong>
  <span id="germline-findings-list" style="flex:1"></span>
  </div>
- <div class="notice-foot" data-sk="Informatívne. Potvrďte s onkológom — nie je to automaticky spôsobilosť na terapiu." data-en="Informational. Confirm with your oncologist — this is not automatic therapy eligibility.">Informatívne. Potvrďte s onkológom — nie je to automaticky spôsobilosť na terapiu.</div>
+ <div class="notice-foot" data-sk="Len na informáciu. Overte s onkológom: samotný nález ešte neznamená, že je pre vás vhodná konkrétna liečba." data-en="For information only. Check with your oncologist: a finding alone does not mean a specific treatment is right for you.">Len na informáciu. Overte s onkológom: samotný nález ešte neznamená, že je pre vás vhodná konkrétna liečba.</div>
  </div>
  <div id="error-banner" class="error-banner">
  <span id="error-text"></span>
@@ -447,7 +447,7 @@
  <!--/app-only-->
 
  <footer>
- <p class="foot-disclaimer" data-sk="Všetky údaje sú informatívne. Oncofiles nenahrádza onkológa. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom." data-en="All information is informational only. Oncofiles does not replace your oncologist. Consult your treating physician before any treatment decision.">Všetky údaje sú informatívne. Oncofiles nenahrádza onkológa. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom.</p>
+ <p class="foot-disclaimer" data-sk="Údaje slúžia na orientáciu. Oncofiles nenahrádza lekára. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom." data-en="The information here is for orientation only. Oncofiles does not replace your doctor. Talk to your treating doctor before any treatment decision.">Údaje slúžia na orientáciu. Oncofiles nenahrádza lekára. Pred akýmkoľvek rozhodnutím o liečbe sa poraďte s ošetrujúcim lekárom.</p>
  <a href="/">Oncofiles</a> &middot; <a href="/health" data-sk="Stav" data-en="Status">Stav</a> &middot; <a href="/sk/privacy" data-sk-href="/sk/privacy" data-en-href="/privacy" data-sk="Súkromie" data-en="Privacy">Súkromie</a> &middot; <a href="https://github.com/peter-fusek/oncofiles" rel="noreferrer noopener">GitHub</a> &middot; <span class="version" id="version-label"></span>
  <br><span style="font-size:0.75rem"><span data-sk="Vytvorené v" data-en="Built by">Vytvorené v</span> <a href="https://www.instarea.com" rel="noreferrer noopener">Instarea</a></span>
  </footer>
@@ -531,7 +531,7 @@
  <div id="wiz-step-1">
  <h2 data-sk="Vytvoriť pacienta" data-en="Create Patient">Vytvoriť pacienta</h2>
  <!-- First visit (no patient yet, onboarding open): one sentence on the two ways in -->
- <p id="wiz-first-visit" class="wizard-folder-hint" style="display:none" data-sk="Vitajte. Dokumenty dostanete do Oncofiles dvoma spôsobmi: hneď teraz vyberiete priečinok na Google Drive, v ktorom už dokumentáciu máte, alebo, keď to spustíme, pošlete e-mail s prílohou z Gmailu; najprv vytvorte pacienta." data-en="Welcome. There are two ways to get documents into Oncofiles: pick the Google Drive folder that already holds them right now, or, once it is live, send an e-mail with an attachment from Gmail; first create the patient.">Vitajte. Dokumenty dostanete do Oncofiles dvoma spôsobmi: hneď teraz vyberiete priečinok na Google Drive, v ktorom už dokumentáciu máte, alebo, keď to spustíme, pošlete e-mail s prílohou z Gmailu; najprv vytvorte pacienta.</p>
+ <p id="wiz-first-visit" class="wizard-folder-hint" style="display:none" data-sk="Vitajte. Najprv vytvorte pacienta. Potom vyberiete priečinok na Google Drive, v ktorom už dokumentáciu máte. Keď spustíme príjem pošty, budete môcť dokumenty posielať aj e-mailom s prílohou z Gmailu." data-en="Welcome. First create the patient. Then pick the Google Drive folder that already holds the documents. Once mail intake is live, you will also be able to send documents as an e-mail attachment from Gmail.">Vitajte. Najprv vytvorte pacienta. Potom vyberiete priečinok na Google Drive, v ktorom už dokumentáciu máte. Keď spustíme príjem pošty, budete môcť dokumenty posielať aj e-mailom s prílohou z Gmailu.</p>
  <div class="wizard-field">
  <label for="wiz-name" data-sk="Meno pacienta *" data-en="Patient name *">Meno pacienta *</label>
  <input type="text" id="wiz-name" placeholder="napr. Meno Priezvisko" data-sk-placeholder="napr. Meno Priezvisko" data-en-placeholder="e.g. First Last" required>
@@ -586,7 +586,7 @@
  <p id="wiz-context-warning" role="alert" style="color:var(--amber);font-size:0.8125rem;margin-bottom:1rem;display:none" data-sk="Pacient bol vytvorený, ale typ pacienta a dátum narodenia sa nepodarilo uložiť. Nastavte ich prosím neskôr znova." data-en="The patient was created, but the patient type and date of birth could not be saved. Please set them again later.">Pacient bol vytvorený, ale typ pacienta a dátum narodenia sa nepodarilo uložiť. Nastavte ich prosím neskôr znova.</p>
  <!-- Bearer token is opt-in (#824): nothing is minted until the button is clicked -->
  <div id="wiz-token-section" style="margin-bottom:1rem">
- <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:0.5rem" data-sk="Bearer token (voliteľné): potrebný iba pre Claude Desktop, Cursor alebo vlastné skripty. Claude.ai a ChatGPT sa pripájajú cez OAuth bez tokenu." data-en="Bearer token (optional): only needed for Claude Desktop, Cursor or custom scripts. Claude.ai and ChatGPT connect via OAuth without a token.">Bearer token (voliteľné): potrebný iba pre Claude Desktop, Cursor alebo vlastné skripty. Claude.ai a ChatGPT sa pripájajú cez OAuth bez tokenu.</p>
+ <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:0.5rem" data-sk="Bearer token (voliteľné): potrebný iba pre Claude Desktop, Cursor alebo vlastné skripty. Claude.ai a ChatGPT sa pripájajú prihlásením cez Google, bez tokenu." data-en="Bearer token (optional): only needed for Claude Desktop, Cursor or your own scripts. Claude.ai and ChatGPT connect by signing in with Google, without a token.">Bearer token (voliteľné): potrebný iba pre Claude Desktop, Cursor alebo vlastné skripty. Claude.ai a ChatGPT sa pripájajú prihlásením cez Google, bez tokenu.</p>
  <button class="wizard-btn-secondary" id="wiz-token-gen" data-action="wizardGenerateToken" data-sk="Vygenerovať token" data-en="Generate token">Vygenerovať token</button>
  <div class="wizard-token-box" id="wiz-token-display" style="display:none"></div>
  <p id="wiz-token-warning" style="color:var(--amber);font-size:0.75rem;display:none" data-sk="Uložte si tento bearer token — znova sa nezobrazí." data-en="Save this bearer token now — it will not be shown again.">Uložte si tento bearer token — znova sa nezobrazí.</p>
@@ -665,7 +665,7 @@
  <div id="wiz-step3-legacy">
  <h2 data-sk="Prvá synchronizácia" data-en="First Sync">Prvá synchronizácia</h2>
  <p style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Importujte dokumenty z vášho Google Drive priečinka." data-en="Import documents from your Google Drive folder.">Importujte dokumenty z vášho Google Drive priečinka.</p>
- <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7" data-sk="Prečíta vaše súbory, spustí OCR na skeny, vygeneruje AI súhrny a zorganizuje všetko podľa dátumu a kategórie. Potom sa synchy spúšťajú automaticky každých 5 minút." data-en="This reads your files, runs OCR on scans, generates AI summaries, and organizes everything by date and category. After this, syncs run automatically every 5 minutes.">Prečíta vaše súbory, spustí OCR na skeny, vygeneruje AI súhrny a zorganizuje všetko podľa dátumu a kategórie. Potom sa synchy spúšťajú automaticky každých 5 minút.</p>
+ <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:1rem;opacity:0.7" data-sk="Načíta súbory z vybraného priečinka do Oncofiles. Súbory pridané neskôr prinesie ďalšia synchronizácia (tlačidlo Synchronizovať)." data-en="This imports the files in the chosen folder into Oncofiles. Files added later come in with the next sync (the Sync now button).">Načíta súbory z vybraného priečinka do Oncofiles. Súbory pridané neskôr prinesie ďalšia synchronizácia (tlačidlo Synchronizovať).</p>
  <div class="wizard-actions">
  <button class="wizard-btn-secondary" data-action="wizardSkipToEnd" data-sk="Preskočiť" data-en="Skip">Preskočiť</button>
  <button class="wizard-btn-primary" id="wiz-sync-btn" data-action="wizardStep3Sync" data-sk="Spustiť prvú synchronizáciu" data-en="Start First Sync">Spustiť prvú synchronizáciu</button>
@@ -675,7 +675,7 @@
  <!-- Curated folder (#835): the legacy first sync skips it, so do not offer it -->
  <div id="wiz-step3-curated" style="display:none">
  <h2 data-sk="Priečinok pripojený" data-en="Folder connected">Priečinok pripojený</h2>
- <p id="wiz-step3-curated-root" style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Tento priečinok spracúva kurátorovaná pipeline (lokálne OCR). Nové súbory v jeho priečinku inbox sa spracujú automaticky v priebehu niekoľkých minút." data-en="This folder is processed by the curated pipeline (local OCR). New files in its inbox are picked up automatically within a few minutes.">Tento priečinok spracúva kurátorovaná pipeline (lokálne OCR). Nové súbory v jeho priečinku inbox sa spracujú automaticky v priebehu niekoľkých minút.</p>
+ <p id="wiz-step3-curated-root" style="color:var(--text-muted);font-size:0.875rem;margin-bottom:0.5rem" data-sk="Súbory v tomto priečinku číta lokálny model na našom serveri. Nové súbory v jeho priečinku inbox sa začnú spracúvať automaticky do niekoľkých minút." data-en="The files in this folder are read by the local model on our server. New files in its inbox are picked up automatically within a few minutes.">Súbory v tomto priečinku číta lokálny model na našom serveri. Nové súbory v jeho priečinku inbox sa začnú spracúvať automaticky do niekoľkých minút.</p>
  <p id="wiz-step3-pipeline" class="wizard-folder-note" style="display:none"></p>
  <p id="wiz-step3-curated-overlap" style="color:var(--amber);font-size:0.875rem;margin-bottom:0.5rem;display:none" data-sk="Tento priečinok sa prekrýva s priečinkom, ktorý má vlastný kontrakt README, preto je preň synchronizácia vypnutá a nič sa z neho automaticky nespracuje. Ak ste chceli priečinok pacienta, pripojte priamo ten." data-en="This folder overlaps a folder with its own README contract, so sync is switched off for it and nothing in it is processed automatically. If you meant the patient's folder, connect that one directly.">Tento priečinok sa prekrýva s priečinkom, ktorý má vlastný kontrakt README, preto je preň synchronizácia vypnutá a nič sa z neho automaticky nespracuje. Ak ste chceli priečinok pacienta, pripojte priamo ten.</p>
  <div class="wizard-actions">
@@ -694,7 +694,7 @@
  <div style="margin:1.5rem 0;padding:1rem;border:1px solid var(--border);border-radius:10px">
  <h3 style="font-size:1rem;margin-bottom:0.5rem" data-sk="Pripojiť AI asistenta (voliteľné)" data-en="Connect an AI assistant (optional)">Pripojiť AI asistenta (voliteľné)</h3>
  <p role="note" class="wizard-warn-box" style="font-size:0.8125rem;margin-bottom:0.5rem;font-weight:600" data-sk="Pozor: toto NEVKLADAJTE do chatu — patrí do nastavení (Settings) v Claude.ai alebo ChatGPT." data-en="Heads-up: do NOT paste this into the chat — it goes into Settings in Claude.ai or ChatGPT.">Pozor: toto NEVKLADAJTE do chatu — patrí do nastavení (Settings) v Claude.ai alebo ChatGPT.</p>
- <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:0.75rem" data-sk="Ak neplánujete používať AI chat, stačí kliknúť „Prejsť na Dashboard" – dashboard funguje aj bez pripojenia." data-en="If you don't plan to use an AI chat, just click „Go to Dashboard" below — the dashboard works without this.">Ak neplánujete používať AI chat, stačí kliknúť „Prejsť na Dashboard" – dashboard funguje aj bez pripojenia.</p>
+ <p style="color:var(--text-muted);font-size:0.75rem;margin-bottom:0.75rem" data-sk="Ak AI chat používať nechcete, kliknite nižšie na „Prejsť na Dashboard“. Dashboard funguje aj bez pripojenia." data-en="If you do not want to use an AI chat, click “Go to Dashboard” below. The dashboard works without this.">Ak AI chat používať nechcete, kliknite nižšie na „Prejsť na Dashboard“. Dashboard funguje aj bez pripojenia.</p>
  <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem">
  <span style="font-size:0.75rem;color:var(--text-muted);min-width:70px">Server URL</span>
  <code id="wiz-mcp-url" style="flex:1;font-size:0.8rem;background:var(--bg-2);padding:4px 8px;border-radius:4px">https://oncofiles.com/mcp</code>
@@ -708,17 +708,17 @@
  <details style="margin-top:0.5rem">
  <summary style="cursor:pointer;font-size:0.8125rem;color:var(--accent);font-weight:600" data-sk="Ako pripojiť – krok za krokom ▾" data-en="How to connect — step by step ▾">Ako pripojiť – krok za krokom ▾</summary>
  <div style="font-size:0.8125rem;color:var(--text-muted);margin-top:0.75rem;line-height:1.7">
- <p style="font-weight:600;margin-bottom:0.25rem" data-sk="Claude.ai (web) – OAuth, bez tokenu:" data-en="Claude.ai (web) – OAuth, no token:">Claude.ai (web) – OAuth, bez tokenu:</p>
+ <p style="font-weight:600;margin-bottom:0.25rem" data-sk="Claude.ai (web) – prihlásenie cez Google, bez tokenu:" data-en="Claude.ai (web) – sign in with Google, no token:">Claude.ai (web) – prihlásenie cez Google, bez tokenu:</p>
  <ol style="padding-left:1.25rem;margin-bottom:0.75rem">
- <li data-sk="claude.ai → Settings → Connectors → „Add custom connector"" data-en="claude.ai → Settings → Connectors → „Add custom connector"">claude.ai → Settings → Connectors → „Add custom connector"</li>
- <li data-sk="Name: Oncofiles, Remote MCP server URL vyššie (Copy)" data-en="Name: Oncofiles, paste the Remote MCP server URL above (Copy)">Name: Oncofiles, Remote MCP server URL vyššie (Copy)</li>
- <li data-sk="OAuth Client ID / Secret nechajte prázdne – server rieši DCR" data-en="Leave OAuth Client ID / Secret blank — server handles DCR">OAuth Client ID / Secret nechajte prázdne – server rieši DCR</li>
+ <li data-sk="claude.ai → Settings → Connectors → „Add custom connector“" data-en="claude.ai → Settings → Connectors → “Add custom connector”">claude.ai → Settings → Connectors → „Add custom connector“</li>
+ <li data-sk="Name: Oncofiles; do poľa Remote MCP server URL vložte adresu vyššie (Kopírovať)" data-en="Name: Oncofiles; paste the Server URL above into Remote MCP server URL (Copy)">Name: Oncofiles; do poľa Remote MCP server URL vložte adresu vyššie (Kopírovať)</li>
+ <li data-sk="OAuth Client ID / Secret nechajte prázdne – Claude.ai sa na serveri zaregistruje sám" data-en="Leave OAuth Client ID / Secret blank — Claude.ai registers itself with the server">OAuth Client ID / Secret nechajte prázdne – Claude.ai sa na serveri zaregistruje sám</li>
  <li data-sk="Add → prihláste sa cez Google účet → povoľte v projekte" data-en="Add → sign in with your Google account → enable in the project">Add → prihláste sa cez Google účet → povoľte v projekte</li>
  </ol>
- <p style="font-weight:600;margin-bottom:0.25rem" data-sk="ChatGPT – tiež OAuth:" data-en="ChatGPT – OAuth too:">ChatGPT – tiež OAuth:</p>
+ <p style="font-weight:600;margin-bottom:0.25rem" data-sk="ChatGPT – tiež prihlásenie cez Google:" data-en="ChatGPT – also sign in with Google:">ChatGPT – tiež prihlásenie cez Google:</p>
  <ol style="padding-left:1.25rem;margin-bottom:0.75rem">
  <li data-sk="Settings → Connectors → Advanced → povoľte MCP (Developer Mode)" data-en="Settings → Connectors → Advanced → enable MCP (Developer Mode)">Settings → Connectors → Advanced → povoľte MCP (Developer Mode)</li>
- <li data-sk="„Add server" → Server URL vyššie → prihláste cez Google" data-en="„Add server" → paste Server URL above → sign in with Google">„Add server" → Server URL vyššie → prihláste cez Google</li>
+ <li data-sk="„Add server“ → vložte adresu vyššie → prihláste sa cez Google" data-en="“Add server” → paste the Server URL above → sign in with Google">„Add server“ → vložte adresu vyššie → prihláste sa cez Google</li>
  </ol>
  <p style="font-weight:600;margin-bottom:0.25rem" data-sk="Bearer token – iba pre Claude Desktop / Cursor / vlastné skripty:" data-en="Bearer token – only for Claude Desktop / Cursor / custom scripts:">Bearer token – iba pre Claude Desktop / Cursor / vlastné skripty:</p>
  <p style="margin-top:0.25rem;opacity:0.85" data-sk="Do claude_desktop_config.json ako Authorization: Bearer onco_... – nikdy nie do chatu/prompt. V claude.ai web sa token nepoužíva." data-en="Into claude_desktop_config.json as Authorization: Bearer onco_... – never into a chat/prompt. claude.ai web does not use a token.">Do claude_desktop_config.json ako Authorization: Bearer onco_... – nikdy nie do chatu/prompt. V claude.ai web sa token nepoužíva.</p>
