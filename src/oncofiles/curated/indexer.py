@@ -53,7 +53,9 @@ INDEX_ENGINE = "curated-sidecar"
 #      doc_date_precision "month" and doc_month "YYYY-MM" in the metadata
 # v26: a month-only "YYYY-MM-…" filename (a monthly note such as a conversation
 #      log) is dated by month like a YYYYMM00 name; a full "YYYY-MM-DD" is not
-INDEX_VERSION = 26
+# v27: the calculated TSAT / TIBC labels have their own codes TSAT_CALC /
+#      TIBC_CALC (migration 105, #672), so one draw no longer gives two points
+INDEX_VERSION = 27
 TEXT_SOURCE_EXTS = {"md", "txt", "csv", "json"}
 MAX_TEXT_SOURCE_BYTES = 512 * 1024
 _PAGE_RE = re.compile(r"^<!-- page (\d+) -->\s*$", re.M)
