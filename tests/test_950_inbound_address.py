@@ -1320,6 +1320,36 @@ async def test_disabled_route_is_404_before_reading_even_when_oversize(idb, monk
     assert exc.value.status_code == 404 and body.read is False
 
 
+@pytest.mark.parametrize("route", ["email", "brevo"])
+@pytest.mark.parametrize("method", ["GET", "HEAD", "PUT", "OPTIONS", "DELETE"])
+@pytest.mark.parametrize("suffix", ["", "/"])
+async def test_router_never_reveals_the_webhook(monkeypatch, route, method, suffix):
+    """Pentest 2026-11-27: the router answered GET with ``405 Allow: POST`` and
+    the slash form with a 307. Now any other method and the slash form are the
+    unknown path's 404 even with a valid token (full matrix over the
+    production middleware: tests/test_hidden_routes.py)."""
+    import httpx
+    from fastmcp.server.auth.auth import ClientRegistrationOptions
+
+    from oncofiles.persistent_oauth import PersistentOAuthProvider
+
+    provider = PersistentOAuthProvider(
+        bearer_token="synthetic-bearer-950",
+        base_url="https://example.test",
+        client_registration_options=ClientRegistrationOptions(enabled=True),
+    )
+    monkeypatch.setattr(server.mcp, "auth", provider)
+    app = server.mcp.http_app(transport="streamable-http", stateless_http=True)
+    headers = {inbound_email.BREVO_TOKEN_HEADER: BREVO_SECRET}
+    transport = httpx.ASGITransport(app=app, client=("203.0.113.9", 40950))
+    async with httpx.AsyncClient(transport=transport, base_url="http://example.test") as http:
+        hidden = await http.request(method, f"/inbound/{route}{suffix}", headers=headers)
+        unknown = await http.request(method, f"/inbound/no-such-{route}{suffix}", headers=headers)
+    assert hidden.status_code == unknown.status_code == 404
+    assert sorted(hidden.headers.multi_items()) == sorted(unknown.headers.multi_items())
+    assert hidden.content == unknown.content
+
+
 async def test_brevo_wrong_token_is_404_before_reading(idb):
     body = _Body(b"x" * 64)
     headers = {"content-length": str(10**12), inbound_email.BREVO_TOKEN_HEADER: "wrong"}
