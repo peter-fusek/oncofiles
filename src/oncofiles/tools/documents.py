@@ -691,19 +691,39 @@ async def get_document_versions(ctx: Context, doc_id: int, patient_slug: str | N
 
 
 RELATED_DOCUMENTS_NONE_NOTE = (
-    "No cross-referenced documents are stored for this document. Links are not created "
-    "automatically at the moment; use timeline or encounter_detail to find documents "
-    "of the same day or visit."
+    "No related documents found. same_visit links are computed only for a document with a "
+    "date and a known institution; other links (related, follow_up) are not created "
+    "automatically at the moment. Use timeline or encounter_detail to find documents of "
+    "the same day or visit."
 )
+
+# Basis of a link computed at read time (#930), as opposed to a stored one.
+SAME_VISIT_BASIS = "same_date_and_institution"
+SAME_VISIT_LIMIT = 50
+
+
+def _same_visit_institution(institution: str | None) -> str | None:
+    """The institution usable for the same-visit rule, or None (empty / Unknown)."""
+    value = (institution or "").strip()
+    if not value or value.lower() == "unknown":
+        return None
+    return value
 
 
 async def get_related_documents(ctx: Context, doc_id: int, patient_slug: str | None = None) -> str:
-    """Get documents cross-referenced with the given document.
+    """Get documents related to the given document.
 
-    Returns related documents from stored cross-references, each with the
-    relationship type and a confidence score. No local path writes
-    cross-references today (#930), so an empty list comes with an explicit
-    `note`; links are never invented.
+    Two sources (#930), never a model call and never an invented link:
+    - `same_visit`, computed at read time: other documents of the same patient
+      with the same document date and the same institution (trimmed,
+      case-insensitive; a missing or `Unknown` institution or a missing date
+      gives no such link). These carry `basis: "same_date_and_institution"`
+      and `source: "computed"`, with confidence 1.0 for the rule itself
+      (it says nothing about the content).
+    - stored cross-references (`source: "stored"`), which no local path
+      writes today. A stored link to the same document wins over the
+      computed one.
+    An empty result comes with an explicit `note`.
 
     Args:
         doc_id: The integer database ID of the document.
@@ -746,8 +766,42 @@ async def get_related_documents(ctx: Context, doc_id: int, patient_slug: str | N
                 "gdrive_url": _gdrive_url(related.gdrive_id),
                 "relationship": ref["relationship"],
                 "confidence": ref["confidence"],
+                "source": "stored",
             }
         )
+
+    # Deterministic same-visit links, computed locally at read time (#930).
+    institution = _same_visit_institution(doc.institution)
+    if doc.document_date and institution:
+        seen = {item["id"] for item in items}
+        same_visit = await db.find_same_visit_documents(
+            doc_id,
+            patient_id=pid,
+            document_date=doc.document_date.isoformat(),
+            institution=institution,
+            limit=SAME_VISIT_LIMIT,
+        )
+        for other in same_visit:
+            if other.id in seen:
+                continue
+            items.append(
+                {
+                    "id": other.id,
+                    "file_id": other.file_id,
+                    "filename": other.filename,
+                    "document_date": other.document_date.isoformat()
+                    if other.document_date
+                    else None,
+                    "category": other.category.value,
+                    "institution": other.institution,
+                    "gdrive_url": _gdrive_url(other.gdrive_id),
+                    "relationship": "same_visit",
+                    "confidence": 1.0,
+                    "source": "computed",
+                    "basis": SAME_VISIT_BASIS,
+                }
+            )
+
     result = {"document_id": doc_id, "related": items, "total": len(items)}
     if not items:
         result["note"] = RELATED_DOCUMENTS_NONE_NOTE

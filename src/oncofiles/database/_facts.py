@@ -629,24 +629,38 @@ class FactsMixin:
         limit: int = 200,
         exclude_entities: tuple[str, ...] = (),
     ) -> list[dict]:
-        sql = "SELECT * FROM timeline_v WHERE patient_id = ? AND at IS NOT NULL"
+        """``timeline_v`` rows, newest first, each with ``flag_source`` (#929:
+        ``printed`` | ``generic`` | None). The view has no metadata column, so a
+        flagged fact row reads its fact's metadata through a same-patient join;
+        the view itself is unchanged."""
+        from oncofiles.fact_labels import flag_source  # fact_labels imports this module
+
+        sql = (
+            "SELECT t.*, cr.metadata_json AS _flag_meta FROM timeline_v t "
+            "LEFT JOIN clinical_records cr ON t.entity = 'fact' AND t.flag IS NOT NULL "
+            "AND cr.id = t.entity_id AND cr.patient_id = t.patient_id "
+            "WHERE t.patient_id = ? AND t.at IS NOT NULL"
+        )
         params: list = [patient_id]
         if exclude_entities:
-            sql += f" AND entity NOT IN ({','.join('?' * len(exclude_entities))})"
+            sql += f" AND t.entity NOT IN ({','.join('?' * len(exclude_entities))})"
             params += list(exclude_entities)
         if date_from:
-            sql += " AND at >= ?"
+            sql += " AND t.at >= ?"
             params.append(date_from)
         if date_to:
-            sql += " AND at <= ?"
+            sql += " AND t.at <= ?"
             params.append(date_to + "~")  # include the whole end day
         if kinds:
-            sql += f" AND kind IN ({','.join('?' * len(kinds))})"
+            sql += f" AND t.kind IN ({','.join('?' * len(kinds))})"
             params += kinds
-        sql += " ORDER BY at DESC LIMIT ?"
+        sql += " ORDER BY t.at DESC LIMIT ?"
         params.append(limit)
         async with self.db.execute(sql, tuple(params)) as cur:
-            return _rows(await cur.fetchall())
+            rows = _rows(await cur.fetchall())
+        for r in rows:
+            r["flag_source"] = flag_source(r.get("flag"), r.pop("_flag_meta", None))
+        return rows
 
     async def has_timeline_facts(
         self, *, patient_id: str, exclude_entities: tuple[str, ...] = ()

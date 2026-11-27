@@ -350,6 +350,11 @@ class FactVerificationMixin:
 
         meta = _meta(old.get("metadata_json"))
         meta.pop("unverified_reasons", None)
+        if {"value_num", "value_text", "unit"} & set(changed):
+            # #929: the flag was recomputed from the fact's own printed range
+            # (a generic range is never stored), so an old ``generic`` label no
+            # longer describes it; a corrected value gets no generic flag.
+            meta.pop("flag_source", None)
         if occurred_at is not None:
             for key in _RANGE_KEYS:
                 meta.pop(key, None)

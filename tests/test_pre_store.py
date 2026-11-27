@@ -112,6 +112,55 @@ def test_retention_keeps_exactly_five_and_touches_nothing_else(tmp_path, monkeyp
     assert all((directory / n).exists() for n in bystanders)
 
 
+def _erase_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATABASE_PATH", tmp_path / "oncofiles.db")
+    directory = tmp_path / "pre-store"
+    directory.mkdir()
+    return directory
+
+
+def test_erase_copies_older_than_30_days_go_others_stay(tmp_path, monkeypatch):
+    """#856, maintainer decision 2026-11-26: an erase copy never outlives 30 days."""
+    directory = _erase_dir(tmp_path, monkeypatch)
+    now = datetime(2027, 6, 1, tzinfo=UTC)
+    old_erase = f"oncofiles-{now - timedelta(days=31):%Y%m%dT%H%M%S%f}Z-erase.db"
+    new_erase = f"oncofiles-{now - timedelta(days=29):%Y%m%dT%H%M%S%f}Z-erase.db"
+    old_other = f"oncofiles-{now - timedelta(days=60):%Y%m%dT%H%M%S%f}Z-clinical.db"
+    bystander = "notes-erase.db"
+    for n in (old_erase, new_erase, old_other, bystander):
+        (directory / n).write_text("x")
+    assert pre_store.prune_expired_erase_copies(now=now) == 1
+    assert sorted(os.listdir(directory)) == sorted([new_erase, old_other, bystander])
+
+
+def test_erase_age_limit_also_applies_when_a_new_copy_is_made(tmp_path, monkeypatch):
+    directory = _erase_dir(tmp_path, monkeypatch)
+    path = tmp_path / "oncofiles.db"
+    sqlite3.connect(path).close()
+    now = datetime(2027, 6, 1, tzinfo=UTC)
+    stale = f"oncofiles-{now - timedelta(days=45):%Y%m%dT%H%M%S%f}Z-erase.db"
+    (directory / stale).write_text("x")
+    db = MagicMock(path=str(path), _use_turso=False)
+    made = pre_store.make_copy(db, "reread", now=now)
+    assert _copies(directory) == [made]
+
+
+def test_erase_retention_without_a_directory_is_zero(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATABASE_PATH", tmp_path / "oncofiles.db")
+    assert pre_store.prune_expired_erase_copies() == 0
+
+
+def test_erase_retention_runs_as_a_lifespan_loop_not_an_apscheduler_job():
+    """#856: the only owner is the lifespan loop (tests/test_856_erase_retention_loop.py)."""
+    with open(server.__file__, encoding="utf-8") as fh:
+        src = fh.read()
+    assert 'id="pre_store_erase_retention"' not in src
+    assert "ensure_background_loop(" in src and "erase_retention_loop" in src
+    from oncofiles.scheduled_jobs import CATALOGUE
+
+    assert "pre_store_erase_retention" in CATALOGUE
+
+
 @pytest.mark.parametrize("raw", [":memory:", ""])
 def test_no_local_file_means_no_copy(raw):
     with pytest.raises(pre_store.PreStoreError):

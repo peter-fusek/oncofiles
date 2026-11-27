@@ -30,6 +30,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from oncofiles import erase_retention
+
 # Human descriptions by job id: (group, name sk, name en, desc sk, desc en).
 # A lookup only — whether a job is shown depends on the running scheduler.
 CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
@@ -116,6 +118,15 @@ CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
         "Access log retention",
         "Zmazanie záznamov prístupov do dashboardu starších ako 90 dní",
         "Delete dashboard access log rows older than 90 days",
+    ),
+    # A lifespan loop (oncofiles.erase_retention), not an APScheduler job (#856).
+    erase_retention.JOB_ID: (
+        "infra",
+        "Retencia kópií pred vymazaním",
+        "Erase copy retention",
+        "Zmazanie bezpečnostných kópií pred vymazaním pacienta starších ako 30 dní "
+        "(beží aj pri SYNC_ENABLED=false)",
+        "Delete pre-erasure safety copies older than 30 days (runs also with SYNC_ENABLED=false)",
     ),
     "inbound_queue": (
         "infra",
@@ -215,6 +226,9 @@ _LEGACY_ONLY = {
     "category_validation",
 }
 _NIGHTLY_ONLY = {"nightly_ai_pipeline", "weekly_discovery_pipeline"}
+# Catalogue ids that are lifespan loops, not APScheduler jobs: they run whatever
+# SYNC_ENABLED says, so the scheduler's off reason never applies to them (#856).
+BACKGROUND_LOOP_JOBS = {erase_retention.JOB_ID}
 
 
 def describe(job_id: str) -> dict:
@@ -368,9 +382,28 @@ def build_jobs(scheduler: Any, tracker: dict | None, flags: dict) -> dict:
     inactive = [
         {"id": job_id, **describe(job_id), **inactive_reason(job_id, flags)}
         for job_id in CATALOGUE
-        if job_id not in seen
+        if job_id not in seen and job_id not in BACKGROUND_LOOP_JOBS
     ]
     return {"jobs": jobs, "inactive": inactive}
+
+
+def background_loop_entry(job_id: str, *, running: bool, state: dict) -> dict:
+    """A lifespan loop shown in the same shape as a registered job (#856).
+
+    Running → an entry for ``jobs`` (``registered: True``, its daily slot as a
+    cron trigger, telemetry from the loop's own state); not running → an entry
+    for ``inactive`` with reason ``loop_not_running``.
+    """
+    if not running:
+        return {"id": job_id, **describe(job_id), "reason": "loop_not_running", "switch": None}
+    return {
+        "id": job_id,
+        **describe(job_id),
+        "registered": True,
+        "trigger": {"kind": "cron", "cadence": "daily", "text": erase_retention.SCHEDULE_TEXT},
+        "next_run_at": state.get("next_run_at"),
+        **_telemetry(state),
+    }
 
 
 def _max(values: list[str | None]) -> str | None:

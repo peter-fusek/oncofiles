@@ -3297,8 +3297,8 @@
              'Runs are on: every hour at most ' + n.max_runs + ' real runs (a preview once per 24 h) for patients with the switch on.']
           : ['Nočný beh je zapnutý na serveri: každú noc o ' + n.hour + ':00 (Bratislava) náhľad a potom najviac ' + n.max_runs + ' behov naostro pre pacientov so zapnutým prepínačom.',
              'The nightly run is on: every night at ' + n.hour + ':00 (Bratislava) a preview, then at most ' + n.max_runs + ' real runs for patients with the switch on.'])
-        : ['Nočný beh je na serveri vypnutý (CURATED_NIGHTLY_ENABLED). Prepínače pacientov sa uložia, ale nespustia sa.',
-           'The nightly run is off on the server (CURATED_NIGHTLY_ENABLED). Patient switches are saved but do not start anything.'];
+        : ['Automatické spracovanie je na serveri vypnuté (CURATED_NIGHTLY_ENABLED): nebeží priebežné spracovanie ani nočná kontrola. Prepínače pacientov sa uložia, ale nespustia sa.',
+           'Automatic processing is off on the server (CURATED_NIGHTLY_ENABLED): neither continuous processing nor the nightly check runs. Patient switches are saved but do not start anything.'];
       setI18n(note, noteText[0], noteText[1]);
       var body = document.getElementById('curated-ops-body');
       clearEl(body);
@@ -3336,8 +3336,13 @@
         cb.checked = !!p.nightly_enabled;
         cb.setAttribute('data-change', 'curatedNightly|' + p.patient_id + '|@this');
         lbl.appendChild(cb);
-        lbl.appendChild(coBilingual('span', ' Spracovanie zapnuté (priebežne + nočná kontrola)', ' Processing on (continuous + nightly check)'));
+        // One per-patient switch (#665): it enrols the patient in continuous
+        // processing AND the nightly sweep, so it is not labelled "nightly".
+        lbl.appendChild(coBilingual('span', ' Automatické spracovanie', ' Automatic processing'));
         actions.appendChild(lbl);
+        actions.appendChild(coBilingual('span',
+          'Nové súbory sa spracujú do niekoľkých minút, úplná kontrola beží v noci.',
+          'New files are processed within minutes; a full check runs nightly.', 'curated-ops-meta'));
         card.appendChild(actions);
         body.appendChild(card);
       });

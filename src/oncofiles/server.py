@@ -423,6 +423,20 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         mark_guard_failed()
         logger.exception("curated: guard not loaded — cloud AI refused for documents")
 
+    # #856: erase copies older than 30 days go daily at 04:35 UTC. Independent
+    # of SYNC_ENABLED/APScheduler (prod runs SYNC_ENABLED=false, #784) and of
+    # Google; this loop is the job's only owner, one per process.
+    from oncofiles.erase_retention import JOB_ID as ERASE_RETENTION_JOB
+    from oncofiles.erase_retention import erase_retention_loop
+
+    erase_retention_task, _ = scheduler_singleton.ensure_background_loop(
+        ERASE_RETENTION_JOB,
+        lambda: asyncio.create_task(
+            # literal job name: the #925 lock reads it (== ERASE_RETENTION_JOB, tested)
+            local_only_task("pre_store_erase_retention", erase_retention_loop)(_sync_semaphore)
+        ),
+    )
+
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         # #784: one curated loop per process; a second lifespan gets the same task.
@@ -454,6 +468,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     finally:
         # #784: shared singletons stop only when their last holder exits.
         _release_curated_loop(curated_nightly_task)
+        if scheduler_singleton.release_background_loop(ERASE_RETENTION_JOB, erase_retention_task):
+            erase_retention_task.cancel()
         if scheduler and scheduler_singleton.release_scheduler(scheduler):
             scheduler.shutdown(wait=False)
             logger.info("Sync scheduler stopped")
@@ -1807,6 +1823,9 @@ def _start_sync_scheduler(
         misfire_grace_time=1800,
         coalesce=True,
     )
+    # #856: the erase copy retention (04:35 UTC) is NOT an APScheduler job: it
+    # must run while SYNC_ENABLED=false, so its only owner is the lifespan loop
+    # (oncofiles.erase_retention).
 
     # Pipeline integrity check: opt-in only (AI-touching; gated by ENABLE_INTEGRITY_CHECK)
     if ENABLE_INTEGRITY_CHECK:
@@ -2485,14 +2504,15 @@ link to the user so they can view, verify, or share the original document.
 Always display these when citing research findings.
 3. When making clinical observations, cite the specific source document(s) by filename \
 and `gdrive_url`. Never state medical facts without a traceable source.
-4. `get_related_documents` returns cross-referenced documents when links are available. \
-Links are not created automatically today, so an empty result with a `note` is normal; \
-never present documents as linked unless the tool returns them.
+4. `get_related_documents` returns related documents when links exist; an empty result \
+with a `note` is normal. Never present documents as linked unless the tool returns them.
 5. For lab trend analysis, reference the source `document_id` for each data point.
 
 CROSS-REFERENCES — links appear when available:
-- `same_visit`: same date + institution (e.g., labs and imaging from one appointment)
-- `related`: nearby dates or shared diagnoses/medications
+- `same_visit` (`source: computed`): the same document date AND the same known institution \
+(e.g., labs and imaging from one appointment). It is a date-and-place rule, not a reading \
+of the content; a document without a date or with an `Unknown` institution has none.
+- Other link types (`related`, `follow_up`) are not created automatically today.
 - When `get_related_documents` returns none, use `timeline` or `encounter_detail` for \
 documents of the same day or visit instead.
 
@@ -4209,8 +4229,8 @@ async def readiness(request: Request) -> JSONResponse:
         result["scheduler"] = scheduler_singleton.status()
         # Scheduler job status (lightweight summary)
         tracker = lifespan_ctx.get("job_tracker", {})
+        jobs: dict = {}
         if tracker:
-            jobs: dict = {}
             for job_id, info in tracker.items():
                 entry: dict = {}
                 if info.get("last_ok"):
@@ -4227,8 +4247,28 @@ async def readiness(request: Request) -> JSONResponse:
                     entry["last_deleted"] = info["last_deleted"]
                 if entry:
                     jobs[job_id] = entry
-            if jobs:
-                result["jobs"] = jobs
+        # #856: the erase copy retention is a lifespan loop, not an APScheduler
+        # job, so it reports here whatever SYNC_ENABLED says (in-memory).
+        from oncofiles import erase_retention
+
+        erase = erase_retention.status()
+        jobs[erase_retention.JOB_ID] = {
+            "loop_running": scheduler_singleton.background_loop_running(erase_retention.JOB_ID),
+            **{
+                k: erase[k]
+                for k in (
+                    "schedule",
+                    "next_run_at",
+                    "last_run_at",
+                    "last_ok",
+                    "last_error",
+                    "last_error_type",
+                    "last_deleted",
+                    "running",
+                )
+            },
+        }
+        result["jobs"] = jobs
         # #441 Layer 6: cluster-wide AI cost in the last 24h. Cheap aggregate
         # query — operator-only, like the rest of the readiness payload.
         try:
@@ -6154,6 +6194,21 @@ def _schedules_payload(lifespan_tracker: dict | None) -> dict:
         "integrity_check": ENABLE_INTEGRITY_CHECK,
     }
     built = scheduled_jobs.build_jobs(scheduler, tracker, flags)
+    # #856: lifespan loops (not APScheduler jobs) are shown in the same lists.
+    from oncofiles import erase_retention
+
+    loop_entry = scheduled_jobs.background_loop_entry(
+        erase_retention.JOB_ID,
+        running=scheduler_singleton.background_loop_running(erase_retention.JOB_ID),
+        state=erase_retention.status(),
+    )
+    if loop_entry.get("registered"):
+        built["jobs"].append(loop_entry)
+        built["jobs"].sort(
+            key=lambda j: (j["next_run_at"] is None, j["next_run_at"] or "", j["id"])
+        )
+    else:
+        built["inactive"].append(loop_entry)
     nightly_enabled, nightly_hour, _ = nightly_settings()
     curated = scheduled_jobs.curated_loop_entry(
         running=scheduler_singleton.curated_loop_running(),
@@ -6167,7 +6222,11 @@ def _schedules_payload(lifespan_tracker: dict | None) -> dict:
         "scheduler": {
             "running": scheduler is not None,
             "started_at": scheduler_singleton.status().get("started_at"),
-            "job_count": sum(1 for j in built["jobs"] if j["registered"]),
+            "job_count": sum(
+                1
+                for j in built["jobs"]
+                if j["registered"] and j["id"] not in scheduled_jobs.BACKGROUND_LOOP_JOBS
+            ),
             "off_reason": None
             if scheduler is not None
             else scheduled_jobs.inactive_reason("", flags),
@@ -8503,7 +8562,12 @@ async def api_admin_curated_report(request: Request) -> JSONResponse:
 
 @mcp.custom_route("/api/admin/curated/nightly", methods=["POST"])
 async def api_admin_curated_nightly(request: Request) -> JSONResponse:
-    """Turn the nightly run on/off for one patient."""
+    """Turn automatic processing on/off for one patient (#665).
+
+    The flag (``curated_settings.nightly_enabled``; path and field names kept
+    for compatibility) enrols the patient in the startup index, continuous
+    processing and the nightly sweep, not only the nightly run.
+    """
     err = _require_admin(request)
     if err:
         return err

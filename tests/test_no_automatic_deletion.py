@@ -658,7 +658,10 @@ async def test_replace_document_facts_soft_deletes_with_audit(db):
 LOCAL_DELETE_ALLOWLIST: dict[tuple[str, str], str] = {
     ("pre_store.py", "_prune"): (
         "pre-store DB safety copies (technical artifact): keeps the newest KEEP, removes "
-        "exact pattern-matched older copy filenames"
+        "exact pattern-matched older copy filenames; erase copies also once older than 30 "
+        "days (maintainer decision 2026-11-26, erase copies honour the 30-day erasure "
+        "promise; RUNBOOK lifecycle; also run by the daily pre_store_erase_retention "
+        "lifespan loop, erase_retention.py, independent of SYNC_ENABLED)"
     ),
     ("pre_store.py", "make_copy"): "removes only the partial copy this call created on failure",
     ("inbound_quarantine.py", "_purge_item_files"): (
