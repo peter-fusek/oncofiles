@@ -476,6 +476,23 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         ),
     )
 
+    # #999 / #868: the access log retention (daily 04:25 UTC, 90-day access
+    # telemetry) was an APScheduler job, which never starts in prod. This loop
+    # is its only owner (startup grace, catch-up past the slot, once per UTC
+    # day, under _sync_semaphore). One per process.
+    from oncofiles.access_log_loop import JOB_ID as ACCESS_LOG_RETENTION_JOB
+    from oncofiles.access_log_loop import access_log_retention_loop
+
+    access_log_task, _ = scheduler_singleton.ensure_background_loop(
+        ACCESS_LOG_RETENTION_JOB,
+        lambda: asyncio.create_task(
+            # literal job name: the #925 lock reads it (== ACCESS_LOG_RETENTION_JOB, tested)
+            local_only_task("dashboard_access_log_retention", access_log_retention_loop)(
+                db, _sync_semaphore
+            )
+        ),
+    )
+
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         # #784: one curated loop per process; a second lifespan gets the same task.
@@ -513,6 +530,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             (HOLDING_MOVE_JOB, holding_move_task),
             (HOLDING_EXTRACT_JOB, holding_extract_task),
             (INBOUND_QUEUE_JOB, inbound_queue_task),
+            (ACCESS_LOG_RETENTION_JOB, access_log_task),
         ):
             if scheduler_singleton.release_background_loop(_name, _task):
                 _task.cancel()
@@ -1319,31 +1337,6 @@ def _start_sync_scheduler(
         except Exception:
             logger.exception("Prompt log cleanup failed")
 
-    async def _run_dashboard_access_log_retention():
-        """Delete dashboard_access_log rows older than the retention (#868).
-
-        Maintainer decision 2026-11-16: access telemetry is kept 90 days
-        (``DASHBOARD_ACCESS_LOG_RETENTION_DAYS``, min 30). Only that table,
-        in chunks of <= 500 rows, under ``_sync_semaphore``. Logs the count only.
-        """
-        from oncofiles.dashboard_audit import purge_expired_access_log, retention_days
-
-        try:
-            days = retention_days()
-            async with _sync_semaphore:
-                deleted = await purge_expired_access_log(db, days=days)
-            entry = job_tracker.get("dashboard_access_log_retention", {})
-            entry["last_deleted"] = deleted
-            job_tracker["dashboard_access_log_retention"] = entry
-            logger.info(
-                "Dashboard access log retention: removed %d rows older than %d days",
-                deleted,
-                days,
-            )
-        except Exception:
-            logger.exception("Dashboard access log retention failed")
-            raise
-
     # _log_rss removed — restart logic consolidated into periodic_memory_check().
     # The old _log_rss reclaimed before checking, masking the threshold crossing,
     # and sys.exit(0) was caught by APScheduler as a job error (#213).
@@ -1859,16 +1852,8 @@ def _start_sync_scheduler(
         id="prompt_log_cleanup",
         max_instances=1,
     )
-    # #868: 04:25 UTC = 05:25 / 06:25 Europe/Bratislava, outside the 00:30-02:30
-    # local night window (curated nightly runs, AI pipeline).
-    scheduler.add_job(
-        local_only_task("dashboard_access_log_retention", _run_dashboard_access_log_retention),
-        CronTrigger(hour=4, minute=25, timezone="UTC"),
-        id="dashboard_access_log_retention",
-        max_instances=1,
-        misfire_grace_time=1800,
-        coalesce=True,
-    )
+    # #868 / #999: the access log retention (04:25 UTC) is NOT an APScheduler
+    # job any more: its only owner is the lifespan loop (oncofiles.access_log_loop).
     # #856: the erase copy retention (04:35 UTC) is NOT an APScheduler job: it
     # must run while SYNC_ENABLED=false, so its only owner is the lifespan loop
     # (oncofiles.erase_retention).
@@ -4243,9 +4228,6 @@ async def readiness(request: Request) -> JSONResponse:
                 # #441 Layer 6: per-run AI cost (set by _run_*_pipeline tail).
                 if info.get("last_cost_usd") is not None:
                     entry["last_cost_usd"] = info["last_cost_usd"]
-                # #868: rows removed by the last dashboard_access_log_retention run.
-                if info.get("last_deleted") is not None:
-                    entry["last_deleted"] = info["last_deleted"]
                 if entry:
                     jobs[job_id] = entry
         # #856: the erase copy retention is a lifespan loop, not an APScheduler
@@ -4294,6 +4276,8 @@ async def readiness(request: Request) -> JSONResponse:
                     )
                 },
             }
+            if "last_deleted" in st:  # daily retention loops (#868 access log)
+                jobs[job_id]["last_deleted"] = st["last_deleted"]
         result["jobs"] = jobs
         # #441 Layer 6: cluster-wide AI cost in the last 24h. Cheap aggregate
         # query — operator-only, like the rest of the readiness payload.
