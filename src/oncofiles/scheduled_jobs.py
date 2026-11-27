@@ -30,7 +30,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from oncofiles import erase_retention, holding_loops, inbound_loop
+from oncofiles import access_log_loop, erase_retention, holding_loops, inbound_loop
 
 # Human descriptions by job id: (group, name sk, name en, desc sk, desc en).
 # A lookup only — whether a job is shown depends on the running scheduler.
@@ -112,12 +112,14 @@ CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
         "Zmazanie telemetrie AI volaní staršej ako 90 dní",
         "Delete AI call telemetry older than 90 days",
     ),
-    "dashboard_access_log_retention": (
+    # Lifespan loop (oncofiles.access_log_loop), not an APScheduler job (#999).
+    access_log_loop.JOB_ID: (
         "infra",
         "Retencia logu prístupov",
         "Access log retention",
-        "Zmazanie záznamov prístupov do dashboardu starších ako 90 dní",
-        "Delete dashboard access log rows older than 90 days",
+        "Zmazanie záznamov prístupov do dashboardu starších ako 90 dní "
+        "(beží aj pri SYNC_ENABLED=false)",
+        "Delete dashboard access log rows older than 90 days (runs also with SYNC_ENABLED=false)",
     ),
     # A lifespan loop (oncofiles.erase_retention), not an APScheduler job (#856).
     erase_retention.JOB_ID: (
@@ -236,8 +238,9 @@ _LEGACY_ONLY = {
 _NIGHTLY_ONLY = {"nightly_ai_pipeline", "weekly_discovery_pipeline"}
 # Catalogue ids that are lifespan loops, not APScheduler jobs: they run whatever
 # SYNC_ENABLED says, so the scheduler's off reason never applies to them (#856).
-# The fixed-interval loops (oncofiles.interval_job.IntervalJob) by job id.
-INTERVAL_LOOPS = {**holding_loops.JOBS, **inbound_loop.JOBS}
+# The loops on oncofiles.interval_job (IntervalJob, and DailyJob for the
+# access log retention) by job id.
+INTERVAL_LOOPS = {**holding_loops.JOBS, **inbound_loop.JOBS, **access_log_loop.JOBS}
 BACKGROUND_LOOP_JOBS = {erase_retention.JOB_ID, *INTERVAL_LOOPS}
 
 

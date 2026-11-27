@@ -23,8 +23,10 @@ the DB. Refusals and admin cross reads also log one line (persistent app log,
 
 Retention (maintainer decision 2026-11-16, #868): rows older than
 ``DASHBOARD_ACCESS_LOG_RETENTION_DAYS`` (default 90, minimum 30) are deleted
-by the daily ``dashboard_access_log_retention`` job through
-``purge_expired_access_log``, in chunks of at most 500 rows. Only this table:
+by the daily ``dashboard_access_log_retention`` lifespan loop
+(``oncofiles.access_log_loop``, #999) through ``purge_expired_access_log``, in
+chunks of at most 500 rows; the predicate is ``oncofiles.access_log_sql``,
+shared with the ``job_dryrun`` count. Only this table:
 it holds access telemetry, no patient documents or facts. Allowlisted in
 ``tests/test_no_automatic_deletion.py`` (#734).
 """
@@ -36,8 +38,11 @@ import logging
 import os
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
+
+from oncofiles import access_log_sql
+from oncofiles.access_log_sql import DEFAULT_RETENTION_DAYS, MIN_RETENTION_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +53,7 @@ LOG_THROTTLE_S = 60.0
 _MAX_KEYS = 10_000  # bound on every in-memory map; expired keys pruned first
 
 RETENTION_ENV = "DASHBOARD_ACCESS_LOG_RETENTION_DAYS"
-DEFAULT_RETENTION_DAYS = 90
-MIN_RETENTION_DAYS = 30
+# DEFAULT_RETENTION_DAYS / MIN_RETENTION_DAYS: imported above from access_log_sql
 PURGE_CHUNK_ROWS = 500  # rows per DELETE + commit (never one long transaction)
 
 _lock = threading.Lock()
@@ -254,21 +258,19 @@ async def purge_expired_access_log(
     Touches no other table. Works in chunks of at most ``PURGE_CHUNK_ROWS``
     rows, each committed on its own, so a large backlog never becomes one long
     transaction on the single shared connection. ``days`` below the minimum is
-    clamped like the env value. ``created_at`` is ISO-8601 UTC with ``T`` and
-    ``Z`` (migration 090), so the cutoff uses the same format and the string
-    comparison is chronological.
+    clamped like the env value. The predicate and the cutoff are
+    ``oncofiles.access_log_sql`` (shared with the ``job_dryrun`` count).
     """
     if days is None:
         days = retention_days()
-    days = max(MIN_RETENTION_DAYS, int(days))
     chunk = max(1, min(PURGE_CHUNK_ROWS, int(chunk_size)))
-    cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cutoff = access_log_sql.cutoff(datetime.now(UTC), days)
     total = 0
     while True:
         async with db.db.execute(
-            """DELETE FROM dashboard_access_log WHERE id IN (
-                   SELECT id FROM dashboard_access_log
-                   WHERE created_at < ? ORDER BY id LIMIT ?)""",
+            "DELETE FROM dashboard_access_log WHERE id IN ("
+            " SELECT id FROM dashboard_access_log"
+            f" WHERE {access_log_sql.EXPIRED_WHERE} ORDER BY id LIMIT ?)",
             (cutoff, chunk),
         ) as cursor:
             deleted = cursor.rowcount or 0

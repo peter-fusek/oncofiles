@@ -18,6 +18,10 @@ module is the shared shape so every such job behaves the same:
 * telemetry (:meth:`IntervalJob.status`) is in memory, counts and codes only,
   for operator ``/readiness`` and the admin job list, never ``/health``.
 
+:class:`DailyJob` is the same shape for a job that runs once per UTC day at a
+fixed slot (the #868 access log retention; the slot rule is the one of the
+#856 erase retention loop, ``daily_next_run``).
+
 The job function returns a mapping of counts (``collections.Counter``); only
 keys that look like codes and integer values are kept (``last_counts``), and
 an optional ``summarize`` turns them into the job's named totals
@@ -30,7 +34,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -163,3 +167,115 @@ class IntervalJob:
             await self.run_once(fn)
             self._state["next_run_at"] = _iso(now_fn() + timedelta(seconds=self.interval_s))
             await sleep(self.interval_s)
+
+
+# ── daily jobs (a fixed UTC slot) ───────────────────────────────────────────
+
+# Never sleep longer than this in one go, so a clock jump or a suspended VM
+# cannot push a daily run far past its slot.
+DAILY_MAX_SLEEP_S = 3600
+
+
+def daily_slot(day: date, hour: int, minute: int) -> datetime:
+    """The run slot ``hour:minute`` UTC of one UTC day."""
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=UTC)
+
+
+def daily_next_run(now: datetime, last_run_day: date | None, hour: int, minute: int) -> datetime:
+    """When a daily job is next due (``now`` itself = run now).
+
+    * before today's slot → today's slot;
+    * at or after today's slot and no run today in this process → now
+      (the regular run, or the catch-up after a restart past the slot);
+    * already run today → tomorrow's slot.
+    """
+    now = now.astimezone(UTC)
+    today = now.date()
+    today_slot = daily_slot(today, hour, minute)
+    if now < today_slot:
+        return today_slot
+    if last_run_day != today:
+        return now
+    return daily_slot(today + timedelta(days=1), hour, minute)
+
+
+class DailyJob(IntervalJob):
+    """An :class:`IntervalJob` that runs once per UTC day at a fixed slot.
+
+    Same telemetry, failure handling and startup grace; the loop waits the
+    grace, then runs at ``hour:minute`` UTC (catch-up right after the grace
+    when the process starts past today's slot), at most once per process and
+    UTC day (in-memory marker: the job must be idempotent). ``deleted_key``
+    names the count reported as ``last_deleted`` by :meth:`status`.
+    """
+
+    def __init__(
+        self,
+        job_id: str,
+        hour: int,
+        minute: int,
+        *,
+        summarize: Callable[[dict[str, int]], dict[str, int]] | None = None,
+        deleted_key: str | None = None,
+    ) -> None:
+        self.hour = int(hour)
+        self.minute = int(minute)
+        self.deleted_key = deleted_key
+        super().__init__(job_id, 86400, summarize=summarize)
+
+    def reset(self) -> None:
+        super().reset()
+        self._last_run_day: date | None = None
+
+    @property
+    def schedule_text(self) -> str:
+        return f"daily {self.hour:02d}:{self.minute:02d} UTC"
+
+    def trigger(self) -> dict:
+        return {"kind": "cron", "cadence": "daily", "text": self.schedule_text}
+
+    def status(self) -> dict:
+        out = super().status()
+        if self.deleted_key is not None:
+            counts = out.get("last_counts")
+            out["last_deleted"] = counts.get(self.deleted_key, 0) if counts is not None else None
+        return out
+
+    def next_run(self, now: datetime) -> datetime:
+        return daily_next_run(now, self._last_run_day, self.hour, self.minute)
+
+    async def run_once(self, fn: Callable[[], Awaitable[Mapping | None]]) -> dict | None:
+        self._last_run_day = _utcnow().date()
+        return await super().run_once(fn)
+
+    async def loop(
+        self,
+        fn: Callable[[], Awaitable[Mapping | None]],
+        *,
+        grace_s: float | None = None,
+        sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+        now_fn: Callable[[], datetime] = _utcnow,
+    ) -> None:
+        """Wait the startup grace, then run ``fn`` daily at the slot."""
+        if grace_s is None:
+            from oncofiles.tools.curated import STARTUP_GRACE_S
+
+            grace_s = STARTUP_GRACE_S
+        self._state["loop_started_at"] = _iso(now_fn())
+        logger.info(
+            "%s loop started (%s, first check after %ds)",
+            self.job_id,
+            self.schedule_text,
+            int(grace_s),
+        )
+        await sleep(grace_s)
+        while True:
+            now = now_fn()
+            due = self.next_run(now)
+            self._state["next_run_at"] = _iso(due)
+            wait = (due - now).total_seconds()
+            if wait > 0:
+                await sleep(min(wait, DAILY_MAX_SLEEP_S))
+                continue
+            self._last_run_day = now.astimezone(UTC).date()
+            await IntervalJob.run_once(self, fn)

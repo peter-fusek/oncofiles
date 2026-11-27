@@ -8,8 +8,11 @@ a copy of the data directory)::
     uv run python -m oncofiles.job_dryrun holding_move --db /tmp/x/oncofiles.db \\
         [--data-dir /tmp/x/data] [--now 2027-01-02T03:04:05Z]
 
-One subcommand per job; the next #999 PRs add theirs (``access_log_retention``,
-``oauth_token_cleanup``, ``memory_check``) to ``JOBS``. ``inbound_maintenance``
+One subcommand per job; the next #999 PRs add theirs (``oauth_token_cleanup``,
+``memory_check``) to ``JOBS``. ``dashboard_access_log_retention`` (the #868
+access log retention loop) takes ``--retention-days`` (stands for
+``DASHBOARD_ACCESS_LOG_RETENTION_DAYS``, default 90, clamped to 30 like the
+job) and needs no data directory. ``inbound_maintenance``
 (the ``inbound_queue`` loop: claimed rows, the queue, quarantine expiry /
 digests / purge) also takes ``--purge-approved`` (default off, like
 ``QUARANTINE_PURGE_APPROVED``) and ``--purge-approved-after-days``; its
@@ -484,10 +487,68 @@ def dry_inbound_maintenance(
     }
 
 
+# ── dashboard_access_log_retention (#868) ───────────────────────────────
+
+# Age buckets of the rows that would go, in days past the cutoff (upper bounds;
+# the last bucket is open). Counts only.
+_AGE_BUCKETS_DAYS = (7, 30, 90, 365)
+
+
+def dry_access_log_retention(
+    conn: sqlite3.Connection,
+    *,
+    now: datetime,
+    retention_days: int | None = None,
+    **_opts,
+) -> dict:
+    """What one ``dashboard_access_log_retention`` run would delete now: the
+    rows matched by the production predicate (``oncofiles.access_log_sql``)
+    with the production clamp, plus how far past the cutoff the oldest is.
+    ``retention_days`` stands for ``DASHBOARD_ACCESS_LOG_RETENTION_DAYS``
+    (default 90, below 30 clamped to 30, like the job)."""
+    from oncofiles import access_log_sql as q
+    from oncofiles.dashboard_audit import PURGE_CHUNK_ROWS
+
+    requested = q.DEFAULT_RETENTION_DAYS if retention_days is None else int(retention_days)
+    days = q.effective_days(requested)
+    cutoff = q.cutoff(now, days)
+    where = q.EXPIRED_WHERE
+    would_delete = _count(
+        conn, f"SELECT COUNT(*) FROM dashboard_access_log WHERE {where}", (cutoff,)
+    )
+    oldest = conn.execute(
+        f"SELECT MIN(created_at) FROM dashboard_access_log WHERE {where}", (cutoff,)
+    ).fetchone()[0]
+    return {
+        "retention_days": days,
+        "retention_clamped": days != requested,
+        "rows_total": _count(conn, "SELECT COUNT(*) FROM dashboard_access_log"),
+        "would_delete": would_delete,
+        "delete_chunks": -(-would_delete // PURGE_CHUNK_ROWS),
+        "oldest_expired_bucket": _age_bucket(oldest, cutoff, q.CUTOFF_FORMAT),
+    }
+
+
+def _age_bucket(oldest: str | None, cutoff: str, fmt: str) -> str | None:
+    """How far before the cutoff the oldest expired row is, as a bucket code."""
+    if not oldest:
+        return None
+    try:
+        old_dt = datetime.strptime(oldest, fmt)
+    except ValueError:
+        return "unparsed"
+    past = (datetime.strptime(cutoff, fmt) - old_dt).days
+    upper = next((b for b in _AGE_BUCKETS_DAYS if past < b), None)
+    if upper is None:
+        return f"over_{_AGE_BUCKETS_DAYS[-1]}_days_past_cutoff"
+    return f"under_{upper}_days_past_cutoff"
+
+
 # job name -> counting function (conn, now=, data_dir=, **options) -> dict
 JOBS: dict[str, Callable[..., dict]] = {
     "holding_move": dry_holding_move,
     "inbound_maintenance": dry_inbound_maintenance,
+    "dashboard_access_log_retention": dry_access_log_retention,
 }
 
 
@@ -560,6 +621,12 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         help="inbound_maintenance: QUARANTINE_PURGE_APPROVED_AFTER_DAYS (default 7)",
     )
+    ap.add_argument(
+        "--retention-days",
+        type=int,
+        help="dashboard_access_log_retention: DASHBOARD_ACCESS_LOG_RETENTION_DAYS "
+        "(default 90, below 30 clamped to 30, like the job)",
+    )
     args = ap.parse_args(argv)
     options = {}
     if args.job == "inbound_maintenance":
@@ -567,6 +634,8 @@ def main(argv: list[str] | None = None) -> int:
             "purge_approved": args.purge_approved,
             "purge_approved_after_days": args.purge_approved_after_days,
         }
+    elif args.job == "dashboard_access_log_retention":
+        options = {"retention_days": args.retention_days}
     report = run(args.job, args.db, data_dir=args.data_dir, now=args.now, **options)
     json.dump(report, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")

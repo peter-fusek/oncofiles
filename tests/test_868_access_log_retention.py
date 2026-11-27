@@ -3,7 +3,8 @@
 Maintainer decision 2026-11-16: access log rows are deleted after 90 days
 (``DASHBOARD_ACCESS_LOG_RETENTION_DAYS``, minimum 30). Only that table, in
 chunks of at most 500 rows committed one by one, by the daily
-``dashboard_access_log_retention`` job. This is the one #734 allowlist entry
+``dashboard_access_log_retention`` lifespan loop (#999, ``access_log_loop``).
+This is the one #734 allowlist entry
 for the table (SQL + scheduler reachability).
 
 Synthetic rows only: no patients, no e-mails.
@@ -15,12 +16,10 @@ import inspect
 import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
-from apscheduler.triggers.cron import CronTrigger
 
-from oncofiles import dashboard_audit, scheduler_singleton, server
+from oncofiles import dashboard_audit
 from tests import test_no_automatic_deletion as lock
 
 JOB_ID = "dashboard_access_log_retention"
@@ -202,39 +201,16 @@ async def test_explicit_days_below_minimum_clamp(db):
     assert await dashboard_audit.purge_expired_access_log(db, days=1) == 0
 
 
-# ── scheduler ─────────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-async def scheduler_with_db(monkeypatch, db):
-    scheduler_singleton._reset_for_tests()
-    monkeypatch.setattr(server, "SYNC_ENABLED", True)
-    monkeypatch.setattr(server, "AI_NIGHTLY_ONLY", True)
-    scheduler, tracker = server._start_sync_scheduler(
-        db, MagicMock(), None, "", MagicMock(), MagicMock(), primary_uuid=""
-    )
-    yield scheduler, tracker
-    scheduler.shutdown(wait=False)
-    scheduler_singleton._reset_for_tests()
-
-
-async def test_job_registered_with_cron_misfire_grace_and_coalesce(scheduler_with_db):
-    scheduler, _ = scheduler_with_db
-    job = scheduler.get_job(JOB_ID)
-    assert job is not None
-    assert isinstance(job.trigger, CronTrigger)
-    fields = {f.name: str(f) for f in job.trigger.fields}
-    assert fields["hour"] == "4" and fields["minute"] == "25"
-    assert str(job.trigger.timezone) == "UTC"
-    assert job.misfire_grace_time == 1800
-    assert job.coalesce is True
-    assert job.max_instances == 1
+# The job (schedule, semaphore, telemetry, lifespan): tests/test_999_access_log_loop.py.
 
 
 def test_slot_is_outside_the_bratislava_night_window():
     """04:25 UTC is 05:25 (CET) or 06:25 (CEST) in Bratislava, never 00:30-02:30."""
     from zoneinfo import ZoneInfo
 
+    from oncofiles import access_log_loop
+
+    assert (access_log_loop.SLOT_HOUR_UTC, access_log_loop.SLOT_MINUTE_UTC) == (4, 25)
     for month in (1, 7):  # winter and summer time
         utc = datetime(2027, month, 15, 4, 25, tzinfo=UTC)
         local = utc.astimezone(ZoneInfo("Europe/Bratislava"))
@@ -242,51 +218,11 @@ def test_slot_is_outside_the_bratislava_night_window():
         assert not (30 <= minutes <= 150), local
 
 
-async def test_job_deletes_under_semaphore_and_records_count(scheduler_with_db, db, monkeypatch):
-    scheduler, tracker = scheduler_with_db
-    await _insert(db, 150, n=4)
-    await _insert(db, 3, n=1)
-
-    held = []
-    real_purge = dashboard_audit.purge_expired_access_log
-
-    async def _spy(*args, **kwargs):
-        held.append(server._sync_semaphore.locked())
-        return await real_purge(*args, **kwargs)
-
-    monkeypatch.setattr(dashboard_audit, "purge_expired_access_log", _spy)
-
-    await scheduler.get_job(JOB_ID).func()
-
-    assert held == [True]
-    assert tracker[JOB_ID]["last_deleted"] == 4
-    assert len(await _ages(db)) == 1
-
-
-async def test_job_failure_is_raised_for_the_error_listener(scheduler_with_db, monkeypatch):
-    """A failing purge must not look like a clean run (#552): the job raises."""
-    scheduler, _ = scheduler_with_db
-
-    async def _boom(*args, **kwargs):
-        raise RuntimeError("synthetic")
-
-    monkeypatch.setattr(dashboard_audit, "purge_expired_access_log", _boom)
-    with pytest.raises(RuntimeError):
-        await scheduler.get_job(JOB_ID).func()
-
-
-def test_readiness_jobs_expose_last_deleted():
-    source = inspect.getsource(server.readiness)
-    assert 'entry["last_deleted"] = info["last_deleted"]' in source
-
-
 def test_job_listed_for_the_dashboard():
-    # The admin panel lists the running scheduler's jobs; the catalogue only
-    # gives the job its bilingual name and description.
     from oncofiles import scheduled_jobs
 
     assert scheduled_jobs.describe(JOB_ID)["known"] is True
-    assert f'id="{JOB_ID}"' in inspect.getsource(server)
+    assert JOB_ID in scheduled_jobs.BACKGROUND_LOOP_JOBS
 
 
 # ── #734 lock: exactly this one entry ─────────────────────────────────────
@@ -303,7 +239,8 @@ def test_scheduler_lock_sees_the_retention_job():
     """Guard the guard: without the allowlist entry the walker flags the job."""
     modules = lock._load_modules()
     roots, ids = lock._job_registrations(modules["oncofiles.server"])
-    assert "_run_dashboard_access_log_retention" in roots and JOB_ID in ids
+    # #999: a lifespan loop now, no add_job registration left
+    assert "access_log_retention_loop" in roots and JOB_ID not in ids
 
     original = set(lock.JOB_SQL_ALLOWLIST)
     try:
