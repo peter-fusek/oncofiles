@@ -708,11 +708,11 @@ def test_mcp_endpoint_requires_auth(prod_routes):
     assert mcp_routes, "no /mcp route"
     for r in mcp_routes:
         # #1004: the reviewed exception is AnonCatalogGate around the SAME
-        # auth wrapper; only the handshake and the tool list skip it
+        # auth wrapper; only the tool list skips it (initialize stays 401)
         assert isinstance(r.endpoint, AnonCatalogGate), type(r.endpoint)
         assert isinstance(r.endpoint.app, RequireAuthMiddleware), type(r.endpoint.app)
         assert r.endpoint.inner is r.endpoint.app.app
-    assert frozenset({"initialize", "notifications/initialized", "tools/list"}) == ANON_METHODS
+    assert frozenset({"tools/list"}) == ANON_METHODS
 
 
 def test_anonymous_catalogue_module_reaches_nothing():

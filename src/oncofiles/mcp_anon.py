@@ -1,11 +1,16 @@
 """Anonymous tool catalogue on the public ``/mcp`` (#1004, maintainer decision).
 
-A client WITHOUT any ``Authorization`` header may call ``initialize``,
-``notifications/initialized`` and ``tools/list``: directory checkers (and a
-person looking before connecting) see what the server offers. Everything
-else keeps FastMCP's ``RequireAuthMiddleware`` and its 401 +
-``WWW-Authenticate`` (protected-resource metadata), so OAuth discovery is
-unchanged.
+A client WITHOUT any ``Authorization`` header may call ``tools/list`` (and
+nothing else): directory checkers (and a person looking before connecting)
+see what the server offers. Everything else, ``initialize`` included, keeps
+FastMCP's ``RequireAuthMiddleware`` and its 401 + ``WWW-Authenticate``
+(protected-resource metadata), so OAuth discovery is unchanged.
+
+Why not ``initialize``: with an anonymous ``initialize`` answering 200, a fresh
+Claude.ai custom connector pre-selected "No sign-in" (production check after
+#1009, recorded on #1004), so a new user keeping the default got a connector
+whose every tool call failed with 401. Clients decide whether to sign in from
+the ``initialize`` answer; it must stay 401 for anonymous callers.
 
 What the anonymous path can reach: the MCP handshake and the tool list of
 the USER surface (``tool_surface.ToolSurfaceTransform`` hides operator and
@@ -38,8 +43,8 @@ from typing import Any
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-ANON_METHODS: frozenset[str] = frozenset({"initialize", "notifications/initialized", "tools/list"})
-# A handshake or a tools/list request is a few hundred bytes.
+ANON_METHODS: frozenset[str] = frozenset({"tools/list"})
+# A tools/list request is a few hundred bytes.
 ANON_MAX_BODY_BYTES = 64 * 1024
 ENV_SWITCH = "MCP_ANON_TOOLS_LIST"
 _OFF = frozenset({"0", "false", "no", "off"})
