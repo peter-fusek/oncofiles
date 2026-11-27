@@ -255,7 +255,7 @@ def welcome_text(accepted: int, skipped, address: str) -> tuple[str, str]:
     sk += [
         "",
         "Poslaním dokumentov ste súhlasili s podmienkami používania a so spracovaním "
-        "týchto údajov: " + inbound_email.TERMS_URL,
+        "týchto údajov: " + inbound_email.TERMS_URL_SK,
         "",
         "Prihláste sa cez Google touto adresou a uvidíte ich: " + SIGN_IN_URL,
         "",

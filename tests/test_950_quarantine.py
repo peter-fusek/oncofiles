@@ -630,9 +630,34 @@ async def test_same_caregiver_update_keeps_the_links(idb, drive, mails):
     assert b'name="csrf"' in (await get_page(idb, approve)).body
 
 
+def test_undecided_items_expire_after_seven_days_then_thirty_in_the_trash():
+    # maintainer decision 2026-11-27: 7 days to decide (as long as the links), 30 in the trash
+    assert inbound_quarantine.EXPIRE_AFTER_DAYS == 7
+    assert inbound_quarantine.TRASH_DAYS == 30
+    assert inbound_quarantine.TOKEN_TTL_S == inbound_quarantine.EXPIRE_AFTER_DAYS * 86400
+
+
+async def test_pending_item_six_days_old_does_not_expire(idb, drive, mails):
+    await quarantine_one(idb)
+    await idb.db.execute("UPDATE inbound_quarantine SET received_at = ?", (ago(days=6),))
+    await idb.db.commit()
+    out = await inbound_quarantine.run_maintenance(idb)
+    assert out["expired"] == 0
+    [item] = await rows(idb, "SELECT state FROM inbound_quarantine")
+    assert item["state"] == "pending"
+
+
+async def test_notice_says_seven_days_then_the_trash(idb, drive, mails):
+    await quarantine_one(idb)
+    body = notices(mails)[0]["text"]
+    assert "do 7 dní" in body and "within 7 days" in body
+    assert "na 30 dní do koša" in body and "trash for 30 days" in body
+    assert "valid for 7 days" not in body
+
+
 async def test_old_pending_items_expire_and_nothing_is_deleted(idb, drive, mails):
     await quarantine_one(idb)
-    await idb.db.execute("UPDATE inbound_quarantine SET received_at = ?", (ago(days=31),))
+    await idb.db.execute("UPDATE inbound_quarantine SET received_at = ?", (ago(days=8),))
     await idb.db.commit()
     out = await inbound_quarantine.run_maintenance(idb)
     assert out["expired"] == 1

@@ -43,3 +43,24 @@ async def test_terms_match_the_service():
     html = await _text(server.terms_of_service)
     assert "Gmail, and Calendar" not in html
     assert "never permanently deletes files" in html
+
+
+async def test_slovak_privacy_matches_the_service():
+    """#1008: the same claims on /sk/privacy."""
+    html = " ".join((await _text(server.privacy_policy_sk)).split())
+    assert "lokálnom AI modeli" in html and "Slovensku" in html
+    assert "nikdy nič natrvalo nemaže" in html
+    assert "len priečinok, ktorý pre pacienta vyberiete" in html
+    assert "Gmail a Google Kalendár</strong> — momentálne sa nepoužívajú" in html
+    assert "Google Analytics" in html and "Náš poskytovateľ e-mailu" in html
+    assert "Resend" not in html and "Brevo" not in html
+    assert "sledovací pixel" in html and "presmerovať ich odkazy" in html
+    assert "skráteným identifikátorom" in html and "nikdy nie s menom pacienta" in html
+    assert "prijmete analytické cookies" in html
+    assert "Aplikácia po prihlásení Google Analytics nenačítava" in html
+
+
+async def test_slovak_terms_match_the_service():
+    html = " ".join((await _text(server.terms_of_service_sk)).split())
+    assert "nikdy natrvalo nemaže súbory" in html
+    assert "nie je zdravotnícka pomôcka" in html
