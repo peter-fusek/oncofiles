@@ -16,7 +16,7 @@ dashboard link. Never a name, a file name, a token or a signed link (#834).
 * Rate-limited: at most ``READY_MAILS_PER_HOUR`` ready mails in all per hour
   (in memory, per process); the rest wait for the next run.
 * Sent by the holding reader right after a run that read something, and by
-  the ``holding_move`` scheduler job (catch-up).
+  the ``holding_move`` lifespan loop (catch-up, #999).
 
 Funnel
 ------
@@ -87,8 +87,9 @@ def ready_text(done: int) -> tuple[str, str]:
 
 
 def _recipient(patient) -> str:
-    raw = str(getattr(patient, "caregiver_email", "") or "")
-    return raw.split(",", 1)[0].strip()
+    from oncofiles.holding_sql import first_recipient
+
+    return first_recipient(getattr(patient, "caregiver_email", "") or "")
 
 
 def _rate_ok(now: float) -> bool:

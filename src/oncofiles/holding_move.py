@@ -23,7 +23,7 @@ Rules
   written only while it holds (``EXISTS … move_claimed_at = lease`` in the
   UPDATE), a lost lease stops the run (``lease_lost``) with no further write,
   and the claim is released at the end. Both entry points (the connect-time
-  :func:`kick` and the scheduler job) go through :func:`move_patient`, so a
+  :func:`kick` and the periodic loop) go through :func:`move_patient`, so a
   second container's run on the same trial is refused (``claim_refused``)
   while the lease is fresh.
 * **One file at a time**, at most ``MAX_FILES_PER_RUN`` per run; the first
@@ -55,8 +55,9 @@ Rules
   entry (maintainer decision); only then may a later change remove it.
 
 Runs: kicked right after a successful connect (:func:`kick`) and every
-``WORKER_INTERVAL_MIN`` minutes by the ``holding_move`` scheduler job; both
-under the scheduler's ``_sync_semaphore`` (single DB connection) and inside
+``WORKER_INTERVAL_MIN`` minutes by the ``holding_move`` lifespan loop
+(``holding_loops``, independent of APScheduler, #999); both under
+``_sync_semaphore`` (single DB connection) and inside
 ``cloud_guard.local_only`` (nothing here may call a cloud model). DB calls stay
 on the event loop; decryption and Drive calls run in worker threads. Logs:
 document ids, counts, codes and ``patient_id[:4]`` only, never a file name.
@@ -153,13 +154,12 @@ async def _drain(db) -> None:
 async def _present_md5s(db, patient_id: str):
     """``(target, {md5: Drive id})``: the inbox listing plus the filed tree."""
     from oncofiles.dashboard_upload import stored_inbox_md5_ids
+    from oncofiles.holding_sql import filed_md5s
 
     target, present = await stored_inbox_md5_ids(db, patient_id, log_pid=patient_id[:4])
     state = await db.curated_index_state(patient_id=patient_id)
-    for drive_id, s in state.items():
-        md5 = s.get("source_md5")
-        if md5 and not s.get("deleted") and not s.get("foreign"):
-            present.setdefault(md5, drive_id)
+    for md5, drive_id in filed_md5s(state).items():
+        present.setdefault(md5, drive_id)
     return target, present
 
 
@@ -360,7 +360,7 @@ async def _move_claimed(
 async def run_pending(db, *, limit: int = MAX_FILES_PER_RUN) -> Counter:
     """One pass over every trial with a connected Drive that is not converted.
 
-    The caller holds ``_sync_semaphore`` (the scheduler job and :func:`kick`
+    The caller holds ``_sync_semaphore`` (the periodic loop and :func:`kick`
     both do). Also flags held rows whose curated mirror row now exists, and
     sends due "ready" e-mails (``trial_funnel.send_due_ready_mails``)."""
     from oncofiles import holding_store, trial_funnel

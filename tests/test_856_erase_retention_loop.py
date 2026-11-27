@@ -242,7 +242,8 @@ async def test_not_double_registered_with_sync_enabled(monkeypatch, lifespan_env
         assert scheduler_singleton.background_loop_running(erase_retention.JOB_ID)
         # a second lifespan in the same process reuses the loop
         async with server.lifespan(MagicMock()):
-            assert len(scheduler_singleton._loops) == 1
+            # one task per loop name (#999 added the holding loops)
+            assert list(scheduler_singleton._loops).count(erase_retention.JOB_ID) == 1
             assert scheduler_singleton._loop_refs[erase_retention.JOB_ID] == 2
         assert scheduler_singleton.background_loop_running(erase_retention.JOB_ID)
     await asyncio.sleep(0)

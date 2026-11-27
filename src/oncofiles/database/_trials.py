@@ -14,6 +14,17 @@ from __future__ import annotations
 
 import json
 
+# #999: the job predicates live in one import-free module, shared with the
+# read-only dry run (oncofiles.job_dryrun), so its counts cannot drift.
+from oncofiles.holding_sql import (
+    HOLDING_DUE_FOR_READING_FROM,
+    HOLDING_MOVED_COUNT_SQL,
+    HOLDING_ROWS_TO_MOVE_SQL,
+    SUPERSEDED_CANDIDATES_SQL,
+    TRIALS_AWAITING_READY_MAIL_SQL,
+    TRIALS_TO_CONVERT_SQL,
+)
+
 from ._base import DatabaseBase
 
 TRIAL_SOURCES = ("welcome_email",)
@@ -110,16 +121,7 @@ class TrialsMixin(DatabaseBase):
         """
         sql = (
             "SELECT d.id, d.patient_id, d.file_id, d.mime_type, d.structured_metadata "
-            "FROM documents d JOIN trial_accounts t ON t.patient_id = d.patient_id "
-            "WHERE d.file_id LIKE 'holding:%' AND d.deleted_at IS NULL "
-            "AND t.trial_ends_at > ? AND json_valid(d.structured_metadata) "
-            # #950 phase 3: a document already copied into Drive is read by the
-            # curated pipeline there, never twice on the shared model
-            "AND json_extract(d.structured_metadata, '$.holding.moved_to_drive') IS NULL "
-            "AND (json_extract(d.structured_metadata, '$.holding.extract') = 'pending' "
-            "  OR (json_extract(d.structured_metadata, '$.holding.extract') = 'reading' "
-            "      AND COALESCE(json_extract(d.structured_metadata, '$.holding.claimed_at'), '')"
-            "          < ?))"
+            + HOLDING_DUE_FOR_READING_FROM
         )
         params: list = [now, stale_before]
         if exclude_patients:
@@ -251,13 +253,7 @@ class TrialsMixin(DatabaseBase):
         """Patient ids of trials that are not converted yet and have a connected
         Drive folder. System-wide on purpose (the mover serves every trial;
         ids only, no patient data)."""
-        async with self.db.execute(
-            "SELECT t.patient_id FROM trial_accounts t "
-            "WHERE t.converted_at IS NULL AND EXISTS (SELECT 1 FROM oauth_tokens o "
-            "  WHERE o.patient_id = t.patient_id AND o.provider = 'google' "
-            "  AND COALESCE(o.gdrive_folder_id, '') != '') "
-            "ORDER BY t.id"
-        ) as cursor:
+        async with self.db.execute(TRIALS_TO_CONVERT_SQL) as cursor:
             rows = await cursor.fetchall()
         return [r[0] for r in rows]
 
@@ -265,14 +261,7 @@ class TrialsMixin(DatabaseBase):
         """Active holding documents of a patient without a verified Drive copy
         yet, oldest first (id, file_id, filename, original_filename, mime_type,
         structured_metadata)."""
-        async with self.db.execute(
-            "SELECT id, file_id, filename, original_filename, mime_type, structured_metadata "
-            "FROM documents WHERE patient_id = ? AND file_id LIKE 'holding:%' "
-            "AND deleted_at IS NULL AND json_valid(structured_metadata) "
-            "AND json_extract(structured_metadata, '$.holding.moved_to_drive') IS NULL "
-            "ORDER BY id",
-            (patient_id,),
-        ) as cursor:
+        async with self.db.execute(HOLDING_ROWS_TO_MOVE_SQL, (patient_id,)) as cursor:
             return [dict(r) for r in await cursor.fetchall()]
 
     # The mover's per-trial lease (the inbound_jobs pattern): every write of
@@ -373,21 +362,7 @@ class TrialsMixin(DatabaseBase):
         of the copy or by the source md5. The flag hides the held row from
         the document lists (``HOLDING_VISIBLE_SQL``); nothing is deleted.
         System-wide on purpose; returns how many rows were flagged."""
-        async with self.db.execute(
-            "SELECT h.id, h.patient_id, MIN(m.id) FROM documents h JOIN documents m "
-            "  ON m.patient_id = h.patient_id AND m.deleted_at IS NULL "
-            "  AND m.file_id LIKE 'gdrive:%' AND m.id != h.id "
-            "  AND (m.file_id = 'gdrive:' || json_extract(h.structured_metadata, "
-            "         '$.holding.moved_to_drive.drive_id') "
-            "       OR (json_valid(m.structured_metadata) "
-            "           AND json_extract(m.structured_metadata, '$.curated.source_md5') "
-            "               = json_extract(h.structured_metadata, '$.holding.md5'))) "
-            "WHERE h.file_id LIKE 'holding:%' AND h.deleted_at IS NULL "
-            "AND json_valid(h.structured_metadata) "
-            "AND json_extract(h.structured_metadata, '$.holding.moved_to_drive') IS NOT NULL "
-            "AND json_extract(h.structured_metadata, '$.holding.superseded_by') IS NULL "
-            "GROUP BY h.id, h.patient_id"
-        ) as cursor:
+        async with self.db.execute(SUPERSEDED_CANDIDATES_SQL) as cursor:
             rows = [tuple(r) for r in await cursor.fetchall()]
         for doc_id, pid, mirror_id in rows:
             await self.db.execute(
@@ -402,12 +377,7 @@ class TrialsMixin(DatabaseBase):
 
     async def holding_moved_count(self, *, patient_id: str) -> int:
         """Active holding documents of a patient with a verified Drive copy."""
-        async with self.db.execute(
-            "SELECT COUNT(*) FROM documents WHERE patient_id = ? AND file_id LIKE 'holding:%' "
-            "AND deleted_at IS NULL AND json_valid(structured_metadata) "
-            "AND json_extract(structured_metadata, '$.holding.moved_to_drive') IS NOT NULL",
-            (patient_id,),
-        ) as cursor:
+        async with self.db.execute(HOLDING_MOVED_COUNT_SQL, (patient_id,)) as cursor:
             return int((await cursor.fetchone())[0])
 
     async def trial_funnel_rows(self) -> list[dict]:
@@ -438,21 +408,5 @@ class TrialsMixin(DatabaseBase):
         read by the holding reader (``pending`` / ``reading`` and not yet
         copied into Drive) and no mail of the patient still queued or being
         filed (#952 ``inbound_jobs``). System-wide; ``patient_id`` + ``done``."""
-        async with self.db.execute(
-            "SELECT t.patient_id, "
-            "  SUM(CASE WHEN json_extract(d.structured_metadata, '$.holding.extract') = 'done' "
-            "      THEN 1 ELSE 0 END) AS done, "
-            "  SUM(CASE WHEN json_extract(d.structured_metadata, '$.holding.extract') "
-            "      IN ('pending', 'reading') "
-            "      AND json_extract(d.structured_metadata, '$.holding.moved_to_drive') IS NULL "
-            "      THEN 1 ELSE 0 END) AS open "
-            "FROM trial_accounts t JOIN documents d ON d.patient_id = t.patient_id "
-            "  AND d.file_id LIKE 'holding:%' AND d.deleted_at IS NULL "
-            "  AND json_valid(d.structured_metadata) "
-            "WHERE t.ready_mail_sent_at IS NULL "
-            # a mail still being filed belongs to the same first batch
-            "AND NOT EXISTS (SELECT 1 FROM inbound_jobs j WHERE j.patient_id = t.patient_id "
-            "  AND j.state IN ('pending', 'processing')) "
-            "GROUP BY t.patient_id HAVING done > 0 AND open = 0 ORDER BY MIN(t.id)"
-        ) as cursor:
+        async with self.db.execute(TRIALS_AWAITING_READY_MAIL_SQL) as cursor:
             return [{"patient_id": r[0], "done": int(r[1] or 0)} for r in await cursor.fetchall()]
