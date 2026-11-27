@@ -598,7 +598,7 @@ def test_step3_has_a_curated_variant_without_first_sync():
     curated = _between(html, 'id="wiz-step3-curated"', "<!-- Step 4")
     assert "wizardStep3Sync" in legacy
     assert "wizardStep3Sync" not in curated and "Start First Sync" not in curated
-    assert "processed by the curated pipeline (local OCR)" in curated
+    assert "read by the local model on our server" in curated
     assert curated.count("<button") == 1 and 'data-en="Continue"' in curated
     assert "function wizardSetStep3Variant" in js
     assert "wizardSetStep3Variant(data);" in js

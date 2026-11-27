@@ -3388,8 +3388,8 @@ async def llms_sk_txt(request: Request) -> HTMLResponse:
         f"## Ako sa líši od štátnych systémov (eZdravie / OnkoAsist / NCZI)\n"
         f"- Oncofiles je pacientsky nástroj: originály dokumentov zostávajú vo vašom\n"
         f"  Google Drive.\n"
-        f"- Open-source pod licenciou MIT: kód je verejne auditovateľný.\n"
-        f"- Dopĺňa, nenahrádza, oficiálnu zdravotnú dokumentáciu.\n"
+        f"- Open-source pod licenciou MIT: kód si môže ktokoľvek prezrieť.\n"
+        f"- Oficiálnu zdravotnú dokumentáciu dopĺňa, nenahrádza ju.\n"
         f"\n"
         f"## Bezpečnosť a súkromie\n"
         f"- Originály a prepisy sú vo vašom Google Drive. Index dokumentov, prečítaný\n"
@@ -3908,11 +3908,11 @@ records; the code is open under the MIT license.</li>
 <h2>How Oncofiles compares</h2>
 {_EU_COMPARISON_TABLE_EN}
 
-<h2>Built for the European oncology reality</h2>
+<h2>Documents from many places, in one folder</h2>
 <p>Many EU cancer patients move between a public oncology centre, a private
 laboratory, a second-opinion clinic and a GP, each with its own file names and
-formats. Oncofiles is the <em>patient-side</em> layer that keeps those documents
-in one folder without replacing the official records.</p>
+formats. Oncofiles keeps those documents in one folder on the patient&rsquo;s side,
+without replacing the official records.</p>
 
 <h2>Data governance</h2>
 <ul>
@@ -4006,13 +4006,13 @@ záznamov; kód je otvorený pod licenciou MIT.</li>
 <h2>Ako sa Oncofiles porovnáva</h2>
 {_EU_COMPARISON_TABLE_SK}
 
-<h2>Postavené pre slovenskú onkologickú realitu</h2>
+<h2>Dokumenty z rôznych nemocníc v jednom priečinku</h2>
 <p>Mnohí slovenskí onkologickí pacienti chodia medzi Národným onkologickým
 ústavom (NOU), Onkologickým ústavom sv. Alžbety (OÚSA), súkromnými laboratóriami,
 druhým názorom a praktickým lekárom, a každé miesto má vlastné názvy súborov a
 formáty. Tlačené slovenské správy čítame spoľahlivo, staré rukou písané záznamy
-zatiaľ slabšie. Oncofiles je <em>pacientska vrstva</em>, ktorá tieto dokumenty
-drží v jednom priečinku bez toho, aby nahradila oficiálnu zdravotnú kartu.</p>
+zatiaľ slabšie. Oncofiles tieto dokumenty drží na strane pacienta v jednom
+priečinku a oficiálnu zdravotnú kartu nenahrádza.</p>
 
 <h2>Dopĺňa eZdravie, OnkoAsist a NCZI</h2>
 <p>Štátne systémy slúžia na komunikáciu medzi zdravotníckymi zariadeniami.

@@ -261,8 +261,8 @@
     if (!vals.length) {
       table.hidden = true;
       hint.textContent = lang === 'sk'
-        ? 'Táto správa neobsahuje laboratórne hodnoty. Jej text je uložený ako prepis a dá sa v ňom hľadať v Claude alebo ChatGPT.'
-        : 'This report has no lab values. Its text is stored as a transcript and is searchable in Claude or ChatGPT.';
+        ? 'Táto správa neobsahuje laboratórne hodnoty. Jej text je uložený ako prepis .md a Claude v ňom vie hľadať.'
+        : 'This report has no lab values. Its text is stored as a .md transcript, and Claude can search it.';
     } else {
       table.hidden = false;
       hint.textContent = lang === 'sk' ? 'Kliknite na hodnotu a v dokumente sa zvýrazní jej riadok.' : 'Click a value to highlight its line in the document.';

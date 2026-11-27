@@ -135,6 +135,15 @@ def test_dashboard_demo_copy_is_honest():
     assert "158" not in html
 
 
+@pytest.mark.parametrize("name", ["landing.html", "dashboard.html", "demo.html"])
+def test_slovak_quotes_never_close_with_an_ascii_quote(name):
+    """A „ closed by an ASCII " ends the data-sk / data-en attribute early: the
+    rest of the sentence became stray attributes and the visible text was cut
+    (dashboard wizard, step 4, before the copy pass of 2026-11-27)."""
+    html = (SRC / name).read_text(encoding="utf-8")
+    assert not re.search(r'„[^“"<>]*"', html), name
+
+
 # ── Dashboard sources ──────────────────────────────────────────────────
 
 DASHBOARD_JS = (SRC / "dashboard.js").read_text(encoding="utf-8")
@@ -803,7 +812,8 @@ async def test_dashboard_section_is_a_mock_with_the_invented_patient():
     }
     block = _section("dashboard")
     assert "dashboard_feed" in block and "dashboard_feed" in registered
-    assert "It runs on Oncofiles." in block and "Beží na Oncofiles." in block
+    assert "It loads the data from Oncofiles through the dashboard_feed tool" in block
+    assert "Údaje si načíta z Oncofiles cez nástroj dashboard_feed" in block
     shot = block[block.index('id="artifact-shot"') :]
     # public page: a mock with the invented demo patient, never a real screenshot
     assert "<img" not in shot

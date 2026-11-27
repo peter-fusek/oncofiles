@@ -2993,9 +2993,9 @@
       var go = document.getElementById('wiz-folder-confirm-go');
       var t = wizardPatientType;
       var setSk = 'Oncofiles do neho zapíše kontrakt README.md' +
-        (t === 'general' ? ' (typ všeobecné zdravie)' : t === 'oncology' ? ' (typ onkologický)' : '') + ', súbory _index.json, _changelog.md, _actions.jsonl a pevnú sadu priečinkov (00-inbox, labs, report, …). Nič sa nezmaže ani nepresunie. Potom ho spracúva kurátorovaná pipeline (lokálne OCR).';
+        (t === 'general' ? ' (typ všeobecné zdravie)' : t === 'oncology' ? ' (typ onkologický)' : '') + ', súbory _index.json, _changelog.md, _actions.jsonl a pevnú sadu priečinkov (00-inbox, labs, report, …). Nič sa nezmaže ani nepresunie. Súbory v ňom potom číta lokálny model na našom serveri.';
       var setEn = 'Oncofiles writes a README.md contract' +
-        (t === 'general' ? ' (general health type)' : t === 'oncology' ? ' (oncology type)' : '') + ', _index.json, _changelog.md, _actions.jsonl and a fixed set of folders (00-inbox, labs, report, …) into it. Nothing is deleted or moved. The curated pipeline (local OCR) then processes it.';
+        (t === 'general' ? ' (general health type)' : t === 'oncology' ? ' (oncology type)' : '') + ', _index.json, _changelog.md, _actions.jsonl and a fixed set of folders (00-inbox, labs, report, …) into it. Nothing is deleted or moved. The local model on our server then reads the files in it.';
       if (info.curated) {
         wizSetBi(text,
           'Tento priečinok má vlastný kontrakt README; pripojením sa v ňom nič nevytvorí ani nepresunie.',
@@ -3006,13 +3006,13 @@
         wizSetBi(go, 'Vytvoriť a pripojiť', 'Create and connect');
       } else if (body.folder_id && body.folder_id !== wizardFolderParent) {
         wizSetBi(text,
-          'Ak priečinok z odkazu ešte nemá kontrakt README: ' + setSk + ' Musí byť bez podpriečinkov; súbory v ňom ostanú na mieste a pipeline ich zatriedi pri prvom spracovaní.',
-          'If the linked folder has no README contract yet: ' + setEn + ' It must have no subfolders; files in it stay where they are and the pipeline files them on its first run.');
+          'Ak priečinok z odkazu ešte nemá kontrakt README: ' + setSk + ' Musí byť bez podpriečinkov; súbory v ňom ostanú na mieste a Oncofiles ich zatriedi pri prvom spracovaní.',
+          'If the linked folder has no README contract yet: ' + setEn + ' It must have no subfolders; files in it stay where they are and Oncofiles files them on its first run.');
         wizSetBi(go, 'Nastaviť a pripojiť', 'Set up and connect');
       } else {
         wizSetBi(text,
-          setSk + ' Súbory, ktoré už v priečinku sú, ostanú na mieste a pipeline ich zatriedi pri prvom spracovaní.',
-          setEn + ' Files already in the folder stay where they are; the pipeline files them on its first run.');
+          setSk + ' Súbory, ktoré už v priečinku sú, ostanú na mieste a Oncofiles ich zatriedi pri prvom spracovaní.',
+          setEn + ' Files already in the folder stay where they are; Oncofiles files them on its first run.');
         wizSetBi(go, 'Nastaviť a pripojiť', 'Set up and connect');
       }
     }
@@ -3182,13 +3182,13 @@
         sk = 'Spracovanie je teraz na serveri pozastavené. Priečinok je zaradený a spracuje sa, keď ho správca zapne.';
         en = 'Processing is paused on the server right now. The folder is enrolled and will be processed once the maintainer switches it on.';
       } else {
-        sk = 'Spracovanie: kurátorovaná pipeline s lokálnym OCR. Server kontroluje priečinok každé ' + poll + ' min; nové súbory spracuje, keď sú ' + settle +
+        sk = 'Spracovanie: lokálny model na našom serveri. Server kontroluje priečinok každé ' + poll + ' min; nové súbory spracuje, keď sú ' + settle +
           ' min bez zmeny. Prvý beh je náhľad (nič nemení), potom najviac ' + (p.docs_per_run || 5) + ' dokumentov na beh. ';
-        en = 'Processing: the curated pipeline with local OCR. The server checks the folder every ' + poll + ' min and processes new files once they have been unchanged for ' + settle +
+        en = 'Processing: the local model on our server. The server checks the folder every ' + poll + ' min and processes new files once they have been unchanged for ' + settle +
           ' min. The first run is a preview (changes nothing), then up to ' + (p.docs_per_run || 5) + ' documents per run. ';
         // #865: what happens to a new institution/doctor follows CURATED_AUTO_VOCAB.
         if (p.auto_vocab) {
-          sk += 'Nového lekára alebo inštitúciu vytlačenú v dokumente pipeline sama doplní do README; nejasné prípady počkajú v 00-inbox na kontrolu.';
+          sk += 'Nového lekára alebo inštitúciu vytlačenú v dokumente Oncofiles sám doplní do README; nejasné prípady počkajú v 00-inbox na kontrolu.';
           en += 'A new doctor or institution printed in a document is added to the README automatically; unclear cases wait in 00-inbox for review.';
         } else {
           sk += 'Dokument s novým lekárom alebo inštitúciou, ktoré ešte nie sú v README, počká v 00-inbox na kontrolu; po doplnení do README ho zatriedi ďalší beh.';
@@ -4530,7 +4530,7 @@
           help ? ['– ' + help[0], '– ' + help[1]] : ['', ''], 'final attention');
       } else {
         add(doc.stage === 'ready', STAGE_TEXT.ready,
-          doc.stage === 'ready' ? ['– dokument je spracovaný, pre vás aj pre AI asistenta.', '– the document is processed, for you and for the AI assistant.']
+          doc.stage === 'ready' ? ['– dokument je spracovaný a váš AI asistent v ňom vie hľadať.', '– the document is processed and your AI assistant can search it.']
                                 : ['– bude po dokončení krokov vyššie.', '– once the steps above are done.'], 'final');
       }
       box.appendChild(list);
