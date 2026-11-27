@@ -2627,8 +2627,8 @@ async def privacy_policy(request: Request) -> HTMLResponse:
         _PRIVACY_HTML = _legal_page(
             "Privacy Policy",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 26, 2026 ·
-Consent version 2026-11-26</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 27, 2026 ·
+Consent version 2026-11-27</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2699,9 +2699,10 @@ confirmed by the mail system) are added to the patient's folder, where they are 
 any other document. The text of the caregiver's e-mail is not stored, and no e-mail text is
 read by any AI model.
 Documents sent to a patient's address by anyone other than the caregiver are held encrypted in
-quarantine until the caregiver approves or rejects them; rejected or expired items stay in a
-30-day trash and are then deleted (approved ones are filed normally), and the sender gets no
-reply. So that the caregiver can decide, the plain text of such an e-mail is kept with them,
+quarantine until the caregiver approves or rejects them, for at most 7 days; rejected items
+and items still undecided after 7 days stay in a 30-day trash and are then deleted (approved
+ones are filed normally), and the sender gets no reply. So that the caregiver can decide, the
+plain text of such an e-mail is kept with them,
 encrypted, for the same period and deleted together with the files, and the caregiver's
 dashboard shows a small preview picture of each attachment. Documents removed after an
 unclaimed trial can still be restored from encrypted backups for up to 6 months.</p>
@@ -2713,9 +2714,10 @@ pacienta sa pridajú len prílohy poslané z adresy opatrovateľa pacienta (s od
 potvrdeným poštovým systémom) a spracujú sa ako každý iný dokument. Text e-mailu opatrovateľa
 sa neukladá a žiadny text e-mailu nečíta AI model. Dokumenty, ktoré na adresu pacienta pošle
 ktokoľvek iný než
-opatrovateľ, čakajú zašifrované v karanténe, kým ich opatrovateľ neschváli alebo neodmietne;
-odmietnuté alebo vypršané položky zostávajú 30 dní v koši a potom sa vymažú (schválené sa
-zaradia ako zvyčajne) a odosielateľ nedostane žiadnu odpoveď. Aby sa opatrovateľ mohol
+opatrovateľ, čakajú zašifrované v karanténe, kým ich opatrovateľ neschváli alebo neodmietne,
+najviac 7 dní; odmietnuté položky a položky nerozhodnuté ani po 7 dňoch zostávajú 30 dní
+v koši a potom sa vymažú (schválené sa zaradia ako zvyčajne) a odosielateľ nedostane žiadnu
+odpoveď. Aby sa opatrovateľ mohol
 rozhodnúť, čistý text takého e-mailu sa uchováva spolu s nimi, zašifrovaný, rovnako dlho a
 vymaže sa spolu so súbormi; na nástenke opatrovateľa sa zobrazí malý náhľad každej prílohy.
 Dokumenty odstránené po nevyužitej skúšobnej dobe sa ešte najviac 6 mesiacov dajú obnoviť
@@ -2830,8 +2832,8 @@ async def terms_of_service(request: Request) -> HTMLResponse:
         _TERMS_HTML = _legal_page(
             "Terms of Service",
             """
-<p class="meta">Effective: March 25, 2026 · Last updated: November 26, 2026 ·
-Consent version 2026-11-26</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 27, 2026 ·
+Consent version 2026-11-27</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
