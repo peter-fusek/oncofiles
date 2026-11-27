@@ -51,7 +51,7 @@ def test_view_switch_is_a_segmented_control_next_to_the_search():
     toolbar = HTML[HTML.index('<div class="docs-toolbar">') : HTML.index('id="patient-export-btn"')]
     assert 'id="doc-search"' in toolbar
     assert '<div class="view-switch" role="group" aria-labelledby="view-switch-label">' in toolbar
-    for view, pressed in (("list", "true"), ("grid", "false")):
+    for view, pressed in (("list", "false"), ("grid", "true")):  # grid is the default
         button = re.search(rf'<button [^>]*data-action="setDocView\|{view}"[^>]*>', toolbar)
         assert button, view
         assert f'aria-pressed="{pressed}"' in button.group(0)
@@ -64,7 +64,9 @@ def test_view_switch_is_a_segmented_control_next_to_the_search():
 def test_choice_is_remembered_and_works_without_storage():
     assert "var DOC_VIEW_KEY = 'oncofiles_doc_view';" in JS
     read = _function("readDocView")
-    assert "try {" in read and "catch (e) { return 'list'; }" in read
+    assert "try {" in read and "catch (e) { return 'grid'; }" in read
+    # grid is the default; only a remembered "list" shows the table
+    assert "=== 'list' ? 'list' : 'grid'" in read
     store = _function("setDocView")
     assert "try { localStorage.setItem(DOC_VIEW_KEY, docView); } catch (e)" in store
     controls = _function("updateDocViewControls")

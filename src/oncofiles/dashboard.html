@@ -219,8 +219,8 @@
  <!-- #948: list or grid of previews, like Finder; the choice is remembered per browser -->
  <div class="view-switch" role="group" aria-labelledby="view-switch-label">
  <span id="view-switch-label" class="sr-only" data-sk="Zobrazenie dokumentov" data-en="Document view">Zobrazenie dokumentov</span>
- <button type="button" class="view-btn is-active" id="view-btn-list" data-action="setDocView|list" aria-pressed="true"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2" y="3.5" width="3" height="3" rx="0.8"/><rect x="7" y="4" width="11" height="2" rx="1"/><rect x="2" y="8.5" width="3" height="3" rx="0.8"/><rect x="7" y="9" width="11" height="2" rx="1"/><rect x="2" y="13.5" width="3" height="3" rx="0.8"/><rect x="7" y="14" width="11" height="2" rx="1"/></svg><span class="view-btn-label" data-sk="Zoznam" data-en="List">Zoznam</span></button>
- <button type="button" class="view-btn" id="view-btn-grid" data-action="setDocView|grid" aria-pressed="false"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2.5" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="2.5" y="11" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="11" width="6.5" height="6.5" rx="1.2"/></svg><span class="view-btn-label" data-sk="Mriežka" data-en="Grid">Mriežka</span></button>
+ <button type="button" class="view-btn" id="view-btn-list" data-action="setDocView|list" aria-pressed="false"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2" y="3.5" width="3" height="3" rx="0.8"/><rect x="7" y="4" width="11" height="2" rx="1"/><rect x="2" y="8.5" width="3" height="3" rx="0.8"/><rect x="7" y="9" width="11" height="2" rx="1"/><rect x="2" y="13.5" width="3" height="3" rx="0.8"/><rect x="7" y="14" width="11" height="2" rx="1"/></svg><span class="view-btn-label" data-sk="Zoznam" data-en="List">Zoznam</span></button>
+ <button type="button" class="view-btn is-active" id="view-btn-grid" data-action="setDocView|grid" aria-pressed="true"><svg class="view-icon" viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="2.5" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="2.5" width="6.5" height="6.5" rx="1.2"/><rect x="2.5" y="11" width="6.5" height="6.5" rx="1.2"/><rect x="11" y="11" width="6.5" height="6.5" rx="1.2"/></svg><span class="view-btn-label" data-sk="Mriežka" data-en="Grid">Mriežka</span></button>
  </div>
  <!-- #856: the one export button, the full ZIP (caregiver, or an admin for the selected patient); in /demo it only explains itself -->
  <button type="button" class="copy-btn" id="patient-export-btn" data-action="downloadPatientExport" data-sk="Stiahnuť všetky údaje (ZIP)" data-en="Download all data (ZIP)">Stiahnuť všetky údaje (ZIP)</button>
@@ -240,13 +240,13 @@
  <p id="upload-note" class="upload-note" role="status" hidden></p>
  <ul id="upload-list" class="upload-list" aria-live="polite"></ul>
  </div>
- <ol class="steps-legend" aria-label="Processing steps">
+ <ol class="steps-legend" aria-label="Processing steps" hidden>
  <li><span class="legend-num">1</span><span><strong data-sk="Vyťažený" data-en="Extracted">Vyťažený</strong> <span data-sk="– text a údaje sú prečítané" data-en="– text and data have been read">– text a údaje sú prečítané</span></span></li>
  <li><span class="legend-num">2</span><span><strong data-sk="Premenovaný" data-en="Renamed">Premenovaný</strong> <span data-sk="– má štandardný názov" data-en="– has the standard name">– má štandardný názov</span></span></li>
  <li><span class="legend-num">3</span><span><strong data-sk="Zaradený" data-en="Filed">Zaradený</strong> <span data-sk="– je v správnom priečinku na Drive" data-en="– sits in the right Drive folder">– je v správnom priečinku na Drive</span></span></li>
  <li class="legend-key"><span class="step-mark done" aria-hidden="true"></span><span data-sk="hotové" data-en="done">hotové</span><span class="step-mark" aria-hidden="true"></span><span data-sk="čaká" data-en="waiting">čaká</span></li>
  </ol>
- <div class="table-wrap" id="doc-table-wrap">
+ <div class="table-wrap" id="doc-table-wrap" hidden>
  <table id="doc-table">
  <thead>
  <tr>
@@ -266,7 +266,7 @@
  </table>
  </div>
  <!-- #948 grid: the same filtered and sorted list as cards with a preview -->
- <div class="doc-grid-wrap" id="doc-grid-wrap" hidden>
+ <div class="doc-grid-wrap" id="doc-grid-wrap">
  <div class="grid-sort">
  <label for="grid-sort-col" data-sk="Zoradené podľa" data-en="Sorted by">Zoradené podľa</label>
  <select id="grid-sort-col" data-change="setGridSort|@value">
