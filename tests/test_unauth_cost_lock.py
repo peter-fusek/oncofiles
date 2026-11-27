@@ -191,13 +191,15 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
         "inbound_brevo_webhook",
     ): "Brevo inbound webhook (#950): 404 while INBOUND_BREVO_TOKEN is unset; body capped "
     "before reading; the custom X-Inbound-Token header compared in constant time before the "
-    "JSON is parsed (Brevo does not sign; tests/test_950_inbound_address.py)",
+    "JSON is parsed (Brevo does not sign; tests/test_950_inbound_address.py); every other "
+    "method and the slash form are the unknown-path 404 (tests/test_hidden_routes.py)",
     (
         "/inbound/email",
         "inbound_email_webhook",
     ): "inbound mail webhook (#950): 404 while INBOUND_MIME_HMAC_SECRET is unset; body capped "
     "before reading; HMAC-SHA256 signature checked in constant time before any parsing "
-    "(tests/test_950_inbound_address.py)",
+    "(tests/test_950_inbound_address.py); every other method and the slash form are the "
+    "unknown-path 404 (tests/test_hidden_routes.py)",
 }
 
 # MCP OAuth (FastMCP / mcp SDK) routes: open by the OAuth / DCR specs.
@@ -736,12 +738,58 @@ def test_ops_endpoint_is_gated(prod_routes):
     """#887: /ops/mcp is OpsGate around the same auth-wrapped MCP handler."""
     from fastmcp.server.auth.middleware import RequireAuthMiddleware
 
+    from oncofiles.hidden_routes import HiddenRoute
     from oncofiles.tool_surface import OpsGate
 
     ops = [r for r in prod_routes if getattr(r, "path", None) == "/ops/mcp"]
     assert len(ops) == 1
     assert isinstance(ops[0].endpoint, OpsGate)
     assert isinstance(ops[0].endpoint.app, RequireAuthMiddleware)
+    # pentest 2026-11-27: every method reaches the gate (no 405 + Allow)
+    assert isinstance(ops[0], HiddenRoute)
+
+
+# Pentest 2026-11-27 (tests/test_hidden_routes.py): the slash forms of the
+# hidden routes are catch-alls that answer the unknown-path 404 and nothing else.
+def _hidden_slash_paths() -> set[str]:
+    from oncofiles.hidden_routes import HIDDEN_PATHS, SLASH_SUFFIX
+
+    return {p + SLASH_SUFFIX for p in HIDDEN_PATHS}
+
+
+def test_hidden_routes_answer_like_an_unknown_path(prod_routes):
+    """/ops/mcp and /inbound/* are HiddenRoutes (every method reaches the gate
+    or gets the unknown 404); each slash form is an UnknownPath catch-all."""
+    from oncofiles.hidden_routes import HIDDEN_PATHS, HiddenRoute, UnknownPath
+
+    by_path: dict[str, list] = defaultdict(list)
+    for r in prod_routes:
+        by_path[getattr(r, "path", None)].append(r)
+    for path in HIDDEN_PATHS:
+        assert len(by_path[path]) == 1 and isinstance(by_path[path][0], HiddenRoute), path
+    for path in _hidden_slash_paths():
+        assert len(by_path[path]) == 1, path
+        assert isinstance(by_path[path][0].endpoint, UnknownPath), path
+
+
+def test_hidden_routes_module_reaches_nothing():
+    """The guard answers before any work: it imports only starlette, stdlib and
+    the ops path constant; UnknownPath only raises the 404."""
+    tree = ast.parse((SRC / "hidden_routes.py").read_text())
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {a.name for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    oncofiles_imports = {m for m in imported if m.startswith("oncofiles")}
+    assert oncofiles_imports == {"oncofiles.tool_surface"}, oncofiles_imports
+    assert {m.split(".")[0] for m in imported} <= {
+        "__future__",
+        "collections",
+        "starlette",
+        "oncofiles",
+    }, imported
 
 
 def test_every_route_is_classified(prod_routes):
@@ -760,6 +808,10 @@ def test_every_route_is_classified(prod_routes):
         if path == "/ops/mcp":
             # #887: operator surface, gated by OpsGate (static bearer only);
             # see test_ops_endpoint_is_gated and tests/test_tool_surface.py
+            continue
+        if path in _hidden_slash_paths():
+            # pentest 2026-11-27: the unknown-path 404 for a hidden route's
+            # slash form; see test_hidden_routes_answer_like_an_unknown_path
             continue
         if getattr(endpoint, "__module__", None) == server.__name__:
             key = (path, endpoint.__name__)

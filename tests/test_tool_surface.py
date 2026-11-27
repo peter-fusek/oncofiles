@@ -276,6 +276,61 @@ async def test_ops_endpoint_loopback_bad_token_is_401(prod_app, client_ip):
     assert r.status_code == 401
 
 
+# Pentest 2026-11-27: the router itself used to reveal /ops/mcp (405 +
+# ``Allow: POST, DELETE`` for GET/HEAD/PUT/OPTIONS, 307 for ``/ops/mcp/``).
+_ALL_METHODS = ["GET", "HEAD", "PUT", "OPTIONS", "PATCH", "POST", "DELETE", "PROPFIND"]
+
+
+async def _request_as(app, client_ip, method, path, headers):
+    transport = httpx.ASGITransport(app=app, client=(client_ip, 40123))
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http:
+        content = None if method in ("GET", "HEAD", "OPTIONS") else json.dumps(_LIST_BODY)
+        return await http.request(method, path, content=content, headers={**_ACCEPT, **headers})
+
+
+def _observable(r):
+    return r.status_code, sorted(r.headers.multi_items()), r.content
+
+
+@pytest.mark.parametrize("client_ip", ["172.17.0.1", "203.0.113.7", "::ffff:127.0.0.1"])
+@pytest.mark.parametrize("method", _ALL_METHODS)
+@pytest.mark.parametrize(
+    "path", [OPS_MCP_PATH, OPS_MCP_PATH + "/", OPS_MCP_PATH + "//", OPS_MCP_PATH + "/x"]
+)
+async def test_ops_endpoint_every_method_and_slash_form_is_the_unknown_404(
+    prod_app, client_ip, method, path
+):
+    """From a non-loopback peer, with the valid operator token and forwarding
+    headers claiming loopback: status, headers and body equal an unknown path's."""
+    headers = {
+        "Authorization": f"Bearer {OPERATOR_TOKEN}",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Real-IP": "127.0.0.1",
+    }
+    r = await _request_as(prod_app, client_ip, method, path, headers)
+    unknown = await _request_as(prod_app, client_ip, method, "/ops/no-such-path-887", headers)
+    root_unknown = await _request_as(prod_app, client_ip, method, "/no-such-path-887", headers)
+    assert r.status_code == 404
+    assert _observable(r) == _observable(unknown) == _observable(root_unknown)
+    assert "allow" not in r.headers and "location" not in r.headers
+
+
+@pytest.mark.parametrize("client_ip", ["127.0.0.1", "::1"])
+@pytest.mark.parametrize("method", ["GET", "HEAD", "PUT", "OPTIONS", "PATCH"])
+async def test_ops_endpoint_loopback_other_methods_are_the_unknown_404(prod_app, client_ip, method):
+    """On loopback only POST/DELETE reach the gate; nothing else names the route."""
+    headers = {"Authorization": f"Bearer {OPERATOR_TOKEN}"}
+    r = await _request_as(prod_app, client_ip, method, OPS_MCP_PATH, headers)
+    unknown = await _request_as(prod_app, client_ip, method, "/no-such-path-887", headers)
+    assert r.status_code == 404 and _observable(r) == _observable(unknown)
+
+
+@pytest.mark.parametrize("client_ip", ["127.0.0.1", "::1"])
+async def test_ops_endpoint_loopback_delete_bad_token_is_401(prod_app, client_ip):
+    r = await _request_as(prod_app, client_ip, "DELETE", OPS_MCP_PATH, {"Authorization": "x"})
+    assert r.status_code == 401
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 

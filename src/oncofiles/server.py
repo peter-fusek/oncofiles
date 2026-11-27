@@ -2516,6 +2516,7 @@ class _OncofilesMCP(FastMCP):
     def http_app(self, path=None, *args, **kwargs):
         import fastmcp as _fastmcp
 
+        from oncofiles.hidden_routes import install_hidden_route_guards
         from oncofiles.mcp_anon import install_anon_catalog
         from oncofiles.tool_surface import install_ops_route
 
@@ -2525,6 +2526,9 @@ class _OncofilesMCP(FastMCP):
         # #1004: anonymous initialize / tools/list (user surface); after the
         # ops route, which keeps the plain auth wrapper
         install_anon_catalog(app, mcp_path)
+        # pentest 2026-11-27: /ops/mcp and /inbound/* answer like an unknown
+        # path for every method and their slash form (no 405 + Allow, no 307)
+        install_hidden_route_guards(app)
         return app
 
 
@@ -9922,6 +9926,7 @@ def main() -> None:
         from starlette.middleware.cors import CORSMiddleware
 
         from oncofiles.ratelimit import RateLimitMiddleware
+        from oncofiles.redirect_location import RelativeRedirectMiddleware
         from oncofiles.register_guard import RegisterJSONGuardMiddleware
 
         def _quiet_session_verifier(token: str) -> str | None:
@@ -9933,6 +9938,12 @@ def main() -> None:
             port=MCP_PORT,
             stateless_http=True,  # no server-side sessions — survives Railway deploys (#229)
             middleware=[
+                # pentest 2026-11-27: outermost of ours, so it sees every 3xx
+                # (router slash redirects, routes, OAuth, the middlewares
+                # below) and makes a Location to our own host over http
+                # relative; behind Traefik scope["scheme"] is http, and
+                # FORWARDED_ALLOW_IPS is deliberately NOT widened (#887).
+                Middleware(RelativeRedirectMiddleware),
                 Middleware(SecurityHeadersMiddleware),
                 Middleware(
                     CORSMiddleware,

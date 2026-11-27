@@ -346,6 +346,10 @@ def install_ops_route(app, mcp_path: str) -> bool:
     Reuses the ``/mcp`` route's endpoint (FastMCP's auth wrapper around the
     one streamable-http handler), so both paths share the session manager,
     lifespan and process. Returns False when there is no such route (SSE).
+    ``hidden_routes.install_hidden_route_guards`` then makes the route match
+    every method (anything but POST/DELETE is the unknown-path 404, never
+    405 + ``Allow``) and adds the ``/ops/mcp/…`` catch-all, so the router
+    never reveals the endpoint either (pentest 2026-11-27).
     """
     routes = app.router.routes
     if any(getattr(r, "path", None) == OPS_MCP_PATH for r in routes):
