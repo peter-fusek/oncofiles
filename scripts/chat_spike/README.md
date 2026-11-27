@@ -40,6 +40,14 @@ The container image does not ship `scripts/`, so run it from a checkout of the
 repo on the host, against LM Studio on the host (port and model id: private
 RUNBOOK, AI zone).
 
+0. LM Studio requires its API key: export it as `LOCAL_LLM_API_KEY` from the
+   Keychain entry named in the RUNBOOK (never on the command line, never
+   echoed). Without it every call is a 401.
+   From another machine, reach LM Studio through an SSH tunnel to the host's
+   loopback (e.g. `ssh -N -L 11234:127.0.0.1:1234 <host>`, then
+   `--base-url http://127.0.0.1:11234/v1`). A tailnet or LAN address is refused
+   by the #925 host rule on purpose; do not widen `LOCAL_LLM_ALLOWED_HOSTS` for
+   the bench.
 1. Make sure **no curated run is active** and none is due (continuous mode
    starts runs on its own; the nightly sweep runs at `CURATED_NIGHTLY_HOUR`).
    `--health-url` makes the bench refuse while the app's `/health` says
