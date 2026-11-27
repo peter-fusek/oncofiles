@@ -507,10 +507,11 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         ),
     )
 
-    # #999: the memory check (every 5 min, graceful restart above the RSS
-    # threshold) was an APScheduler job, which never starts in prod, leaving
-    # only the /health hard ceiling. This loop is its only owner (first run
-    # 7 min after start as before, #366; no DB, no semaphore). One per process.
+    # #999: the memory check (every 5 min) was an APScheduler job, which never
+    # starts in prod, leaving only the /health hard ceiling. This loop is its
+    # only owner (first run 7 min after start as before, #366; no DB). Report
+    # only unless MEMORY_CHECK_RESTART=true, and then never while work runs:
+    # _sync_semaphore is passed only as a busy signal, never acquired.
     from oncofiles.memory_check_loop import JOB_ID as MEMORY_CHECK_JOB
     from oncofiles.memory_check_loop import memory_check_loop
 
@@ -518,7 +519,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         MEMORY_CHECK_JOB,
         lambda: asyncio.create_task(
             # literal job name: the #925 lock reads it (== MEMORY_CHECK_JOB, tested)
-            local_only_task("memory_check", memory_check_loop)()
+            local_only_task("memory_check", memory_check_loop)(_sync_semaphore)
         ),
     )
 
@@ -4270,6 +4271,8 @@ async def readiness(request: Request) -> JSONResponse:
             }
             if "last_deleted" in st:  # daily retention loops (#868 access log)
                 jobs[job_id]["last_deleted"] = st["last_deleted"]
+            if "memory" in st:  # the memory check's report (#999 job 5), counts + codes
+                jobs[job_id]["memory"] = st["memory"]
         result["jobs"] = jobs
         # #441 Layer 6: cluster-wide AI cost in the last 24h. Cheap aggregate
         # query — operator-only, like the rest of the readiness payload.
