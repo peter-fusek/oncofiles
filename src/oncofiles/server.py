@@ -2631,7 +2631,7 @@ async def privacy_policy(request: Request) -> HTMLResponse:
             "Privacy Policy",
             """
 <p class="meta">Effective: March 25, 2026 · Last updated: November 27, 2026 ·
-Consent version 2026-11-27</p>
+Consent version 2026-11-27.2</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2740,7 +2740,7 @@ of extracted values, and before deleting a patient on request, the server also m
 copy of the database; only the 5 newest safety copies are kept.</li>
 <li><strong>Logs</strong> — the application's technical log masks e-mail addresses and tokens
 and is kept for 7 days. The server sees IP addresses of requests, for security and to limit
-abuse.</li>
+abuse. Server logs rotate automatically and are kept for at most 30 days.</li>
 <li><strong>Your Google Drive</strong> — your original files, plus the transcripts and
 <code>README.md</code> described in section 1.</li>
 </ul>
@@ -2783,9 +2783,10 @@ itself). These rows are deleted automatically after 90 days.</p>
 <h2 id="retention">7. Data Retention</h2>
 <p>Your data is retained as long as your account is active. Oncofiles does not delete your
 documents, their text, extracted values or patient records automatically. Only technical
-records expire on a schedule, for example the application log after 7 days (section 4) and the
-dashboard access log after 90 days (section 6). You can ask us to delete all data stored about a
-patient, including extracted values and the access log; see section 8.
+records expire on a schedule, for example the application log after 7 days, other server logs
+after at most 30 days (section 4) and the dashboard access log after 90 days (section 6). You
+can ask us to delete all data stored about a patient, including extracted values and the
+access log; see section 8.
 Original files in your Google Drive are never deleted by Oncofiles.</p>
 
 <h2 id="rights">8. Your Rights (GDPR)</h2>
@@ -2836,7 +2837,7 @@ async def terms_of_service(request: Request) -> HTMLResponse:
             "Terms of Service",
             """
 <p class="meta">Effective: March 25, 2026 · Last updated: November 27, 2026 ·
-Consent version 2026-11-27</p>
+Consent version 2026-11-27.2</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>

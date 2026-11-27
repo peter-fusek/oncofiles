@@ -1229,7 +1229,7 @@ async def test_privacy_and_terms_describe_the_data_rights():
     assert "encrypted backups for up to 6 months" in privacy
     assert '"Disconnect Google Drive" on the dashboard' in terms
     assert "within 30 days" in terms
-    assert "Consent version 2026-11-27" in privacy and "Consent version 2026-11-27" in terms
+    assert "Consent version 2026-11-27.2" in privacy and "Consent version 2026-11-27.2" in terms
 
 
 # ── wiring ────────────────────────────────────────────────────────────────
