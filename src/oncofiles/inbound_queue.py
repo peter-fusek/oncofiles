@@ -837,14 +837,47 @@ async def _drain(db) -> None:
 
 
 async def run_pending(db, *, limit: int = MAX_JOBS_PER_RUN) -> Counter:
-    """Process claimable jobs one at a time; returns outcome counts.
+    """Process claimable jobs one at a time, then the quarantine sweep;
+    returns the job outcome counts (``kick`` / ``_drain``).
 
     Without ``INBOUND_JOBS_SECRET`` nothing is touched (one warning per process).
     """
+    counts, _maintenance = await _run(db, limit=limit)
+    return counts
+
+
+async def run_cycle(db, *, limit: int = MAX_JOBS_PER_RUN) -> Counter:
+    """One pass of the periodic ``inbound_queue`` loop (#999,
+    ``oncofiles.inbound_loop``): the same work as :func:`run_pending`, with
+    code-shaped keys only (``job_<state>_<reason>``,
+    ``claimed_<state>_<reason>``, ``quarantine_<count>``) for operator
+    telemetry. Counts only."""
+    counts, maintenance = await _run(db, limit=limit)
+    out: Counter = Counter()
+    for outcome, n in counts.items():
+        if outcome.startswith("claimed:"):
+            out[_code("claimed_" + outcome.removeprefix("claimed:"))] += n
+        else:
+            out[_code("job_" + outcome)] += n
+    if maintenance:
+        out["quarantine_expired"] += int(maintenance.get("expired") or 0)
+        out["quarantine_notices_sent"] += int(maintenance.get("notices") or 0)
+        for key, value in (maintenance.get("purge") or {}).items():
+            if isinstance(value, int):
+                out[_code("quarantine_" + key)] += value
+    return out
+
+
+def _code(text: str) -> str:
+    """A count key as a code (letters, digits, ``_``; at most 60 chars)."""
+    return "".join(ch if ch.isascii() and (ch.isalnum() or ch == "_") else "_" for ch in text)[:60]
+
+
+async def _run(db, *, limit: int) -> tuple[Counter, dict | None]:
     counts: Counter = Counter()
     if not configured():
         _warn_unconfigured_once()
-        return counts
+        return counts, None
     # #950: verify the claimed bucket first, so a verified mail is processed
     # in this same run. ``_verify_one`` takes PROCESS_LOCK itself, only around
     # its DB steps: the EML download and DNS lookups run outside it.
@@ -875,12 +908,14 @@ async def run_pending(db, *, limit: int = MAX_JOBS_PER_RUN) -> Counter:
     # sender throttle has passed.
     from oncofiles import inbound_quarantine
 
+    maintenance: dict | None = None
     try:
         async with inbound_email.PROCESS_LOCK:
-            await inbound_quarantine.run_maintenance(db)
+            maintenance = await inbound_quarantine.run_maintenance(db)
     except Exception as exc:  # noqa: BLE001 - never stops the queue
         logger.warning("inbound: quarantine sweep failed (%s)", type(exc).__name__)
-    return counts
+        maintenance = {"purge": {"sweep_failed": 1}}
+    return counts, maintenance
 
 
 async def _verify_one(db) -> str | None:

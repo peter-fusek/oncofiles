@@ -14,6 +14,8 @@ DELETE is added here.
 
 from __future__ import annotations
 
+from oncofiles import inbound_sql as q
+
 from ._base import DatabaseBase
 from ._tenant import require_patient_id
 
@@ -146,9 +148,11 @@ class InboundJobsMixin(DatabaseBase):
             """SELECT id, job_uuid, patient_id, token_hash, payload_enc, state, attempts,
                       next_attempt_at, created_at, updated_at
                FROM inbound_jobs
-               WHERE (state = 'pending' AND next_attempt_at <= ?)
-                  OR (state = 'processing' AND updated_at < ?)
-               ORDER BY next_attempt_at, id LIMIT 1""",
+               WHERE """
+            + q.JOB_CLAIMABLE_WHERE
+            + " "
+            + q.JOB_CLAIM_ORDER
+            + " LIMIT 1",
             (now, stale_before),
         ) as cursor:
             row = await cursor.fetchone()

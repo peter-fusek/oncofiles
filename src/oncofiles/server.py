@@ -460,6 +460,22 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         ),
     )
 
+    # #999 / #952: the inbound queue sweep (claimed-row DKIM verification, the
+    # durable queue, then the quarantine expiry / purge / digests) was an
+    # APScheduler job, which never starts in prod. This loop is its only
+    # periodic owner (first run after the startup grace, under _sync_semaphore);
+    # the Brevo route's kick after an enqueue stays. One per process.
+    from oncofiles.inbound_loop import JOB_ID as INBOUND_QUEUE_JOB
+    from oncofiles.inbound_loop import inbound_queue_loop
+
+    inbound_queue_task, _ = scheduler_singleton.ensure_background_loop(
+        INBOUND_QUEUE_JOB,
+        lambda: asyncio.create_task(
+            # literal job name: the #925 lock reads it (== INBOUND_QUEUE_JOB, tested)
+            local_only_task("inbound_queue", inbound_queue_loop)(db, _sync_semaphore)
+        ),
+    )
+
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         # #784: one curated loop per process; a second lifespan gets the same task.
@@ -496,6 +512,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         for _name, _task in (
             (HOLDING_MOVE_JOB, holding_move_task),
             (HOLDING_EXTRACT_JOB, holding_extract_task),
+            (INBOUND_QUEUE_JOB, inbound_queue_task),
         ):
             if scheduler_singleton.release_background_loop(_name, _task):
                 _task.cancel()
@@ -2381,32 +2398,12 @@ def _start_sync_scheduler(
     scheduler.add_listener(_job_error, EVENT_JOB_ERROR)
     scheduler.add_listener(_job_missed, EVENT_JOB_MISSED)
 
-    # #952: durable inbound mail queue. First run at the startup grace end
-    # (_defer_jobs_past_startup_grace moves next_run_time=now there), then
-    # every WORKER_INTERVAL_MIN; the Brevo route also kicks the worker right
-    # after an enqueue. Claims are conditional updates, so the old container
-    # of a rolling deploy and this one never take the same job.
-    async def _run_inbound_queue():
-        from oncofiles import inbound_queue
-
-        try:
-            async with _sync_semaphore:
-                await inbound_queue.run_pending(db)
-        except Exception:
-            logger.exception("inbound queue run failed")
-            raise
-
-    from oncofiles.inbound_queue import WORKER_INTERVAL_MIN
-
-    scheduler.add_job(
-        local_only_task("inbound_queue", _run_inbound_queue),
-        IntervalTrigger(minutes=WORKER_INTERVAL_MIN),
-        id="inbound_queue",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=60,
-        next_run_time=datetime.now(),
-    )
+    # #952: the durable inbound mail queue (and the #950 quarantine sweep it
+    # runs) is NOT an APScheduler job (#999): it must run while
+    # SYNC_ENABLED=false, so its only periodic owner is the lifespan loop
+    # (oncofiles.inbound_loop); the Brevo route's kick after an enqueue is
+    # unchanged. Claims are conditional updates, so the old container of a
+    # rolling deploy and this one never take the same job.
 
     # #950 phases two and three: holding_extract and holding_move are NOT
     # APScheduler jobs (#999): they must run while SYNC_ENABLED=false, so their
@@ -4274,10 +4271,11 @@ async def readiness(request: Request) -> JSONResponse:
                 )
             },
         }
-        # #999: the holding mover and reader loops (in-memory, counts only).
-        from oncofiles import holding_loops
+        # #999: the interval loops (holding mover and reader, inbound queue
+        # sweep), in-memory, counts only.
+        from oncofiles import scheduled_jobs
 
-        for job_id, job in holding_loops.JOBS.items():
+        for job_id, job in scheduled_jobs.INTERVAL_LOOPS.items():
             st = job.status()
             jobs[job_id] = {
                 "loop_running": scheduler_singleton.background_loop_running(job_id),

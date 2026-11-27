@@ -114,6 +114,8 @@ from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr
 from pathlib import Path
 
+from oncofiles import inbound_sql
+
 logger = logging.getLogger(__name__)
 
 # ── caps and timings ─────────────────────────────────────────────────────
@@ -666,17 +668,14 @@ async def notify_due(db, patient_id: str) -> int:
         return 0
     hour_ago = _iso(now - timedelta(seconds=NOTIFY_SENDER_INTERVAL_S))
     last_by_sender: dict[str, str | None] = {}
-    due = []
     for it in items:
         sh = it["sender_hash"]
         if sh not in last_by_sender:
             last_by_sender[sh] = await db.quarantine_last_notice_for_sender(
                 patient_id=patient_id, sender_hash=sh
             )
-        last = last_by_sender[sh]
-        if last and last >= hour_ago:
-            continue
-        due.append(it)
+    # the one per-sender throttle rule, shared with the #999 dry run
+    due = inbound_sql.due_for_notice(items, last_by_sender, hour_ago)
     if not due:
         _counters()["quarantine_notice_throttled"] += 1
         return 0
@@ -765,6 +764,63 @@ class _ItemPurge:
     dir_kept: bool = False
 
 
+@dataclass
+class PurgePlan:
+    """What :func:`_purge_item_files` would remove for one item (checks only)."""
+
+    refused: bool = False
+    missing: int = 0
+    folder: Path | None = None  # the resolved item directory, when it exists
+    targets: list[tuple[Path, int]] = field(default_factory=list)  # (file, size)
+
+    @property
+    def bytes(self) -> int:
+        return sum(size for _path, size in self.targets)
+
+
+def purge_plan(root: Path | str, item_uuid: str, file_count: int) -> PurgePlan:
+    """The path checks of the purge, read-only (``lstat`` / ``resolve`` only).
+
+    Shared by :func:`_purge_item_files` and the #999 dry run
+    (``job_dryrun inbound_maintenance``), so the dry run refuses and counts
+    exactly what the purge would. Refused when the uuid is not in its
+    canonical form, the item directory is a symlink or not a directory, it
+    does not resolve to a direct child of ``root`` with that very name, or one
+    of the named files is not a regular file. A missing directory or file is
+    counted in ``missing``. Never creates, changes or removes anything.
+    """
+    try:
+        canonical = str(uuid.UUID(str(item_uuid)))
+    except (ValueError, TypeError, AttributeError):
+        return PurgePlan(refused=True)
+    if canonical != item_uuid or int(file_count) < 0:
+        return PurgePlan(refused=True)
+    root = Path(root)
+    if not root.is_dir():  # no quarantine directory: nothing on disk
+        return PurgePlan(missing=int(file_count))
+    root = root.resolve()
+    folder = root / item_uuid
+    if not os.path.lexists(folder):
+        return PurgePlan(missing=int(file_count))
+    if folder.is_symlink() or not folder.is_dir():
+        return PurgePlan(refused=True)
+    real = folder.resolve(strict=True)
+    if real.parent != root or real.name != item_uuid:
+        return PurgePlan(refused=True)
+    plan = PurgePlan(folder=real)
+    for index in range(int(file_count)):
+        path = real / f"{index}.bin"
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            plan.missing += 1
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            return PurgePlan(refused=True)
+        plan.targets.append((path, info.st_size))
+    return plan
+
+
 def _purge_item_files(item_uuid: str, file_count: int) -> _ItemPurge:
     """Remove the encrypted files of ONE item, then its empty directory.
 
@@ -778,35 +834,12 @@ def _purge_item_files(item_uuid: str, file_count: int) -> _ItemPurge:
     update leaves exactly that). A leftover we did not name (e.g. the
     ``.tmp`` of a crashed write) keeps the directory (``dir_kept``).
     """
-    out = _ItemPurge()
-    try:
-        canonical = str(uuid.UUID(str(item_uuid)))
-    except (ValueError, TypeError, AttributeError):
-        return _ItemPurge(refused=True)
-    if canonical != item_uuid or int(file_count) < 0:
-        return _ItemPurge(refused=True)
-    root = quarantine_dir().resolve()
-    folder = root / item_uuid
-    if not os.path.lexists(folder):
-        out.missing = int(file_count)
+    plan = purge_plan(quarantine_dir(), item_uuid, file_count)
+    out = _ItemPurge(refused=plan.refused, missing=plan.missing)
+    if plan.refused or plan.folder is None:
         return out
-    if folder.is_symlink() or not folder.is_dir():
-        return _ItemPurge(refused=True)
-    real = folder.resolve(strict=True)
-    if real.parent != root or real.name != item_uuid:
-        return _ItemPurge(refused=True)
-    targets: list[tuple[Path, int]] = []
-    for index in range(int(file_count)):
-        path = real / f"{index}.bin"
-        try:
-            info = os.lstat(path)
-        except FileNotFoundError:
-            out.missing += 1
-            continue
-        if not stat.S_ISREG(info.st_mode):
-            return _ItemPurge(refused=True)
-        targets.append((path, info.st_size))
-    for path, size in targets:
+    real = plan.folder
+    for path, size in plan.targets:
         try:
             os.remove(path)  # one named file of this item (checked above)
         except FileNotFoundError:
