@@ -30,7 +30,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from oncofiles import erase_retention, holding_loops
+from oncofiles import erase_retention, holding_loops, inbound_loop
 
 # Human descriptions by job id: (group, name sk, name en, desc sk, desc en).
 # A lookup only — whether a job is shown depends on the running scheduler.
@@ -128,12 +128,17 @@ CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
         "(beží aj pri SYNC_ENABLED=false)",
         "Delete pre-erasure safety copies older than 30 days (runs also with SYNC_ENABLED=false)",
     ),
-    "inbound_queue": (
+    # Lifespan loop (oncofiles.inbound_loop), not an APScheduler job (#999).
+    inbound_loop.JOB_ID: (
         "infra",
         "Fronta prijatej pošty",
         "Inbound mail queue",
-        "Spracuje dokumenty poslané e-mailom, ktoré čakajú vo fronte (aj po reštarte)",
-        "Process documents sent by e-mail that wait in the queue (also after a restart)",
+        "Spracuje dokumenty poslané e-mailom, ktoré čakajú vo fronte (aj po reštarte), "
+        "a karanténu: expirácia, súhrnné e-maily, vymazanie po koši "
+        "(beží aj pri SYNC_ENABLED=false)",
+        "Process documents sent by e-mail that wait in the queue (also after a restart), "
+        "and the quarantine: expiry, digests, purge after the trash "
+        "(runs also with SYNC_ENABLED=false)",
     ),
     # Lifespan loops (oncofiles.holding_loops), not APScheduler jobs (#999).
     holding_loops.EXTRACT_JOB_ID: (
@@ -231,20 +236,22 @@ _LEGACY_ONLY = {
 _NIGHTLY_ONLY = {"nightly_ai_pipeline", "weekly_discovery_pipeline"}
 # Catalogue ids that are lifespan loops, not APScheduler jobs: they run whatever
 # SYNC_ENABLED says, so the scheduler's off reason never applies to them (#856).
-BACKGROUND_LOOP_JOBS = {erase_retention.JOB_ID, *holding_loops.JOBS}
+# The fixed-interval loops (oncofiles.interval_job.IntervalJob) by job id.
+INTERVAL_LOOPS = {**holding_loops.JOBS, **inbound_loop.JOBS}
+BACKGROUND_LOOP_JOBS = {erase_retention.JOB_ID, *INTERVAL_LOOPS}
 
 
 def background_loop_state(job_id: str) -> dict:
     """In-memory telemetry of one lifespan loop (#856, #999)."""
     if job_id == erase_retention.JOB_ID:
         return erase_retention.status()
-    return holding_loops.JOBS[job_id].status()
+    return INTERVAL_LOOPS[job_id].status()
 
 
 def _background_loop_trigger(job_id: str) -> dict:
     if job_id == erase_retention.JOB_ID:
         return {"kind": "cron", "cadence": "daily", "text": erase_retention.SCHEDULE_TEXT}
-    return holding_loops.JOBS[job_id].trigger()
+    return INTERVAL_LOOPS[job_id].trigger()
 
 
 def describe(job_id: str) -> dict:
