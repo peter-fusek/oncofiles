@@ -601,14 +601,19 @@ def test_queue_module_has_no_thread_offloading():
 # ── scheduler + retention locks ─────────────────────────────────────────
 
 
-def test_worker_is_a_job_of_the_one_scheduler():
-    src = inspect.getsource(server._start_sync_scheduler)
-    assert 'local_only_task("inbound_queue", _run_inbound_queue)' in src
-    body = src[src.index("async def _run_inbound_queue") :]
-    body = body[: body.index("scheduler.add_job")]
-    assert "async with _sync_semaphore" in body and "run_pending(db)" in body
-    # first run at the startup grace end: _defer_jobs_past_startup_grace runs after
-    assert src.index('id="inbound_queue"') < src.index("_defer_jobs_past_startup_grace(scheduler)")
+def test_worker_is_a_lifespan_loop_not_a_scheduler_job():
+    """#999: the periodic worker is the ``inbound_queue`` lifespan loop
+    (``oncofiles.inbound_loop``, under ``_sync_semaphore``, first run after the
+    startup grace), never an APScheduler job; ``tests/test_999_inbound_loop.py``
+    covers the behaviour."""
+    from oncofiles import inbound_loop
+
+    sched_src = inspect.getsource(server._start_sync_scheduler)
+    assert 'id="inbound_queue"' not in sched_src and "_run_inbound_queue" not in sched_src
+    life_src = inspect.getsource(server.lifespan)
+    assert 'local_only_task("inbound_queue", inbound_queue_loop)(db, _sync_semaphore)' in life_src
+    body = inspect.getsource(inbound_loop.inbound_iteration)
+    assert "async with semaphore" in body and "run_cycle(db)" in body
 
 
 def test_queue_never_deletes():
@@ -1090,10 +1095,14 @@ async def test_due_jobs_come_first_by_next_attempt_at(idb, drive, mails, brevo, 
 
 
 def test_candidate_query_orders_by_next_attempt_at():
+    from oncofiles import inbound_sql
     from oncofiles.database import _inbound_jobs
 
+    # #999: the predicate lives in inbound_sql (shared with the dry run)
     src = inspect.getsource(_inbound_jobs.InboundJobsMixin.next_inbound_job)
-    assert "next_attempt_at <= ?" in src and "ORDER BY next_attempt_at" in src
+    assert "q.JOB_CLAIMABLE_WHERE" in src and "q.JOB_CLAIM_ORDER" in src
+    assert "next_attempt_at <= ?" in inbound_sql.JOB_CLAIMABLE_WHERE
+    assert inbound_sql.JOB_CLAIM_ORDER.startswith("ORDER BY next_attempt_at")
     assert "ORDER BY id LIMIT" not in src
 
 
