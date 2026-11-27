@@ -105,7 +105,7 @@ async def _consent_rows(db: Database) -> list[dict]:
 
 
 def test_consent_version_is_the_approved_one():
-    assert CONSENT_VERSION == "2026-11-27"
+    assert CONSENT_VERSION == "2026-11-27.2"
 
 
 @pytest.mark.usefixtures("api")
@@ -290,7 +290,7 @@ async def test_privacy_matches_the_pipeline():
     assert "whole Google" in html and "only the folder you choose" in html
     assert "hasn't verified this app" in html and "at most 100" in html
     # consent record, access log, rights
-    assert "Consent version 2026-11-27" in html
+    assert "Consent version 2026-11-27.2" in html
     assert "keyed hash of your\ne-mail address" in html or "keyed hash of your e-mail" in html
     assert "GDPR Art. 9(2)(a)" in html
     assert "within 30 days" in html
@@ -311,6 +311,8 @@ async def test_privacy_numbers_match_the_code():
     assert pre_store.KEEP == 5 and "only the 5 newest" in html
     assert "kept for 7 days" in html
     assert app_log.DEFAULT_RETENTION_DAYS == 7
+    # #706: other server logs (container logs) are cut by a host timer, RUNBOOK lifecycle
+    assert "Server logs rotate automatically and are kept for at most 30 days." in html
     # #868 (merged after this text was drafted): the dashboard access log expires
     assert dashboard_audit.DEFAULT_RETENTION_DAYS == 90
     assert "deleted automatically after 90 days" in html
@@ -320,7 +322,7 @@ async def test_privacy_numbers_match_the_code():
 
 async def test_terms_record_consent_and_manual_rights():
     html = await _text(server.terms_of_service)
-    assert "Consent version 2026-11-27" in html
+    assert "Consent version 2026-11-27.2" in html
     assert "legal guardian" in html
     assert "within 30 days" in html
     assert "cannot connect their own Google Drive yet" in html  # ONBOARDING_MODE=closed
@@ -358,7 +360,7 @@ async def test_terms_and_privacy_state_consent_by_sending():
     assert "ktokoľvek iný než opatrovateľ, čakajú zašifrované v karanténe" in flat
     assert "30 dní v koši a potom sa vymažú" in flat
     assert "odosielateľ nedostane žiadnu odpoveď" in flat
-    assert "Consent version 2026-11-27" in terms and "Consent version 2026-11-27" in privacy
+    assert "Consent version 2026-11-27.2" in terms and "Consent version 2026-11-27.2" in privacy
 
 
 async def test_privacy_states_backup_restore_after_an_unclaimed_trial():
