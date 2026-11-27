@@ -136,6 +136,7 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("/favicon.svg", "favicon_svg"): "static asset",
     ("/og-image.svg", "og_image_svg"): "static asset",
     ("/og-image.png", "og_image_png"): "static asset",
+    ("/icon-256.png", "icon_png"): "static asset",
     ("/apple-touch-icon.png", "apple_touch_icon"): "redirect",
     ("/favicon.ico", "favicon_ico"): "redirect",
     ("/dashboard.css", "dashboard_css"): "static asset",
