@@ -38,10 +38,11 @@ GOOGLE_APPLICATION_CREDENTIALS: str = os.environ.get("GOOGLE_APPLICATION_CREDENT
 # project, revoked client) so the app stops hammering APIs that cannot answer.
 #
 # Prefer this over SYNC_ENABLED=false: SYNC_ENABLED kills the entire
-# APScheduler, taking memory_check, the cleanup jobs and the
-# sync watchdog down with it. This flag disables only the Google-touching
-# paths, so the MCP server, dashboard, DB and local housekeeping keep running
-# normally and the watchdog can still report the outage.
+# APScheduler, taking the remaining cleanup jobs and the sync watchdog down
+# with it (memory_check and the other #999 lifespan loops run regardless).
+# This flag disables only the Google-touching paths, so the MCP server,
+# dashboard, DB and local housekeeping keep running normally and the watchdog
+# can still report the outage.
 GOOGLE_INTEGRATION_ENABLED: bool = os.environ.get("GOOGLE_INTEGRATION_ENABLED", "true").lower() in (
     "true",
     "1",

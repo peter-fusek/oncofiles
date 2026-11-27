@@ -133,8 +133,10 @@ async def test_scheduler_registers_no_gmail_calendar_jobs_when_off(monkeypatch, 
     ids = _job_ids_from_scheduler(monkeypatch, nightly_only=nightly_only)
     assert not ids & GMAIL_CALENDAR_JOB_IDS
     # The rest of the scheduler is untouched.
-    # db_keepalive is gone (#617); oauth_token_cleanup is a lifespan loop (#999)
-    assert {"memory_check", "prompt_log_cleanup"} <= ids
+    # db_keepalive is gone (#617); oauth_token_cleanup and memory_check are
+    # lifespan loops (#999)
+    assert {"prompt_log_cleanup", "sync_watchdog"} <= ids
+    assert not ids & {"memory_check", "oauth_token_cleanup"}
     assert ("nightly_ai_pipeline" if nightly_only else "gdrive_sync") in ids
 
 

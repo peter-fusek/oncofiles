@@ -57,7 +57,6 @@ from oncofiles.memory import (
     get_semaphore_status,
     init_rss_tracking,
     is_memory_pressure,
-    periodic_memory_check,
 )
 from oncofiles.network_errors import NETWORK_UNAVAILABLE, is_network_unavailable
 from oncofiles.secrets_keys import dashboard_session_key
@@ -508,6 +507,22 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         ),
     )
 
+    # #999: the memory check (every 5 min) was an APScheduler job, which never
+    # starts in prod, leaving only the /health hard ceiling. This loop is its
+    # only owner (first run 7 min after start as before, #366; no DB). Report
+    # only unless MEMORY_CHECK_RESTART=true, and then never while work runs:
+    # _sync_semaphore is passed only as a busy signal, never acquired.
+    from oncofiles.memory_check_loop import JOB_ID as MEMORY_CHECK_JOB
+    from oncofiles.memory_check_loop import memory_check_loop
+
+    memory_check_task, _ = scheduler_singleton.ensure_background_loop(
+        MEMORY_CHECK_JOB,
+        lambda: asyncio.create_task(
+            # literal job name: the #925 lock reads it (== MEMORY_CHECK_JOB, tested)
+            local_only_task("memory_check", memory_check_loop)(_sync_semaphore)
+        ),
+    )
+
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         # #784: one curated loop per process; a second lifespan gets the same task.
@@ -547,6 +562,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             (INBOUND_QUEUE_JOB, inbound_queue_task),
             (ACCESS_LOG_RETENTION_JOB, access_log_task),
             (OAUTH_TOKEN_CLEANUP_JOB, oauth_cleanup_task),
+            (MEMORY_CHECK_JOB, memory_check_task),
         ):
             if scheduler_singleton.release_background_loop(_name, _task):
                 _task.cancel()
@@ -2348,21 +2364,8 @@ def _start_sync_scheduler(
         )
         job_tracker[event.job_id] = entry
         logger.error("Scheduler job failed: %s — %s", event.job_id, event.exception)
-        # If the memory monitoring job itself fails, check RSS directly as fallback.
-        # A broken safety net is worse than no safety net — force restart if needed.
-        if event.job_id == "memory_check":
-            from oncofiles.memory import MEMORY_RESTART_THRESHOLD_MB
-
-            rss = get_rss_mb()
-            if rss > MEMORY_RESTART_THRESHOLD_MB:
-                logger.critical(
-                    "memory_check job errored AND RSS %.1f MB > %d MB — forcing restart",
-                    rss,
-                    MEMORY_RESTART_THRESHOLD_MB,
-                )
-                import signal
-
-                os.kill(os.getpid(), signal.SIGTERM)
+        # The memory check's failure fallback (RSS read, restart above the
+        # threshold) lives in its lifespan loop now (oncofiles.memory_check_loop, #999).
 
     def _job_missed(event):
         entry = job_tracker.get(event.job_id, {})
@@ -2394,18 +2397,9 @@ def _start_sync_scheduler(
     # only periodic owner is the lifespan loops (oncofiles.holding_loops); the
     # event-driven kicks (holding_*.kick) are unchanged.
 
-    # OF-1/OF-2: Periodic memory check — reclaim memory + graceful restart.
-    # Start after 7 min to avoid false positives from startup sync spike (#366).
-    scheduler.add_job(
-        local_only_task("memory_check", periodic_memory_check),
-        IntervalTrigger(
-            minutes=5,
-            start_date=datetime.now() + timedelta(minutes=7),
-        ),
-        id="memory_check",
-        max_instances=1,
-        misfire_grace_time=60,
-    )
+    # OF-1/OF-2: the periodic memory check (reclaim + graceful restart) is NOT
+    # an APScheduler job any more (#999): its only owner is the lifespan loop
+    # (oncofiles.memory_check_loop), so it also runs with SYNC_ENABLED=false.
 
     scheduler.start()
     _defer_jobs_past_startup_grace(scheduler)
@@ -4329,6 +4323,8 @@ async def readiness(request: Request) -> JSONResponse:
             }
             if "last_deleted" in st:  # daily retention loops (#868 access log)
                 jobs[job_id]["last_deleted"] = st["last_deleted"]
+            if "memory" in st:  # the memory check's report (#999 job 5), counts + codes
+                jobs[job_id]["memory"] = st["memory"]
         result["jobs"] = jobs
         # #441 Layer 6: cluster-wide AI cost in the last 24h. Cheap aggregate
         # query — operator-only, like the rest of the readiness payload.

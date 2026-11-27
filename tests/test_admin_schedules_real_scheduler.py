@@ -57,7 +57,7 @@ def _fake_scheduler():
     return _FakeScheduler(
         [
             _job("nightly_ai_pipeline", CronTrigger(hour=23, minute=0), nxt),
-            _job("memory_check", IntervalTrigger(minutes=5), nxt - timedelta(hours=1)),
+            _job("sync_watchdog", IntervalTrigger(minutes=5), nxt - timedelta(hours=1)),
             _job("weekly_analytics", CronTrigger(day_of_week="sun", hour=5, minute=0), nxt),
             _job("brand_new_job", CronTrigger(hour="*/6", minute=30), None),
         ]
@@ -66,7 +66,7 @@ def _fake_scheduler():
 
 def _tracker():
     return {
-        "memory_check": {"running": False, "last_ok": "2031-07-19T21:55:00+00:00"},
+        "sync_watchdog": {"running": False, "last_ok": "2031-07-19T21:55:00+00:00"},
         "weekly_analytics": {
             "running": False,
             "last_error": "2031-07-18T05:00:01+00:00",
@@ -154,7 +154,7 @@ async def test_jobs_are_the_registered_jobs_plus_fired_one_offs():
     registered = {j["id"] for j in body["jobs"] if j["registered"]}
     assert registered == {
         "nightly_ai_pipeline",
-        "memory_check",
+        "sync_watchdog",
         "weekly_analytics",
         "brand_new_job",
     }
@@ -208,14 +208,14 @@ async def test_trigger_and_next_run_come_from_the_scheduler():
     assert jobs["nightly_ai_pipeline"]["trigger"]["cadence"] == "daily"
     assert jobs["nightly_ai_pipeline"]["next_run_at"] == "2031-07-19T22:47:00+00:00"
     assert jobs["weekly_analytics"]["trigger"]["cadence"] == "weekly"
-    assert jobs["memory_check"]["trigger"] == {
+    assert jobs["sync_watchdog"]["trigger"] == {
         "kind": "interval",
         "seconds": 300,
         "text": "interval[0:05:00]",
     }
-    assert jobs["memory_check"]["last_ok"] == "2031-07-19T21:55:00+00:00"
+    assert jobs["sync_watchdog"]["last_ok"] == "2031-07-19T21:55:00+00:00"
     # Sorted by next run: soonest first, jobs without one last.
-    assert body["jobs"][0]["id"] == "memory_check"
+    assert body["jobs"][0]["id"] == "sync_watchdog"
     assert body["jobs"][-1]["next_run_at"] is None
 
 
