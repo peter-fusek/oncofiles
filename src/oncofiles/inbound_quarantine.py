@@ -143,7 +143,9 @@ MAX_ITEMS_PER_NOTICE = 5  # items with buttons in one e-mail; the rest: dashboar
 NOTICE_RETRY_S = 900  # after a refused send
 TOKEN_BYTES = 32
 TOKEN_TTL_S = 7 * 86400
-EXPIRE_AFTER_DAYS = 30
+# an undecided item expires after this, then sits in the trash (maintainer
+# decision 2026-11-27: 7 days, as long as the e-mail links are valid)
+EXPIRE_AFTER_DAYS = 7
 # rejected / expired items stay restorable this long (maintainer decision
 # 2026-11-22); the later purge removes only their encrypted files
 TRASH_DAYS = 30
@@ -590,13 +592,15 @@ def notice_text(entries: list[dict], more: int) -> tuple[str, str]:
         en += ["", f"More attachments waiting for approval: {more} (in Oncofiles)."]
     sk += [
         "",
-        "Ak odosielateľa nepoznáte, prílohy odmietnite. Odkazy platia 7 dní;",
-        "rozhodnúť môžete aj po prihlásení: " + DASHBOARD_URL,
+        "Ak odosielateľa nepoznáte, prílohy odmietnite. Rozhodnúť sa dá do "
+        f"{EXPIRE_AFTER_DAYS} dní, cez odkazy alebo po prihlásení: " + DASHBOARD_URL,
+        f"Potom sa nerozhodnuté prílohy presunú na {TRASH_DAYS} dní do koša.",
     ]
     en += [
         "",
-        "If you do not know the sender, reject them. The links are valid for 7 days;",
-        "you can also decide after signing in: " + DASHBOARD_URL,
+        "If you do not know the sender, reject them. You can decide within "
+        f"{EXPIRE_AFTER_DAYS} days, through the links or after signing in: " + DASHBOARD_URL,
+        f"After that, undecided attachments move to the trash for {TRASH_DAYS} days.",
     ]
     body = "\n".join(sk) + "\n\n---\n\n" + "\n".join(en) + "\n\nOncofiles\n"
     return subject, body

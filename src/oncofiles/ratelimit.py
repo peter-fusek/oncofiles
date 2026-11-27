@@ -671,7 +671,9 @@ class RateLimitMiddleware:
             slot_key = key
 
         # 4. Learn token-hash principals from successful /mcp responses
-        #    (/mcp always requires a valid bearer, so 2xx proves the token).
+        #    (/mcp requires a valid bearer whenever an Authorization header is
+        #    sent, so 2xx proves the token; the #1004 anonymous catalogue only
+        #    answers requests WITHOUT one, and the ip principal is never learnt).
         out_send = send
         if route_class == MCP and principal.learnable and not trusted:
 
