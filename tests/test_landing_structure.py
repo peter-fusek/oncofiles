@@ -104,13 +104,14 @@ def test_atlas_comes_directly_after_dashboard():
 def test_exactly_one_h1_and_it_states_the_problem():
     h1 = re.findall(r"<h1\b[^>]*>", LANDING)
     assert len(h1) == 1
-    assert 'data-sk="Stoh lekárskych správ ešte nie je informácia."' in h1[0]
-    assert 'data-en="A stack of medical reports is not information."' in h1[0]
-    # the previous headline stays visible as the tagline (the page's search phrase)
+    # maintainer 2026-11-27: the headline is the outcome a visitor recognises,
+    # practical, not a slogan; the tagline above it says who it is for
+    assert 'data-sk="Každý výsledok z lekárskych správ nájdete za pár sekúnd."' in h1[0]
+    assert 'data-en="Find any result in your medical reports in seconds."' in h1[0]
     hero = LANDING[_at("top") : _at("photos")]
     assert LANDING.index("<h1") > hero.index('class="tagline"') + _at("top") - 1
-    assert 'data-en="Medical records where every number has a source"' in hero
-    assert 'data-sk="Zdravotné záznamy, v ktorých má každé číslo svoj zdroj"' in hero
+    assert 'data-en="For patients and families who look after the medical paperwork"' in hero
+    assert 'data-sk="Pre pacientov a ich blízkych, ktorí sa starajú o lekárske správy"' in hero
 
 
 def test_heading_levels_chapters_h2_sections_h3():
