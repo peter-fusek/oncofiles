@@ -1,10 +1,12 @@
-"""#1004: anonymous initialize / tools/list on the public /mcp (user surface).
+"""#1004: anonymous tools/list on the public /mcp (user surface).
 
 Over real HTTP (uvicorn on 127.0.0.1, the production app built by
 ``mcp.http_app`` with the real ``PersistentOAuthProvider``):
 
-* without any Authorization header, ``initialize`` and ``tools/list`` answer
-  and the list is exactly the user surface (no operator tool);
+* without any Authorization header, ``tools/list`` answers and the list is
+  exactly the user surface (no operator tool);
+* anonymous ``initialize`` (and ``notifications/initialized``) stay 401: a
+  200 there made Claude.ai pre-select "No sign-in" for a new connector;
 * ``tools/call`` and any other method, a batch mixing in one, a body that is
   not JSON or too long → 401 with ``WWW-Authenticate`` (as before);
 * an invalid token is NOT treated as anonymous (401, so clients re-auth);
@@ -64,10 +66,11 @@ async def _post(url, body, headers=None, raw=None):
 @pytest.mark.parametrize(
     "body, ok",
     [
-        (INIT, True),
+        (INIT, False),
         (LIST, True),
-        ({"jsonrpc": "2.0", "method": "notifications/initialized"}, True),
-        ([INIT, LIST], True),
+        ({"jsonrpc": "2.0", "method": "notifications/initialized"}, False),
+        ([INIT, LIST], False),
+        ([LIST, LIST], True),
         (CALL, False),
         ([LIST, CALL], False),
         ([], False),
@@ -133,11 +136,7 @@ async def test_body_is_replayed_byte_for_byte_to_the_auth_path():
 # ── live server ──────────────────────────────────────────────────────────────
 
 
-async def test_anonymous_initialize_and_tools_list(live_server):  # noqa: F811
-    r = await _post(f"{live_server}/mcp", INIT)
-    assert r.status_code == 200, r.text
-    [init] = _payloads(r.text)
-    assert init["result"]["serverInfo"]["name"] == "Oncofiles"
+async def test_anonymous_tools_list_without_initialize(live_server):  # noqa: F811
     r = await _post(f"{live_server}/mcp", LIST)
     assert r.status_code == 200, r.text
     [listed] = _payloads(r.text)
@@ -146,9 +145,16 @@ async def test_anonymous_initialize_and_tools_list(live_server):  # noqa: F811
     assert names & OPERATOR_TOOLS == set()
 
 
-async def test_anonymous_notification_is_accepted(live_server):  # noqa: F811
-    r = await _post(f"{live_server}/mcp", {"jsonrpc": "2.0", "method": "notifications/initialized"})
-    assert r.status_code in (200, 202), r.text
+@pytest.mark.parametrize(
+    "body",
+    [INIT, {"jsonrpc": "2.0", "method": "notifications/initialized"}, [INIT, LIST]],
+    ids=["initialize", "initialized-notification", "init-batch"],
+)
+async def test_anonymous_handshake_stays_401(live_server, body):  # noqa: F811
+    """Clients decide on sign-in from ``initialize``: it must answer 401."""
+    r = await _post(f"{live_server}/mcp", body)
+    assert r.status_code == 401, r.text
+    assert "bearer" in r.headers.get("www-authenticate", "").lower()
 
 
 @pytest.mark.parametrize(
