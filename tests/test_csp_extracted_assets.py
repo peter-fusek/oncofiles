@@ -242,6 +242,8 @@ async def test_dashboard_js_route_serves_extracted_file():
         "/sk",
         "/privacy",
         "/terms",
+        "/sk/privacy",
+        "/sk/terms",
         "/oauth/callback",
     ],
 )

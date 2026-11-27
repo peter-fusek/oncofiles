@@ -133,6 +133,8 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("/oncoteam", "oncoteam_page"): "static HTML",
     ("/privacy", "privacy_policy"): "static HTML",
     ("/terms", "terms_of_service"): "static HTML",
+    ("/sk/privacy", "privacy_policy_sk"): "static HTML (#1008, Slovak)",
+    ("/sk/terms", "terms_of_service_sk"): "static HTML (#1008, Slovak)",
     ("/favicon.svg", "favicon_svg"): "static asset",
     ("/og-image.svg", "og_image_svg"): "static asset",
     ("/og-image.png", "og_image_png"): "static asset",
@@ -702,10 +704,32 @@ def prod_routes():
 def test_mcp_endpoint_requires_auth(prod_routes):
     from fastmcp.server.auth.middleware import RequireAuthMiddleware
 
+    from oncofiles.mcp_anon import ANON_METHODS, AnonCatalogGate
+
     mcp_routes = [r for r in prod_routes if getattr(r, "path", None) == "/mcp"]
     assert mcp_routes, "no /mcp route"
     for r in mcp_routes:
-        assert isinstance(r.endpoint, RequireAuthMiddleware), type(r.endpoint)
+        # #1004: the reviewed exception is AnonCatalogGate around the SAME
+        # auth wrapper; only the tool list skips it (initialize stays 401)
+        assert isinstance(r.endpoint, AnonCatalogGate), type(r.endpoint)
+        assert isinstance(r.endpoint.app, RequireAuthMiddleware), type(r.endpoint.app)
+        assert r.endpoint.inner is r.endpoint.app.app
+    assert frozenset({"tools/list"}) == ANON_METHODS
+
+
+def test_anonymous_catalogue_module_reaches_nothing():
+    """#1004: the anonymous path imports only stdlib / starlette / fastmcp's
+    auth wrapper type; no DB, Drive, model or patient module."""
+    tree = ast.parse((SRC / "mcp_anon.py").read_text())
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {a.name for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    allowed_roots = {"__future__", "json", "os", "collections", "typing", "starlette", "fastmcp"}
+    assert {m.split(".")[0] for m in imported} <= allowed_roots, imported
+    assert not any(m.startswith("oncofiles") for m in imported), imported
 
 
 def test_ops_endpoint_is_gated(prod_routes):

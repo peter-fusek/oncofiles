@@ -365,7 +365,7 @@ databáze, k času uvedenému v `manifest.json`.
 - Zámerne vynechané: prístupové tokeny a iné prihlasovacie údaje, kľúčované
   hashe, zašifrované fronty e-mailov a karanténa a e-mailové adresy účtov.
 - Vymazanie údajov si vyžiadate e-mailom na adresu na
-  https://oncofiles.com/privacy (do 30 dní). Súbory na Google Drive zostanú.
+  https://oncofiles.com/sk/privacy (do 30 dní). Súbory na Google Drive zostanú.
 """
 
 
