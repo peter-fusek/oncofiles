@@ -493,6 +493,21 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         ),
     )
 
+    # #999: the MCP OAuth token cleanup (daily 04:00 UTC, expired rows past a
+    # 30-day grace) was an APScheduler job, which never starts in prod. This
+    # loop is its only owner (startup grace, catch-up past the slot, once per
+    # UTC day, under _sync_semaphore). One per process.
+    from oncofiles.oauth_cleanup_loop import JOB_ID as OAUTH_TOKEN_CLEANUP_JOB
+    from oncofiles.oauth_cleanup_loop import oauth_token_cleanup_loop
+
+    oauth_cleanup_task, _ = scheduler_singleton.ensure_background_loop(
+        OAUTH_TOKEN_CLEANUP_JOB,
+        lambda: asyncio.create_task(
+            # literal job name: the #925 lock reads it (== OAUTH_TOKEN_CLEANUP_JOB, tested)
+            local_only_task("oauth_token_cleanup", oauth_token_cleanup_loop)(db, _sync_semaphore)
+        ),
+    )
+
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         # #784: one curated loop per process; a second lifespan gets the same task.
@@ -531,6 +546,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             (HOLDING_EXTRACT_JOB, holding_extract_task),
             (INBOUND_QUEUE_JOB, inbound_queue_task),
             (ACCESS_LOG_RETENTION_JOB, access_log_task),
+            (OAUTH_TOKEN_CLEANUP_JOB, oauth_cleanup_task),
         ):
             if scheduler_singleton.release_background_loop(_name, _task):
                 _task.cancel()
@@ -1309,19 +1325,6 @@ def _start_sync_scheduler(
 
             reclaim_memory("document_groups_backfill")
 
-    async def _run_oauth_token_cleanup():
-        """Remove MCP OAuth tokens that expired more than 30 days ago."""
-        from oncofiles.persistent_oauth import delete_expired_oauth_tokens
-
-        try:
-            deleted = await delete_expired_oauth_tokens(db)
-            if deleted:
-                logger.info("OAuth cleanup: removed %d expired tokens", deleted)
-        except TimeoutError:
-            logger.error("OAuth token cleanup timed out")
-        except Exception:
-            logger.exception("OAuth token cleanup failed")
-
     async def _run_prompt_log_cleanup():
         """Remove prompt log entries older than 90 days to control DB size."""
         try:
@@ -1840,12 +1843,8 @@ def _start_sync_scheduler(
         coalesce=True,
     )
 
-    scheduler.add_job(
-        local_only_task("oauth_token_cleanup", _run_oauth_token_cleanup),
-        CronTrigger(hour=4, minute=0),
-        id="oauth_token_cleanup",
-        max_instances=1,
-    )
+    # #999: the MCP OAuth token cleanup (04:00 UTC) is NOT an APScheduler job
+    # any more: its only owner is the lifespan loop (oncofiles.oauth_cleanup_loop).
     scheduler.add_job(
         local_only_task("prompt_log_cleanup", _run_prompt_log_cleanup),
         CronTrigger(hour=4, minute=15),

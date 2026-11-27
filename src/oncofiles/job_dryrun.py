@@ -8,8 +8,9 @@ a copy of the data directory)::
     uv run python -m oncofiles.job_dryrun holding_move --db /tmp/x/oncofiles.db \\
         [--data-dir /tmp/x/data] [--now 2027-01-02T03:04:05Z]
 
-One subcommand per job; the next #999 PRs add theirs (``oauth_token_cleanup``,
-``memory_check``) to ``JOBS``. ``dashboard_access_log_retention`` (the #868
+One subcommand per job (``memory_check`` touches no DB and has none).
+``oauth_token_cleanup`` (the MCP OAuth token cleanup loop) needs no data
+directory and no option. ``dashboard_access_log_retention`` (the #868
 access log retention loop) takes ``--retention-days`` (stands for
 ``DASHBOARD_ACCESS_LOG_RETENTION_DAYS``, default 90, clamped to 30 like the
 job) and needs no data directory. ``inbound_maintenance``
@@ -32,7 +33,8 @@ quarantine files live under ``<data-dir>/quarantine``. Guarantees, like ``oncofi
   directory is created and no env var or secret is read); no Drive, model or
   SMTP call is possible.
 * **The production predicates.** The SQL is ``oncofiles.holding_sql`` /
-  ``oncofiles.inbound_sql``, the very statements the ``database`` helpers run
+  ``oncofiles.inbound_sql`` / ``oncofiles.access_log_sql`` /
+  ``oncofiles.oauth_cleanup_sql``, the very statements the ``database`` helpers run
   for the jobs (and the purge's own path checks, ``purge_plan``), and the
   limits are the jobs' own constants, so the counts cannot drift.
 * **Counts only.** The JSON output holds counts, booleans and constants, never
@@ -544,11 +546,59 @@ def _age_bucket(oldest: str | None, cutoff: str, fmt: str) -> str | None:
     return f"under_{upper}_days_past_cutoff"
 
 
+# ── oauth_token_cleanup (#999 job 4) ────────────────────────────────────
+
+
+def dry_oauth_token_cleanup(conn: sqlite3.Connection, *, now: datetime, **_opts) -> dict:
+    """What one ``oauth_token_cleanup`` run would delete now: the
+    ``mcp_oauth_tokens`` rows matched by the production predicate
+    (``oncofiles.oauth_cleanup_sql``), by token type, plus the rows kept
+    (no expiry, expired within the grace, still valid). Counts only: never a
+    token digest, client id or account."""
+    from oncofiles import oauth_cleanup_sql as q
+
+    cut = q.cutoff(now)
+    where = q.EXPIRED_WHERE
+    epoch = int(now.astimezone(UTC).timestamp())
+    by_type = {
+        str(r["token_type"]): int(r["n"])
+        for r in conn.execute(
+            f"SELECT token_type, COUNT(*) AS n FROM mcp_oauth_tokens WHERE {where} "
+            "GROUP BY token_type",
+            (cut,),
+        )
+    }
+    return {
+        "grace_days": q.EXPIRED_TOKEN_GRACE_S // 86400,
+        "rows_total": _count(conn, "SELECT COUNT(*) FROM mcp_oauth_tokens"),
+        "would_delete": _count(
+            conn, f"SELECT COUNT(*) FROM mcp_oauth_tokens WHERE {where}", (cut,)
+        ),
+        "would_delete_by_type": dict(sorted(by_type.items())),
+        "kept_no_expiry": _count(
+            conn, "SELECT COUNT(*) FROM mcp_oauth_tokens WHERE expires_at IS NULL"
+        ),
+        "kept_expired_within_grace": _count(
+            conn,
+            "SELECT COUNT(*) FROM mcp_oauth_tokens WHERE expires_at IS NOT NULL "
+            "AND expires_at >= ? AND expires_at < ?",
+            (cut, epoch),
+        ),
+        "kept_valid": _count(
+            conn,
+            "SELECT COUNT(*) FROM mcp_oauth_tokens WHERE expires_at IS NOT NULL "
+            "AND expires_at >= ?",
+            (epoch,),
+        ),
+    }
+
+
 # job name -> counting function (conn, now=, data_dir=, **options) -> dict
 JOBS: dict[str, Callable[..., dict]] = {
     "holding_move": dry_holding_move,
     "inbound_maintenance": dry_inbound_maintenance,
     "dashboard_access_log_retention": dry_access_log_retention,
+    "oauth_token_cleanup": dry_oauth_token_cleanup,
 }
 
 

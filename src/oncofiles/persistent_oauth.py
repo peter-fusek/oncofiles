@@ -23,6 +23,7 @@ import secrets
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from fastmcp.server.auth.auth import ClientRegistrationOptions, RevocationOptions
@@ -42,6 +43,7 @@ from mcp.server.auth.provider import (
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyHttpUrl
 
+from oncofiles import oauth_cleanup_sql
 from oncofiles.constants import NO_PATIENT_ACCESS_SENTINEL
 
 if TYPE_CHECKING:
@@ -82,8 +84,9 @@ def _new_token() -> str:
 # refresh lifetime; active clients rotate well within it.
 CONVERTED_REFRESH_MAX_TTL_S = 14 * 86400
 
-# Expired MCP OAuth rows are kept this long before the cleanup job removes them.
-EXPIRED_TOKEN_GRACE_S = 30 * 86400
+# Expired MCP OAuth rows are kept this long before the cleanup job removes them
+# (the constant and the predicate live in oauth_cleanup_sql, shared with job_dryrun).
+EXPIRED_TOKEN_GRACE_S = oauth_cleanup_sql.EXPIRED_TOKEN_GRACE_S
 
 
 def refresh_token_ttl_seconds() -> int:
@@ -93,17 +96,19 @@ def refresh_token_ttl_seconds() -> int:
     return MCP_REFRESH_TOKEN_TTL_DAYS * 86400
 
 
-async def delete_expired_oauth_tokens(db: Database) -> int:
+async def delete_expired_oauth_tokens(db: Database, *, now: datetime | None = None) -> int:
     """Delete MCP OAuth token rows that expired more than 30 days ago.
 
     ``expires_at`` is INTEGER epoch seconds, so it is compared with an
-    integer cutoff. Rows without an expiry are kept. Used by the
-    ``oauth_token_cleanup`` job; returns the number of rows removed.
+    integer cutoff. Rows without an expiry are kept. The predicate and the
+    cutoff are ``oncofiles.oauth_cleanup_sql`` (shared with the ``job_dryrun``
+    count). Used by the ``oauth_token_cleanup`` loop; returns the number of
+    rows removed.
     """
+    cutoff = oauth_cleanup_sql.cutoff(now or datetime.now(UTC))
     async with db.db.execute(
-        "DELETE FROM mcp_oauth_tokens WHERE expires_at IS NOT NULL "
-        "AND expires_at < CAST(strftime('%s', 'now') AS INTEGER) - ?",
-        (EXPIRED_TOKEN_GRACE_S,),
+        f"DELETE FROM mcp_oauth_tokens WHERE {oauth_cleanup_sql.EXPIRED_WHERE}",
+        (cutoff,),
     ) as cursor:
         deleted = cursor.rowcount
     await db.db.commit()

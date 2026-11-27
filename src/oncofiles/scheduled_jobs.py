@@ -30,7 +30,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from oncofiles import access_log_loop, erase_retention, holding_loops, inbound_loop
+from oncofiles import (
+    access_log_loop,
+    erase_retention,
+    holding_loops,
+    inbound_loop,
+    oauth_cleanup_loop,
+)
 
 # Human descriptions by job id: (group, name sk, name en, desc sk, desc en).
 # A lookup only — whether a job is shown depends on the running scheduler.
@@ -98,12 +104,15 @@ CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
         "Po 30 dňoch presunie pacientov z onboarding tarify na bežnú",
         "Move patients from the onboarding tier to free after 30 days",
     ),
-    "oauth_token_cleanup": (
+    # Lifespan loop (oncofiles.oauth_cleanup_loop), not an APScheduler job (#999).
+    oauth_cleanup_loop.JOB_ID: (
         "infra",
         "Čistenie OAuth tokenov",
         "OAuth cleanup",
-        "Odstránenie expirovaných a zrušených OAuth tokenov",
-        "Remove expired or revoked OAuth tokens",
+        "Odstránenie OAuth tokenov expirovaných pred viac ako 30 dňami "
+        "(beží aj pri SYNC_ENABLED=false)",
+        "Remove OAuth tokens that expired more than 30 days ago "
+        "(runs also with SYNC_ENABLED=false)",
     ),
     "prompt_log_cleanup": (
         "infra",
@@ -239,8 +248,13 @@ _NIGHTLY_ONLY = {"nightly_ai_pipeline", "weekly_discovery_pipeline"}
 # Catalogue ids that are lifespan loops, not APScheduler jobs: they run whatever
 # SYNC_ENABLED says, so the scheduler's off reason never applies to them (#856).
 # The loops on oncofiles.interval_job (IntervalJob, and DailyJob for the
-# access log retention) by job id.
-INTERVAL_LOOPS = {**holding_loops.JOBS, **inbound_loop.JOBS, **access_log_loop.JOBS}
+# access log retention and the OAuth token cleanup) by job id.
+INTERVAL_LOOPS = {
+    **holding_loops.JOBS,
+    **inbound_loop.JOBS,
+    **access_log_loop.JOBS,
+    **oauth_cleanup_loop.JOBS,
+}
 BACKGROUND_LOOP_JOBS = {erase_retention.JOB_ID, *INTERVAL_LOOPS}
 
 

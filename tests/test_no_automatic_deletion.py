@@ -352,6 +352,8 @@ def test_document_trash_allowlist_no_stale_entries():
 
 # Tables a scheduled job may hard-delete from: credentials and telemetry only.
 JOB_SQL_ALLOWLIST = {
+    # oauth_token_cleanup: credential cleanup; reached from the lifespan loop
+    # oauth_cleanup_loop.oauth_token_cleanup_loop (#999), not add_job.
     "mcp_oauth_tokens",
     "prompt_log",
     "session_revocations",
@@ -522,8 +524,10 @@ def _job_offenders(modules: dict[str, _Module]) -> list[tuple[str, str, str]]:
 def test_scheduler_roots_are_found():
     """Guard the guard: discovery must see the real job functions."""
     roots, ids = _job_registrations(_load_modules()["oncofiles.server"])
-    assert {"_run_sync", "_run_oauth_token_cleanup", "_startup_catchup"} <= roots
-    assert "oauth_token_cleanup" in ids
+    assert {"_run_sync", "_run_prompt_log_cleanup", "_startup_catchup"} <= roots
+    assert "prompt_log_cleanup" in ids
+    # #999: lifespan loops are roots too (create_task inside lifespan)
+    assert {"oauth_token_cleanup_loop", "access_log_retention_loop"} <= roots
 
 
 def test_removed_jobs_are_not_registered():
