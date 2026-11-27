@@ -55,12 +55,17 @@ rows, and the Files API is never called for them: their content goes to the
 local model only.
 
 Retention (#734): NOTHING here deletes or overwrites a held file or a row.
-TODO(#950): the end of an unclaimed 30-day trial (``trial_accounts.
-trial_ends_at``) and the removal of a held copy after a verified move into
-Drive (phase 3, ``holding.moved_to_drive`` set) both need a RUNBOOK lifecycle
-entry and a reviewed ``tests/test_no_automatic_deletion.py`` allowlist entry
-(maintainer decision). Until then a moved file's encrypted copy stays here,
-unused: reads go to the Drive copy (:func:`moved_drive_id`).
+The end of an unclaimed 30-day trial (``trial_accounts.trial_ends_at``,
+maintainer decision 2026-11-26) deletes nothing either: the account becomes
+read-only (:func:`trial_ended`: no new writes, no model reads; sign-in, view,
+download and export keep working), one end-of-trial e-mail offers connect
+Drive / export / deletion by reply (``oncofiles.trial_funnel``), and erasure
+happens only on request (``patient_erasure.erase_patient``, #856). TODO(#950):
+the removal of a held copy after a verified move into Drive (phase 3,
+``holding.moved_to_drive`` set) needs a RUNBOOK lifecycle entry and a reviewed
+``tests/test_no_automatic_deletion.py`` allowlist entry (maintainer decision).
+Until then a moved file's encrypted copy stays here, unused: reads go to the
+Drive copy (:func:`moved_drive_id`).
 
 :func:`holding_mode` is the one predicate "this patient's new mail goes to
 the holding store" (a trial patient without a connected Drive folder that is
@@ -221,6 +226,15 @@ def _now_iso() -> str:
 def trial_active(trial: dict | None) -> bool:
     """True while a trial row's ``trial_ends_at`` lies in the future."""
     return bool(trial) and str(trial.get("trial_ends_at") or "") > _now_iso()
+
+
+def trial_ended(trial: dict | None) -> bool:
+    """True for a trial whose ``trial_ends_at`` has passed and that was not
+    converted (#950, maintainer decision 2026-11-26): read-only, no model
+    reads, the end-of-trial e-mail. A converted trial (Drive connected, every
+    held file copied) is an ordinary patient and never "ended"; no trial row
+    at all is not a trial."""
+    return bool(trial) and not trial.get("converted_at") and not trial_active(trial)
 
 
 async def holding_mode(db, patient_id: str) -> bool:

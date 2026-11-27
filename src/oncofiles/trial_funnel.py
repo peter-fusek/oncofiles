@@ -18,6 +18,24 @@ dashboard link. Never a name, a file name, a token or a signed link (#834).
 * Sent by the holding reader right after a run that read something, and by
   the ``holding_move`` scheduler job (catch-up).
 
+End-of-trial e-mail (maintainer decision 2026-11-26)
+-----------------------------------------------------
+When ``trial_ends_at`` has passed for a trial that is not converted and has no
+connected Drive folder (``db.trials_awaiting_end_mail``), ONE e-mail goes to
+the trial's address: the trial has ended, the account is read-only (sign in,
+view, download), and three options: connect Drive (the plain, unsigned
+dashboard link; the documents then move and the trial converts as before),
+download all data (the dashboard's ZIP export, #856), or reply to the e-mail to
+ask for deletion. No name, file name, count, token or signed link (#834).
+Nothing is deleted automatically (#734): erasure only on request.
+
+* Once per trial: ``trial_accounts.end_mail_sent_at`` (migration 106) is
+  claimed with a conditional UPDATE before the send; a refused send clears the
+  claim, retried after ``READY_RETRY_S``; at most ``END_MAILS_PER_HOUR`` per
+  hour in all (in memory, per process).
+* Sent by the ``holding_move`` scheduler job (every run), no job of its own.
+* No ``Auto-Submitted`` header: the person is asked to reply to it.
+
 Funnel
 ------
 :func:`funnel` turns ``db.trial_funnel_rows()`` into counts and medians for the
@@ -42,6 +60,7 @@ logger = logging.getLogger(__name__)
 DASHBOARD_URL = "https://oncofiles.com/dashboard"
 READY_MAILS_PER_HOUR = 20
 READY_RETRY_S = 3600
+END_MAILS_PER_HOUR = 20
 
 FUNNEL_STEPS = (
     "received",
@@ -54,12 +73,16 @@ FUNNEL_STEPS = (
 
 _sent_times: list[float] = []  # monotonic times of ready mails in the last hour
 _last_failed: dict[str, float] = {}  # patient id -> monotonic time of a refused send
+_end_sent_times: list[float] = []  # monotonic times of end-of-trial mails in the last hour
+_end_last_failed: dict[str, float] = {}
 
 
 def reset_state() -> None:
     """Tests only."""
     _sent_times.clear()
     _last_failed.clear()
+    _end_sent_times.clear()
+    _end_last_failed.clear()
 
 
 def _now_iso() -> str:
@@ -138,6 +161,83 @@ async def send_due_ready_mails(db) -> int:
     return sent_count
 
 
+def end_text() -> tuple[str, str]:
+    """(subject, body) of the end-of-trial e-mail: fixed text and one plain link."""
+    sk = [
+        "Dobrý deň,",
+        "",
+        "30-dňová skúšobná doba Oncofiles sa skončila. Nové dokumenty už neprijímame "
+        "ani nespracúvame. Dokumenty, ktoré ste poslali, si môžete naďalej prezerať a "
+        "stiahnuť. Nič sa nemaže automaticky.",
+        "",
+        "Máte tri možnosti:",
+        "",
+        "1. Pripojte vlastný Google Drive: dokumenty sa presunú doň a môžete pokračovať. "
+        "Prihláste sa cez Google adresou, z ktorej ste ich poslali: " + DASHBOARD_URL,
+        "2. Stiahnite si svoje údaje: po prihlásení tlačidlo „Stiahnuť všetky údaje (ZIP)“.",
+        "3. Požiadajte o vymazanie: odpovedzte na tento e-mail. Žiadosť vybavíme do 30 dní.",
+    ]
+    en = [
+        "Hello,",
+        "",
+        "your 30-day Oncofiles trial has ended. New documents are no longer accepted "
+        "or processed. You can still view and download the documents you sent. Nothing "
+        "is deleted automatically.",
+        "",
+        "You have three options:",
+        "",
+        "1. Connect your own Google Drive: the documents move there and you can carry on. "
+        "Sign in with Google with the address you sent them from: " + DASHBOARD_URL,
+        '2. Download your data: after signing in, the "Download all data (ZIP)" button.',
+        "3. Ask for deletion: reply to this e-mail. We handle the request within 30 days.",
+    ]
+    body = "\n".join(sk) + "\n\n---\n\n" + "\n".join(en) + "\n\nOncofiles\n"
+    return "Oncofiles: skúšobná doba sa skončila / your trial has ended", body
+
+
+def _end_rate_ok(now: float) -> bool:
+    while _end_sent_times and now - _end_sent_times[0] > 3600:
+        _end_sent_times.pop(0)
+    return len(_end_sent_times) < END_MAILS_PER_HOUR
+
+
+async def send_due_end_mails(db) -> int:
+    """Send the one end-of-trial e-mail to every trial that is due; returns how
+    many were sent. Never deletes or changes anything but the claim column."""
+    from oncofiles import mailer
+
+    sent_count = 0
+    for pid in await db.trials_awaiting_end_mail(now=_now_iso()):
+        now = time.monotonic()
+        failed = _end_last_failed.get(pid)
+        if failed is not None and now - failed < READY_RETRY_S:
+            continue
+        if not _end_rate_ok(now):
+            logger.info("trial: end mails rate-limited, the rest wait")
+            break
+        patient = await db.get_patient(pid)
+        if patient is None or not getattr(patient, "is_active", True):
+            continue  # erased or archived: nobody to tell
+        to = _recipient(patient)
+        if not to:
+            continue
+        at = _now_iso()
+        if not await db.note_trial_event("end_mail_sent_at", patient_id=pid, at=at):
+            continue  # claimed by another run
+        subject, body = end_text()
+        ok = await mailer.send_mail([to], subject, body, tags=["trial_ended"])
+        if not ok:
+            await db.clear_trial_event("end_mail_sent_at", patient_id=pid, at=at)
+            _end_last_failed[pid] = now
+            logger.info("trial: end mail for patient %s not sent, retried later", pid[:4])
+            continue
+        _end_sent_times.append(now)
+        _end_last_failed.pop(pid, None)
+        sent_count += 1
+        logger.info("trial: end mail sent for patient %s", pid[:4])
+    return sent_count
+
+
 async def note_sign_in(db, email: str) -> None:
     """First dashboard sign-in with a trial's sending address (never raises)."""
     try:
@@ -202,4 +302,5 @@ def funnel(rows: list[dict]) -> dict:
         "steps": steps,
         "converted": sum(1 for r in rows if r.get("converted_at")),
         "ready_mail_sent": sum(1 for r in rows if r.get("ready_mail_sent_at")),
+        "end_mail_sent": sum(1 for r in rows if r.get("end_mail_sent_at")),
     }
