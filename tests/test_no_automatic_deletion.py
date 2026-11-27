@@ -356,7 +356,8 @@ JOB_SQL_ALLOWLIST = {
     "prompt_log",
     "session_revocations",
     # dashboard_access_log_retention: maintainer decision 2026-11-16 (#868): access log
-    # telemetry, 90-day retention; no patient documents or facts
+    # telemetry, 90-day retention; no patient documents or facts. Reached from the
+    # lifespan loop access_log_loop.access_log_retention_loop (#999), not add_job.
     "dashboard_access_log",
 }
 

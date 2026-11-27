@@ -460,6 +460,39 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         ),
     )
 
+    # #999 / #952: the inbound queue sweep (claimed-row DKIM verification, the
+    # durable queue, then the quarantine expiry / purge / digests) was an
+    # APScheduler job, which never starts in prod. This loop is its only
+    # periodic owner (first run after the startup grace, under _sync_semaphore);
+    # the Brevo route's kick after an enqueue stays. One per process.
+    from oncofiles.inbound_loop import JOB_ID as INBOUND_QUEUE_JOB
+    from oncofiles.inbound_loop import inbound_queue_loop
+
+    inbound_queue_task, _ = scheduler_singleton.ensure_background_loop(
+        INBOUND_QUEUE_JOB,
+        lambda: asyncio.create_task(
+            # literal job name: the #925 lock reads it (== INBOUND_QUEUE_JOB, tested)
+            local_only_task("inbound_queue", inbound_queue_loop)(db, _sync_semaphore)
+        ),
+    )
+
+    # #999 / #868: the access log retention (daily 04:25 UTC, 90-day access
+    # telemetry) was an APScheduler job, which never starts in prod. This loop
+    # is its only owner (startup grace, catch-up past the slot, once per UTC
+    # day, under _sync_semaphore). One per process.
+    from oncofiles.access_log_loop import JOB_ID as ACCESS_LOG_RETENTION_JOB
+    from oncofiles.access_log_loop import access_log_retention_loop
+
+    access_log_task, _ = scheduler_singleton.ensure_background_loop(
+        ACCESS_LOG_RETENTION_JOB,
+        lambda: asyncio.create_task(
+            # literal job name: the #925 lock reads it (== ACCESS_LOG_RETENTION_JOB, tested)
+            local_only_task("dashboard_access_log_retention", access_log_retention_loop)(
+                db, _sync_semaphore
+            )
+        ),
+    )
+
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         # #784: one curated loop per process; a second lifespan gets the same task.
@@ -496,6 +529,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         for _name, _task in (
             (HOLDING_MOVE_JOB, holding_move_task),
             (HOLDING_EXTRACT_JOB, holding_extract_task),
+            (INBOUND_QUEUE_JOB, inbound_queue_task),
+            (ACCESS_LOG_RETENTION_JOB, access_log_task),
         ):
             if scheduler_singleton.release_background_loop(_name, _task):
                 _task.cancel()
@@ -1302,31 +1337,6 @@ def _start_sync_scheduler(
         except Exception:
             logger.exception("Prompt log cleanup failed")
 
-    async def _run_dashboard_access_log_retention():
-        """Delete dashboard_access_log rows older than the retention (#868).
-
-        Maintainer decision 2026-11-16: access telemetry is kept 90 days
-        (``DASHBOARD_ACCESS_LOG_RETENTION_DAYS``, min 30). Only that table,
-        in chunks of <= 500 rows, under ``_sync_semaphore``. Logs the count only.
-        """
-        from oncofiles.dashboard_audit import purge_expired_access_log, retention_days
-
-        try:
-            days = retention_days()
-            async with _sync_semaphore:
-                deleted = await purge_expired_access_log(db, days=days)
-            entry = job_tracker.get("dashboard_access_log_retention", {})
-            entry["last_deleted"] = deleted
-            job_tracker["dashboard_access_log_retention"] = entry
-            logger.info(
-                "Dashboard access log retention: removed %d rows older than %d days",
-                deleted,
-                days,
-            )
-        except Exception:
-            logger.exception("Dashboard access log retention failed")
-            raise
-
     # _log_rss removed — restart logic consolidated into periodic_memory_check().
     # The old _log_rss reclaimed before checking, masking the threshold crossing,
     # and sys.exit(0) was caught by APScheduler as a job error (#213).
@@ -1842,16 +1852,8 @@ def _start_sync_scheduler(
         id="prompt_log_cleanup",
         max_instances=1,
     )
-    # #868: 04:25 UTC = 05:25 / 06:25 Europe/Bratislava, outside the 00:30-02:30
-    # local night window (curated nightly runs, AI pipeline).
-    scheduler.add_job(
-        local_only_task("dashboard_access_log_retention", _run_dashboard_access_log_retention),
-        CronTrigger(hour=4, minute=25, timezone="UTC"),
-        id="dashboard_access_log_retention",
-        max_instances=1,
-        misfire_grace_time=1800,
-        coalesce=True,
-    )
+    # #868 / #999: the access log retention (04:25 UTC) is NOT an APScheduler
+    # job any more: its only owner is the lifespan loop (oncofiles.access_log_loop).
     # #856: the erase copy retention (04:35 UTC) is NOT an APScheduler job: it
     # must run while SYNC_ENABLED=false, so its only owner is the lifespan loop
     # (oncofiles.erase_retention).
@@ -2381,32 +2383,12 @@ def _start_sync_scheduler(
     scheduler.add_listener(_job_error, EVENT_JOB_ERROR)
     scheduler.add_listener(_job_missed, EVENT_JOB_MISSED)
 
-    # #952: durable inbound mail queue. First run at the startup grace end
-    # (_defer_jobs_past_startup_grace moves next_run_time=now there), then
-    # every WORKER_INTERVAL_MIN; the Brevo route also kicks the worker right
-    # after an enqueue. Claims are conditional updates, so the old container
-    # of a rolling deploy and this one never take the same job.
-    async def _run_inbound_queue():
-        from oncofiles import inbound_queue
-
-        try:
-            async with _sync_semaphore:
-                await inbound_queue.run_pending(db)
-        except Exception:
-            logger.exception("inbound queue run failed")
-            raise
-
-    from oncofiles.inbound_queue import WORKER_INTERVAL_MIN
-
-    scheduler.add_job(
-        local_only_task("inbound_queue", _run_inbound_queue),
-        IntervalTrigger(minutes=WORKER_INTERVAL_MIN),
-        id="inbound_queue",
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=60,
-        next_run_time=datetime.now(),
-    )
+    # #952: the durable inbound mail queue (and the #950 quarantine sweep it
+    # runs) is NOT an APScheduler job (#999): it must run while
+    # SYNC_ENABLED=false, so its only periodic owner is the lifespan loop
+    # (oncofiles.inbound_loop); the Brevo route's kick after an enqueue is
+    # unchanged. Claims are conditional updates, so the old container of a
+    # rolling deploy and this one never take the same job.
 
     # #950 phases two and three: holding_extract and holding_move are NOT
     # APScheduler jobs (#999): they must run while SYNC_ENABLED=false, so their
@@ -2541,10 +2523,15 @@ class _OncofilesMCP(FastMCP):
     def http_app(self, path=None, *args, **kwargs):
         import fastmcp as _fastmcp
 
+        from oncofiles.mcp_anon import install_anon_catalog
         from oncofiles.tool_surface import install_ops_route
 
         app = super().http_app(path, *args, **kwargs)
-        install_ops_route(app, path if path is not None else _fastmcp.settings.streamable_http_path)
+        mcp_path = path if path is not None else _fastmcp.settings.streamable_http_path
+        install_ops_route(app, mcp_path)
+        # #1004: anonymous initialize / tools/list (user surface); after the
+        # ops route, which keeps the plain auth wrapper
+        install_anon_catalog(app, mcp_path)
         return app
 
 
@@ -4293,9 +4280,6 @@ async def readiness(request: Request) -> JSONResponse:
                 # #441 Layer 6: per-run AI cost (set by _run_*_pipeline tail).
                 if info.get("last_cost_usd") is not None:
                     entry["last_cost_usd"] = info["last_cost_usd"]
-                # #868: rows removed by the last dashboard_access_log_retention run.
-                if info.get("last_deleted") is not None:
-                    entry["last_deleted"] = info["last_deleted"]
                 if entry:
                     jobs[job_id] = entry
         # #856: the erase copy retention is a lifespan loop, not an APScheduler
@@ -4319,10 +4303,11 @@ async def readiness(request: Request) -> JSONResponse:
                 )
             },
         }
-        # #999: the holding mover and reader loops (in-memory, counts only).
-        from oncofiles import holding_loops
+        # #999: the interval loops (holding mover and reader, inbound queue
+        # sweep), in-memory, counts only.
+        from oncofiles import scheduled_jobs
 
-        for job_id, job in holding_loops.JOBS.items():
+        for job_id, job in scheduled_jobs.INTERVAL_LOOPS.items():
             st = job.status()
             jobs[job_id] = {
                 "loop_running": scheduler_singleton.background_loop_running(job_id),
@@ -4343,6 +4328,8 @@ async def readiness(request: Request) -> JSONResponse:
                     )
                 },
             }
+            if "last_deleted" in st:  # daily retention loops (#868 access log)
+                jobs[job_id]["last_deleted"] = st["last_deleted"]
         result["jobs"] = jobs
         # #441 Layer 6: cluster-wide AI cost in the last 24h. Cheap aggregate
         # query — operator-only, like the rest of the readiness payload.

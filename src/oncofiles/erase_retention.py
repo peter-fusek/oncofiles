@@ -33,8 +33,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Any
+
+from oncofiles.interval_job import DAILY_MAX_SLEEP_S, daily_next_run, daily_slot
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +48,7 @@ SLOT_MINUTE_UTC = 35
 SCHEDULE_TEXT = f"daily {SLOT_HOUR_UTC:02d}:{SLOT_MINUTE_UTC:02d} UTC"
 # Never sleep longer than this in one go, so a clock jump or a suspended VM
 # cannot push the run far past its slot.
-MAX_SLEEP_S = 3600
+MAX_SLEEP_S = DAILY_MAX_SLEEP_S
 
 _state: dict[str, Any] = {}
 
@@ -80,25 +82,14 @@ def _iso(value: datetime | None) -> str | None:
 
 def slot_on(day: date) -> datetime:
     """The run slot of one UTC day."""
-    return datetime(day.year, day.month, day.day, SLOT_HOUR_UTC, SLOT_MINUTE_UTC, tzinfo=UTC)
+    return daily_slot(day, SLOT_HOUR_UTC, SLOT_MINUTE_UTC)
 
 
 def next_run_at(now: datetime, last_run_day: date | None) -> datetime:
-    """When the next run is due (``now`` itself = run now).
-
-    * before today's slot → today's slot;
-    * at or after today's slot and no run today in this process → now
-      (the regular run, or the catch-up after a restart past the slot);
-    * already run today → tomorrow's slot.
-    """
-    now = now.astimezone(UTC)
-    today = now.date()
-    today_slot = slot_on(today)
-    if now < today_slot:
-        return today_slot
-    if last_run_day != today:
-        return now
-    return slot_on(today + timedelta(days=1))
+    """When the next run is due (``now`` itself = run now); the shared daily
+    rule ``interval_job.daily_next_run`` (catch-up after a restart past the
+    slot, at most once per process and UTC day)."""
+    return daily_next_run(now, last_run_day, SLOT_HOUR_UTC, SLOT_MINUTE_UTC)
 
 
 async def run_once(semaphore: asyncio.Semaphore, *, now: datetime | None = None) -> int | None:
