@@ -274,6 +274,31 @@ def test_demo_blocks_the_actions_that_write():
     assert "if (DEMO && DEMO_BLOCKED_ACTIONS[parts[0]]) { demoNotice(); return; }" in JS
 
 
+async def test_one_export_button_the_zip_in_app_and_demo():
+    """#856: the JSON manifest download is gone; the ZIP export is the only
+    export button, in the docs toolbar of both variants, blocked in /demo."""
+    button = (
+        '<button type="button" class="copy-btn" id="patient-export-btn" '
+        'data-action="downloadPatientExport" data-sk="Stiahnuť všetky údaje (ZIP)" '
+        'data-en="Download all data (ZIP)">'
+    )
+    app = server._load_dashboard_html()
+    demo = await _demo_page()
+    for page in (app, demo):
+        for gone in ('id="export-btn"', "downloadManifest", "Download data (JSON)", "(JSON)<"):
+            assert gone not in page, gone
+        assert page.count(button) == 1
+        assert page.count('data-action="downloadPatientExport"') == 1
+        toolbar = page[page.index('<div class="docs-toolbar">') : page.index('id="upload-btn"')]
+        assert button in toolbar
+    # the dashboard no longer calls the JSON route, so it has no demo twin either
+    assert "downloadManifest" not in JS and "/api/manifest" not in JS
+    assert "downloadPatientExport: 1" in JS  # the demo only explains itself
+    export = _function("downloadPatientExport")
+    assert "if (DEMO || !currentPatientId) return;" in export
+    assert "confirm(" not in export and "alert(" not in export
+
+
 # ── the demo answers in the shapes of the real API ───────────────────────
 
 

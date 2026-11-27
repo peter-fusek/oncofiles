@@ -48,7 +48,7 @@ def _svg(uri: str) -> str:
 
 
 def test_view_switch_is_a_segmented_control_next_to_the_search():
-    toolbar = HTML[HTML.index('<div class="docs-toolbar">') : HTML.index('id="export-btn"')]
+    toolbar = HTML[HTML.index('<div class="docs-toolbar">') : HTML.index('id="patient-export-btn"')]
     assert 'id="doc-search"' in toolbar
     assert '<div class="view-switch" role="group" aria-labelledby="view-switch-label">' in toolbar
     for view, pressed in (("list", "true"), ("grid", "false")):
