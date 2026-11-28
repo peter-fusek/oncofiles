@@ -159,6 +159,12 @@ class LocalLLMAnswerError(LocalLLMError):
     failure = ANSWER
 
 
+class LocalLLMLaneBusyError(LocalLLMTransportError):
+    """No slot of the local-model arbiter within the caller's ``slot_timeout``
+    (#1020 tuning); nothing was sent. A transport error for every caller that
+    does not tell it apart."""
+
+
 class LocalLLMHostRefusedError(LocalLLMError):
     """LOCAL_LLM_BASE_URL points at a host that is not private (#925); nothing was sent."""
 
@@ -396,6 +402,7 @@ def chat(
     presence_penalty: float | None = None,
     reasoning_marker: bool | None = None,
     lane: str = "background",
+    slot_timeout: float | None = None,
 ) -> str:
     """One blocking chat completion; returns the answer text.
 
@@ -430,7 +437,13 @@ def chat(
     ``model`` (``None`` = ``LOCAL_LLM_MODEL``): another LM Studio model id for
     this call only. Only the dry-run scorecards pass it (validated with
     ``model_override_error`` and ``model_refusal`` first); every production
-    caller leaves it unset, so its request body is unchanged."""
+    caller leaves it unset, so its request body is unchanged.
+    ``slot_timeout`` (seconds, ``None`` = wait as long as it takes, every
+    caller but the chat): the longest wait for an arbiter slot; past it
+    :class:`LocalLLMLaneBusyError` is raised and nothing is sent. With a
+    ``slot_timeout`` ``info`` also gets ``lane_wait_s`` (seconds waited for
+    the slot) and, on that error, ``lane_timeout: True``; without one the
+    ``info`` keys are unchanged."""
     if not configured():
         raise LocalLLMTransportError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     require_private_base_url()  # #925: before anything is built or sent
@@ -442,8 +455,12 @@ def chat(
     if lane not in llm_lanes.LANES:
         raise ValueError(f"unknown local-model lane: {lane!r}")
     est = estimate_prompt_tokens(system, user_content)
+    requested = max_tokens
     max_tokens = clamp_budget(max_tokens, est)
-    if max_tokens < MIN_ANSWER_TOKENS:
+    # A caller that asks for a short answer on purpose (the chat, #1020
+    # tuning: 400 / 500 tokens, thinking off) is held to its own budget; the
+    # floor only guards a budget the context window cut below it.
+    if max_tokens < min(requested, MIN_ANSWER_TOKENS):
         # A per-document problem (worded "truncated" so the run is not aborted
         # as "model down"): the document goes to review, it never loops.
         raise LocalLLMAnswerError(
@@ -487,11 +504,21 @@ def chat(
         # override (scorecards, benches) runs on another LM Studio instance
         # with its own parallel slots and must not throttle production.
         guard = (
-            llm_lanes.slot(lane)
+            llm_lanes.slot(lane, timeout=slot_timeout)
             if payload["model"] == config.LOCAL_LLM_MODEL
             else contextlib.nullcontext()
         )
-        with guard:
+        with contextlib.ExitStack() as held:
+            t_slot = time.monotonic()
+            try:
+                held.enter_context(guard)
+            except llm_lanes.LaneBusyError as exc:
+                if info is not None:  # only a bounded wait can time out
+                    info["lane_wait_s"] = round(time.monotonic() - t_slot, 3)
+                    info["lane_timeout"] = True
+                raise LocalLLMLaneBusyError("local LLM lane busy: no slot (Timeout)") from exc
+            if info is not None and slot_timeout is not None:
+                info["lane_wait_s"] = round(time.monotonic() - t_slot, 3)
             resp = http.post(
                 f"{config.LOCAL_LLM_BASE_URL}/chat/completions",
                 json=payload,

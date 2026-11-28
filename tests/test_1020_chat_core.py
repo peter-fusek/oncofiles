@@ -372,7 +372,11 @@ async def test_injection_in_a_document_is_data(seeded, db, monkeypatch):
 
     _fake(monkeypatch, script)
     out = await ask(db, "Čo je v poznámke z 20. mája 2027?")
-    assert out["done"]["tool_errors"] == 2  # query_db and list_patients are unknown tools
+    # query_db is an unknown tool (an error); list_patients came on the last
+    # reply (MAX_STEPS = 3), which may only answer: it is never run
+    assert out["done"]["tool_errors"] == 1 and out["done"]["tool_calls"] == 2
+    assert "tool:unknown" in out["statuses"] and out["done"]["max_steps_hit"]
+    assert out["done"]["result"] == "not_found"
     assert not out["text"].startswith("ZEBRA")
     assert "Bruno" not in out["text"]
 

@@ -37,7 +37,9 @@ from pathlib import Path
 from oncofiles.chat import grounding, prompts
 from oncofiles.curated.scorecard import flatten, percentile
 
-SCORECARD_VERSION = "chat-scorecard-v1"
+# v2 (#1020 tuning): a ``timeline`` citation (planned row without a document)
+# counts as a citation; cards and totals carry lane waits and timeouts.
+SCORECARD_VERSION = "chat-scorecard-v2"
 KIND = "chat"
 DEFAULT_SET_VERSION = "default-v1"
 DEFAULT_LANG = "sk"
@@ -68,7 +70,9 @@ _HIGHER_IS_BETTER = (
     "citations.pct_value_found",
     "wrong_patient.pct_refused",
 )
-_LOWER_IS_BETTER = ("grounding.answers_ungrounded", "speed.seconds_p95", "errors.total")
+_LOWER_IS_BETTER = (
+    "grounding.answers_ungrounded", "speed.seconds_p95", "errors.total", "lanes.timeouts",
+)  # fmt: skip
 
 # invented people for the other-person question (none is a real patient); the
 # first one that is not a name on this patient's record is used
@@ -284,6 +288,7 @@ def card(
     ``unavailable`` (the re-check through ``document_detail``)."""
     done = out.get("done") if isinstance(out.get("done"), dict) else None
     err = out.get("error") if isinstance(out.get("error"), dict) else None
+    lane_src = done or err or {}
     if done is None:
         result = "error"
     else:
@@ -327,7 +332,16 @@ def card(
         },  # fmt: skip
         "ungrounded_shown": ungrounded,
         "citations": len(citations),
+        "timeline_citations": sum(1 for c in citations if c.get("kind") == "timeline"),
         "cited_documents": len(cited),
+        "truncated": _int((done or {}).get("truncated")),
+        "early_stop": bool((done or {}).get("early_stop")),
+        "uncited_replaced": bool((done or {}).get("uncited_replaced")),
+        "lane_wait_seconds": round(float(lane_src.get("lane_wait_seconds")), 2)
+        if isinstance(lane_src.get("lane_wait_seconds"), int | float)
+        and not isinstance(lane_src.get("lane_wait_seconds"), bool)
+        else 0.0,
+        "lane_timeouts": _int(lane_src.get("lane_timeouts")),
         "citation_checks": {
             k: sum(1 for v in citation_checks.values() if v == k)
             for k in ("found", "missing", "unavailable")
@@ -374,7 +388,29 @@ def _route_kind(route: str | None) -> str:
     return route if route in ("json", "refused") else "other"
 
 
-def totals(cards: list[dict], *, repeat: int = 1) -> dict:
+LANE_PEAK_KEYS = (
+    "active_interactive", "active_background", "waiting_interactive", "waiting_background",
+)  # fmt: skip
+
+
+def lane_snapshot(status: dict) -> dict[str, int]:
+    """Counts of ``llm_lanes.status()`` at one moment (active / waiting per lane)."""
+    active = status.get("active") if isinstance(status.get("active"), dict) else {}
+    waiting = status.get("waiting") if isinstance(status.get("waiting"), dict) else {}
+    return {
+        "active_interactive": _int(active.get("interactive")),
+        "active_background": _int(active.get("background")),
+        "waiting_interactive": _int(waiting.get("interactive")),
+        "waiting_background": _int(waiting.get("background")),
+    }
+
+
+def lane_peaks(snapshots: list[dict]) -> dict[str, int]:
+    """The max of every lane count over the snapshots (one per question start)."""
+    return {k: max((_int(s.get(k)) for s in snapshots), default=0) for k in LANE_PEAK_KEYS}
+
+
+def totals(cards: list[dict], *, repeat: int = 1, lane_peak: dict | None = None) -> dict:
     turns = [c for c in cards if c.get("result") != "skipped"]
     skipped = [c for c in cards if c.get("result") == "skipped"]
     answered = [c for c in turns if c["result"] == "answered"]
@@ -414,6 +450,7 @@ def totals(cards: list[dict], *, repeat: int = 1) -> dict:
             "answered_with_citations": with_cit,
             "pct_answered_with_citations": _pct(with_cit, len(answered)),
             "citations": sum(c["citations"] for c in turns),
+            "timeline_citations": sum(c.get("timeline_citations", 0) for c in turns),
             "cited_documents": sum(c["cited_documents"] for c in turns),
             "value_found": checks["found"],
             "value_missing": checks["missing"],
@@ -450,6 +487,17 @@ def totals(cards: list[dict], *, repeat: int = 1) -> dict:
             "max_steps_hit": sum(1 for c in turns if c["max_steps_hit"]),
             "tool_calls": sum(c["tool_calls"] for c in turns),
             "tool_errors": sum(c["tool_errors"] for c in turns),
+            "truncated": sum(c.get("truncated", 0) for c in turns),
+            "early_stops": sum(1 for c in turns if c.get("early_stop")),
+            "uncited_replaced": sum(1 for c in turns if c.get("uncited_replaced")),
+        },
+        "lanes": {
+            "wait_seconds_total": round(sum(c.get("lane_wait_seconds", 0.0) for c in turns), 1),
+            "wait_seconds_max": max(
+                (c.get("lane_wait_seconds", 0.0) for c in turns), default=0.0
+            ),  # fmt: skip
+            "timeouts": sum(c.get("lane_timeouts", 0) for c in turns),
+            **{f"max_{k}": v for k, v in lane_peaks([lane_peak or {}]).items()},
         },
         "errors": {"total": len(errors), "codes": _hist(c["error"] or "other" for c in errors)},
         "routes": _hist(_route_kind(c.get("route")) for c in turns),
