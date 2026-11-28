@@ -122,8 +122,9 @@ def _totals(pages: list[dict]) -> dict:
 
 
 def compare_one(
-    drive, d: dict, vocab, *, reader=None, parallel: int = 1, model: str | None = None
-) -> dict:
+    drive, d: dict, vocab, *, reader=None, parallel: int = 1, model: str | None = None,
+    reasoning_marker: bool | None = None,
+) -> dict:  # fmt: skip
     """Blocking. Read one curated document again and compare (see module doc).
 
     ``d``: id, filename, gdrive_id, mime_type, structured_metadata (a
@@ -131,7 +132,9 @@ def compare_one(
     ``download``. ``reader`` defaults to ``reocr.reread_isolated`` (looked
     up at call time) with re-OCR settings: two passes, ``purpose="reocr"``.
     ``model`` (validated by the tool): another loaded LM Studio model for
-    every call of this read, passed to the reader only when given."""
+    every call of this read, passed to the reader only when given.
+    ``reasoning_marker`` (validated by the tool, #1044): the per-job #770
+    marker A/B (``reocr._vision_passes``), passed only when given."""
     reader = reader or reocr.reread_isolated
     cur = (d.get("structured_metadata") or {}).get("curated") or {}
     res: dict = {"document_id": d["id"], "result": "compared", "error": None}
@@ -144,7 +147,9 @@ def compare_one(
     today = raw_side.decode("utf-8", errors="replace")
     rr = reader(d["filename"], source, d.get("mime_type") or "", passes=2, doc_ref=d["id"],
                 parallel=parallel, purpose="reocr",
-                **({"model": model} if model is not None else {}))  # fmt: skip
+                **({"model": model} if model is not None else {}),
+                **({"reasoning_marker": reasoning_marker}
+                   if reasoning_marker is not None else {}))  # fmt: skip
     summary, warnings = reocr.report_usage(d["id"], getattr(rr, "llm_passes", None) or [])
     res.update(summary, warnings=warnings)  # #884: per-pass records (counts, sizes, sha)
     if rr.error or not any((p or "").strip() for p in rr.pages):

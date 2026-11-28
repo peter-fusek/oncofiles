@@ -441,7 +441,7 @@ def propose(
     if stats is not None:
         stats.update(prompt_variant=chosen, sampling=mode, retried=False)
     try:
-        answer = llm.chat(system, user, info=info, **kwargs)
+        answer = llm.chat(system, user, info=info, caller="classify", **kwargs)
     except llm.LocalLLMError as exc:
         if "truncated" not in str(exc) or "overflow" in str(exc):
             raise  # an overflowing prompt does not fit any better with a bigger budget
@@ -462,6 +462,7 @@ def propose(
             max_tokens=2 * llm.REASONING_BUDGET,
             timeout=2 * config.LOCAL_LLM_TIMEOUT_S,
             info=info,
+            caller="classify",
             **kwargs,
         )
     finally:

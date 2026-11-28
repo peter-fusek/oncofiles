@@ -194,7 +194,8 @@ def test_valid_overrides_pass():
 def test_classify_propose_passes_the_overrides_only_when_given(monkeypatch, lmstudio):
     seen = []
 
-    def fake(system, user, info=None, **kw):
+    def fake(system, user, info=None, caller=None, **kw):  # caller: #1044 log code, never sent
+        assert caller == "classify"
         seen.append(kw)
         return "{}"
 

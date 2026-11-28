@@ -146,7 +146,8 @@ SEEN_KWARGS: list[dict] = []
 
 
 def fake_chat(system, user, info=None, **kw):
-    SEEN_KWARGS.append({k: v for k, v in kw.items() if k != "info"})
+    # ``info`` (output dict) and ``caller`` (#1044 log code) are never sent
+    SEEN_KWARGS.append({k: v for k, v in kw.items() if k not in ("info", "caller")})
     if info is not None:
         info.update(finish_reason="stop", completion_tokens=300, reasoning_tokens=200,
                     raw_content="SECRET", reasoning_content="SECRET")  # fmt: skip

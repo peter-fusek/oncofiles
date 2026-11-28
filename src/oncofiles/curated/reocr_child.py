@@ -7,7 +7,8 @@ by mistake. Drive I/O stays in the parent; the child only gets the file bytes.
 
 Protocol: stdin = one JSON header line (``name``, ``mime``, ``passes``) followed
 by the raw file bytes (header may carry ``parallel``,
-``second_pass_pages``, ``purpose`` and, for the dry compare only, ``model``);
+``second_pass_pages``, ``purpose`` and, for the dry compare only, ``model``
+and ``reasoning_marker``);
 stdout = one JSON object (the ``Reread`` fields plus ``peak_rss_mb``).
 ``--probe`` instead reports what the child can see, for tests.
 """
@@ -43,6 +44,11 @@ def _peak_rss_mb() -> float:
     return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
 
 
+def _marker(value) -> bool | None:
+    """The compare's per-job reasoning marker (#1044): a JSON bool, else None."""
+    return value if isinstance(value, bool) else None
+
+
 def main() -> int:
     from oncofiles.cloud_guard import CloudForbiddenError, check_cloud_allowed, local_only
 
@@ -66,6 +72,7 @@ def main() -> int:
                         second_pass_pages=header.get("second_pass_pages"),
                         purpose=header.get("purpose") or "reocr",
                         model=header.get("model") or None,
+                        reasoning_marker=_marker(header.get("reasoning_marker")),
                         doc_ref=header.get("doc_ref"))  # fmt: skip
             out = {**asdict(rr), "peak_rss_mb": round(_peak_rss_mb(), 1)}
     sys.stdout.write(json.dumps(out, ensure_ascii=False))

@@ -345,8 +345,9 @@ def parse_orientation(answer: str | None) -> Guess:
 
 
 def ask_rotation(
-    png: bytes, *, client=None, record: dict | None = None, model: str | None = None
-) -> Guess:
+    png: bytes, *, client=None, record: dict | None = None, model: str | None = None,
+    reasoning_marker: bool | None = None,
+) -> Guess:  # fmt: skip
     """The model's report of how the page is turned (never a transcription).
     A per-call failure is "no answer", which makes the caller read both ways;
     an unreachable model fails again on the transcription call itself.
@@ -358,7 +359,9 @@ def ask_rotation(
     Never the answer text.
     ``model`` (``None`` = ``LOCAL_LLM_MODEL``): another loaded LM Studio model
     for this call only; only the dry re-OCR compare passes it, and only then
-    is it sent, so every production request is unchanged."""
+    is it sent, so every production request is unchanged.
+    ``reasoning_marker`` (``None`` = env, #1044): the dry re-OCR compare's
+    per-job marker override, passed to ``llm.chat`` only when given."""
     try:
         small = _render(png, 0, ORIENT_MAX_SIDE)
     except Exception as exc:  # not a decodable image: nothing to ask about
@@ -374,8 +377,10 @@ def ask_rotation(
             max_tokens=ORIENT_BUDGET,
             thinking=False,
             client=client,
+            caller="orientation",
             **({"info": info} if info is not None else {}),
             **({"model": model} if model is not None else {}),
+            **({"reasoning_marker": reasoning_marker} if reasoning_marker is not None else {}),
         )
         guess = parse_orientation(answer)
     except llm.LocalLLMError as exc:

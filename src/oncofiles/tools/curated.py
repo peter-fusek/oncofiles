@@ -2780,12 +2780,13 @@ async def _compare_targets(db, pid: str, ids: list[int]) -> tuple[list[dict], li
 
 async def _reocr_compare_job(
     db, pid: str, docs: list[dict], counts: dict[int, dict[str, int]], skipped: list[dict],
-    *, model: str | None = None,
+    *, model: str | None = None, reasoning_marker: str | None = None,
 ) -> None:  # fmt: skip
     """Background part of ``curated_reocr_compare``. Writes NOTHING: no Drive
     (two downloads per document), no DB row (not even a run row), no index.
     One document and one vision call at a time: one LM Studio slot.
-    ``model``: the validated per-job override, passed explicitly per call."""
+    ``model`` / ``reasoning_marker`` ("on" | "off", #1044): the validated
+    per-job overrides, passed explicitly per call."""
     from oncofiles import config
     from oncofiles.cloud_guard import local_only
     from oncofiles.curated import reocr_compare
@@ -2819,8 +2820,11 @@ async def _reocr_compare_job(
                 own = gdrive.dedicated_copy()
                 try:
                     with local_only("curated re-OCR compare"):
-                        return reocr_compare.compare_one(DriveOps(own), d, vocab, parallel=1,
-                                                         model=model)  # fmt: skip
+                        return reocr_compare.compare_one(
+                            DriveOps(own), d, vocab, parallel=1, model=model,
+                            **({"reasoning_marker": reasoning_marker == "on"}
+                               if reasoning_marker is not None else {}),
+                        )  # fmt: skip
                 finally:
                     own.close()
 
@@ -2837,39 +2841,55 @@ async def _reocr_compare_job(
         for k in ("agree", "value_differs", "missing_in_new", "missing_in_today"):
             totals[f"facts_{k}"] = sum(r["facts"][k] for r in done)
         job.update(state="done", report={
-            "dry_run": True, "settings": _compare_settings(model), "compared": len(done),
+            "dry_run": True, "settings": _compare_settings(model, reasoning_marker),
+            "compared": len(done),
             "totals": totals, "warnings": warnings, "documents": [*report, *skipped],
         })  # fmt: skip
     except Exception as exc:
         logger.exception("re-OCR compare failed for %s", pid)
         job.update(state="failed", error=type(exc).__name__,
-                   report={"dry_run": True, "settings": _compare_settings(model),
+                   report={"dry_run": True,
+                           "settings": _compare_settings(model, reasoning_marker),
                            "documents": [*report, *skipped]})  # fmt: skip
     finally:
         job["finished_at"] = datetime.now(UTC).isoformat()
 
 
-def _compare_settings(model: str | None) -> dict:
-    """The compare's effective model and its per-job override (ids only)."""
+def _compare_settings(model: str | None, reasoning_marker: str | None = None) -> dict:
+    """The compare's effective model and its per-job overrides (ids and codes
+    only). ``reasoning_marker`` ("on" | "off", #1044) appears only when given,
+    so a job without it reports exactly what it did before."""
     from oncofiles.curated import llm
 
-    return {"model": model or llm.model_id(),
-            "overrides": {"model": model} if model is not None else {}}  # fmt: skip
+    overrides: dict = {"model": model} if model is not None else {}
+    out: dict = {"model": model or llm.model_id()}
+    if reasoning_marker is not None:
+        overrides["reasoning_marker"] = reasoning_marker
+        out["reasoning_marker"] = reasoning_marker
+    return {**out, "overrides": overrides}
 
 
 async def start_reocr_compare(
-    db, pid: str, document_ids: list[int], *, actor: str = "mcp", model: str | None = None
-) -> dict:
+    db, pid: str, document_ids: list[int], *, actor: str = "mcp", model: str | None = None,
+    reasoning_marker: str | None = None,
+) -> dict:  # fmt: skip
     """Start a dry re-OCR compare (#883) in the background; ``pid`` is resolved.
     Explicit ids only, at most ``COMPARE_MAX_DOCS``; more is refused, not cut.
     ``model``: a per-job LM Studio model for every call of the read (benching
     a separate OCR model), validated and checked ``loaded`` exactly like the
-    scorecards' override before any job, slot or Drive call."""
-    from oncofiles.curated import llm
+    scorecards' override before any job, slot or Drive call.
+    ``reasoning_marker`` ("on" | "off" | None, #1044): the per-job #770 marker
+    A/B, validated like the extractors' override before anything starts;
+    None keeps today's requests exactly."""
+    from oncofiles.curated import llm, llm_extract_call
     from oncofiles.curated.reocr_compare import COMPARE_MAX_DOCS
 
     if err := llm.model_override_error(model, None):
         return {"error": err}
+    try:
+        llm_extract_call.validate_overrides(reasoning_marker=reasoning_marker)
+    except ValueError as exc:
+        return {"error": str(exc)}
     ids = list(dict.fromkeys(int(i) for i in (document_ids or [])))
     if not ids:
         return {"error": "document_ids is required"}
@@ -2891,13 +2911,15 @@ async def start_reocr_compare(
     job = {
         "state": "running", "kind": COMPARE_KIND, "dry_run": True, "passes": 2,
         "started_at": datetime.now(UTC).isoformat(), "actor": actor, "skipped": skipped,
-        **_compare_settings(model),
+        **_compare_settings(model, reasoning_marker),
         "documents": [{"document_id": d["id"], "category": d.get("category"),
                        "machine_facts": (counts.get(d["id"]) or {}).get("machine", 0)}
                       for d in docs],
     }  # fmt: skip
     return await _launch(
-        db, pid, job, lambda: _reocr_compare_job(db, pid, docs, counts, skipped, model=model),
+        db, pid, job,
+        lambda: _reocr_compare_job(db, pid, docs, counts, skipped, model=model,
+                                   reasoning_marker=reasoning_marker),
         dry_run=True, busy=busy,
     )  # fmt: skip
 
@@ -2907,6 +2929,7 @@ async def curated_reocr_compare(
     document_ids: list[int],
     patient_slug: str | None = None,
     model: str | None = None,
+    reasoning_marker: str | None = None,
 ) -> str:
     """Dry audit of re-OCR'd sidecars (#883): read again, compare, write nothing.
 
@@ -2939,6 +2962,13 @@ async def curated_reocr_compare(
             Studio reports it ``loaded`` at its native ``/api/v0/models``
             (``model_state_unknown`` when that list is unavailable); nothing
             is loaded or downloaded. Echoed in the report's ``settings``.
+        reasoning_marker: "on" | "off" | null, for this job only (#1044):
+            the #770 reasoning-marker A/B. "on" sends the marker and
+            thinking off on every transcription call (both passes, the
+            halves, the probe readings) and the marker on the orientation
+            question; "off" sends no marker; the near-empty retry keeps its
+            own thinking-off marker, as in production. null = today's
+            requests exactly. Echoed in ``settings`` and the usage records.
     """
     from oncofiles.tools._helpers import _require_admin_or_raise
 
@@ -2949,7 +2979,8 @@ async def curated_reocr_compare(
     if not (patient_slug or "").strip():
         return json.dumps({"error": "patient_slug is required"})
     pid = await _resolve_patient_id(patient_slug, ctx)
-    out = await start_reocr_compare(_get_db(ctx), pid, document_ids, model=model)
+    out = await start_reocr_compare(_get_db(ctx), pid, document_ids, model=model,
+                                    reasoning_marker=reasoning_marker)  # fmt: skip
     return json.dumps(out, ensure_ascii=False)
 
 

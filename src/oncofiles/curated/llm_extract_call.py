@@ -340,9 +340,10 @@ def call_and_parse(
     res.reasoning_marker = cfg.reasoning_marker
     # reasoning_marker is always explicit here (#770): this job's setting, never
     # read from shared state by the concurrent classify / re-OCR calls.
+    caller = "extract_clinical" if label.startswith("clinical") else "extract_lab"  # #1044 log
     kwargs = {"max_tokens": cfg.max_tokens, "thinking": cfg.thinking,
               "timeout": cfg.timeout_s, "reasoning_marker": cfg.reasoning_marker,
-              **cfg.params, **cfg.overrides}  # fmt: skip
+              **cfg.params, **cfg.overrides, "caller": caller}  # fmt: skip
     info: dict = {}
     t0 = time.monotonic()
     try:

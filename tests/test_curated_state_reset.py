@@ -60,7 +60,9 @@ def test_reset_clears_what_a_test_leaves_behind():
     tool._round_no = 7
     conftest.reset_curated_state()
     assert not tool._stopping.is_set() and not tool._runs and not tool._reocr_jobs
-    assert not any(tool._dry_runs.values()) and set(tool._dry_runs) == {"reread", "reocr"}
+    # an earlier test's dry job of another kind (e.g. reocr_compare) adds its
+    # key; the reset zeroes every value, whatever ran before (#1044)
+    assert not any(tool._dry_runs.values()) and {"reread", "reocr"} <= set(tool._dry_runs)
     assert not tool._round_no
 
 
