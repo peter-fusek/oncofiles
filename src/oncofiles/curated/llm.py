@@ -24,6 +24,8 @@ import json
 import logging
 import re
 import time
+from collections.abc import Iterator
+from contextvars import ContextVar
 from urllib.parse import urlsplit
 
 import httpx
@@ -32,6 +34,34 @@ from oncofiles import config
 from oncofiles.curated import llm_lanes
 
 logger = logging.getLogger(__name__)
+
+# #1025: the chat scorecard runs the REAL chat core, which calls ``chat`` itself
+# (its own lane, no model argument). Inside ``scorecard_call_overrides`` every
+# call of THAT context (the scorecard job's task, the core's turn task it
+# spawns and their ``to_thread`` workers, which copy the context) goes to the
+# background lane, so a scorecard never takes the slot reserved for a person
+# waiting in a chat, and gets the job's model override when the caller passed
+# none. A ContextVar, never module state or config: production calls outside
+# that context are unchanged (lock tests in tests/test_1025_chat_scorecard.py).
+_JOB_OVERRIDES: ContextVar[dict | None] = ContextVar("oncofiles_llm_job_overrides", default=None)
+
+
+@contextlib.contextmanager
+def scorecard_call_overrides(*, model: str | None = None) -> Iterator[None]:
+    """Chat scorecard only (#1025): background lane (+ optional model) for every
+    ``chat`` call made in this context."""
+    token = _JOB_OVERRIDES.set({"lane": llm_lanes.BACKGROUND, "model": model})
+    try:
+        yield
+    finally:
+        _JOB_OVERRIDES.reset(token)
+
+
+def job_call_overrides() -> dict | None:
+    """The overrides of the current context (``scorecard_call_overrides``), or None."""
+    current = _JOB_OVERRIDES.get()
+    return dict(current) if current is not None else None
+
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 NO_THINK = "/no_think"
@@ -404,6 +434,11 @@ def chat(
     if not configured():
         raise LocalLLMTransportError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     require_private_base_url()  # #925: before anything is built or sent
+    job = _JOB_OVERRIDES.get()
+    if job is not None:  # the chat scorecard's context (#1025)
+        lane = job["lane"]
+        if model is None and job.get("model"):
+            model = job["model"]
     if lane not in llm_lanes.LANES:
         raise ValueError(f"unknown local-model lane: {lane!r}")
     est = estimate_prompt_tokens(system, user_content)

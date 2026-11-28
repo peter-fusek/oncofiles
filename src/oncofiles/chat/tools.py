@@ -20,7 +20,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -308,8 +310,33 @@ def _error(name: str, args: dict, code: str) -> ToolResult:
     return ToolResult(name, args, False, data, _dumps(data), code)
 
 
+# #1025: the chat scorecard re-checks a turn's grounding and citations against
+# the very tool results the core saw. Inside ``record_results()`` every result
+# of that context is appended to the yielded list (in memory, the scorecard's
+# own job only); outside it nothing is kept.
+_recorder: ContextVar[list | None] = ContextVar("oncofiles_chat_tool_recorder", default=None)
+
+
+@contextmanager
+def record_results() -> Iterator[list[ToolResult]]:
+    results: list[ToolResult] = []
+    token = _recorder.set(results)
+    try:
+        yield results
+    finally:
+        _recorder.reset(token)
+
+
 async def run_tool(db, name: str, args: Any) -> ToolResult:
     """Run one allowlisted read tool for the scoped patient. Never raises."""
+    result = await _run_tool(db, name, args)
+    recorded = _recorder.get()
+    if recorded is not None:
+        recorded.append(result)
+    return result
+
+
+async def _run_tool(db, name: str, args: Any) -> ToolResult:
     clean, errors = clean_args(name, args)
     if errors:
         return _error(name if name in SPECS else "unknown", clean, errors[0])
