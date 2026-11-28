@@ -106,6 +106,25 @@ def _key() -> bytes:
         raise ChatHistoryUnavailableError("key_missing") from exc
 
 
+def available() -> bool:
+    """True when a key is configured, so messages can be stored and read."""
+    try:
+        _key()
+    except ChatHistoryUnavailableError:
+        return False
+    return True
+
+
+def canonical_conversation_id(value) -> str | None:
+    """The canonical lower-case UUID, or None for anything else."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return _canonical_uuid(value)
+    except ValueError:
+        return None
+
+
 def seal(text: str, patient_id: str, conversation_id: str, row_uuid: str) -> bytes:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 

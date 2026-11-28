@@ -14,6 +14,10 @@ for every API path the dashboard calls an answer of the same shape:
     trial_status ~ GET /api/trial-status   (#950 phase 2, not a trial)
     chat_suggestions ~ GET /api/chat/suggestions   (#1023, invented questions;
                  the demo never sends a chat question)
+    chat_conversations / chat_conversations_trash ~ GET /api/chat/conversations
+                 (?trash=0|1; #1022, one invented saved conversation, empty trash)
+    chat_conversation_turns ~ GET /api/chat/conversation   (keyed by
+                 conversation_id; the invented conversation's turns)
     inbound_quarantine ~ GET /api/inbound-quarantine   (#950 quarantine, one
                  invented item from an invented sender, with an invented text)
     inbound_quarantine_previews ~ GET /api/inbound-quarantine/preview  (#976,
@@ -48,6 +52,60 @@ CHAT_SUGGESTIONS = [
     {"sk": "Čo bolo v poslednej správe?", "en": "What did the last report say?"},
 ]
 _FILE_TOKENS = ("JanaTestova_NemPrikladov", "JaneDoe_ExampleHospital")
+# #1022: one invented saved conversation (same shapes as the routes; the demo
+# never stores, deletes or restores anything).
+DEMO_CONVERSATION_ID = "00000000-0000-4000-8000-00000000d1a1"
+_DEMO_Q = ("Aká je posledná hodnota HGB?", "What is the latest HGB value?")
+_DEMO_A = (
+    "Posledná hodnota HGB je 131 g/l zo 14. 3. 2027 (ukážka, vymyslené údaje).",
+    "The latest HGB value is 131 g/l from 14 Mar 2027 (demo, invented data).",
+)
+
+
+def _chat_demo(doc_id) -> dict:
+    cite = [{"document_id": doc_id, "page": 1}] if isinstance(doc_id, int) else []
+    return {
+        "chat_conversations": {
+            "conversations": [
+                {
+                    "conversation_id": DEMO_CONVERSATION_ID,
+                    "title": _DEMO_Q[0],
+                    "title_en": _DEMO_Q[1],
+                    "last_at": "2027-03-15T09:12:00Z",
+                    "turns": 2,
+                }
+            ],
+            "history_available": True,
+            "trash_after_days": 90,
+            "purge_after_trash_days": 30,
+        },
+        "chat_conversations_trash": {
+            "conversations": [],
+            "history_available": True,
+            "trash_after_days": 90,
+            "purge_after_trash_days": 30,
+        },
+        "chat_conversation_turns": {
+            DEMO_CONVERSATION_ID: {
+                "turns": [
+                    {
+                        "role": "user",
+                        "text": _DEMO_Q[0],
+                        "text_en": _DEMO_Q[1],
+                        "citations": [],
+                        "created_at": "2027-03-15T09:11:40Z",
+                    },
+                    {
+                        "role": "assistant",
+                        "text": _DEMO_A[0],
+                        "text_en": _DEMO_A[1],
+                        "citations": cite,
+                        "created_at": "2027-03-15T09:12:00Z",
+                    },
+                ]
+            }
+        },
+    }
 
 
 def _line_text(line: dict, en: bool) -> str:
@@ -513,6 +571,8 @@ def build(showcase_documents: list[dict], version: str) -> dict:
         },
         # #1023: the demo twin of GET /api/chat/suggestions (invented questions)
         "chat_suggestions": {"suggestions": CHAT_SUGGESTIONS},
+        # #1022: the demo twins of the saved conversations (invented)
+        **_chat_demo(next((r["id"] for r in rows if isinstance(r.get("id"), int)), None)),
         "status": {
             "status": "ok",
             "version": version,

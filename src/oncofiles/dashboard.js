@@ -51,7 +51,9 @@
       approveQuarantine: 1, rejectQuarantine: 1, restoreQuarantine: 1, confirmReviewAsIs: 1,
       disconnectDrive: 1, downloadPatientExport: 1,
       // #1023: the demo never calls the chat (the scripted demo chat is #1024)
-      sendChat: 1
+      sendChat: 1,
+      // #1022: deleting and restoring a saved conversation write on the server
+      deleteChatConversation: 1, restoreChatConversation: 1
     };
 
     window._dispatch = function (spec, target) {
@@ -649,15 +651,27 @@
     // status (queued | routing | tool:<name> | writing), delta (text),
     // citation (document_id, page, label, date, unverified), done, error.
     // The local model only; caregiver only (hidden in an admin's read-only
-    // view, the server refuses it too). v1 keeps no history on the server:
-    // the page sends the last few turns (TODO #1022: encrypted history).
-    // In the demo nothing is sent: sendChat is in DEMO_BLOCKED_ACTIONS.
+    // view, the server refuses it too). History (#1022): the server keeps each
+    // conversation encrypted; the page sends conversation_id + the new question
+    // and the server reads the earlier turns itself. While the server keeps no
+    // history (done says conversation_id: null) the page sends the last few
+    // turns, as before. The conversation list (newest first), delete (armed
+    // second click) and the trash (Restore, days until the purge) use
+    // /api/chat/conversations, /api/chat/conversation, …/delete, …/restore.
+    // In the demo nothing is sent: sendChat, deleteChatConversation and
+    // restoreChatConversation are in DEMO_BLOCKED_ACTIONS.
 
     var chatEnabled = false;
     var chatFor = null;          // patient whose suggestions are shown
     var chatTurns = [];          // [{role, content}] of this page view
     var chatAbort = null;        // AbortController of the running answer
     var chatSuggestionsData = [];
+    var chatConversationId = null;  // the open stored conversation, or null = new
+    var chatConvs = [];          // live conversations (newest first)
+    var chatTrash = [];          // trashed conversations
+    var chatHistoryOn = false;   // the server keeps history (a key is configured)
+    var chatDeleteArmed = null;  // conversation id armed for delete
+    var chatDeleteTimer = null;
     var CHAT_MAX_TURNS = 12;     // = chat.core.MAX_MESSAGES
     var CHAT_MAX_CHARS = 2000;   // the composer's maxlength (≤ 4000 bytes in UTF-8 for SK text)
     var CHAT_STATUS_TEXT = {
@@ -683,6 +697,7 @@
       daily_limit: ['Dnešný limit otázok pre tohto pacienta je vyčerpaný.', "Today's question limit for this patient has been reached."],
       refused: ['Chat pre tohto pacienta nie je dostupný.', 'The chat is not available for this patient.'],
       invalid_request: ['Otázku sa nepodarilo spracovať. Skráťte ju alebo začnite nový rozhovor.', 'The question could not be processed. Shorten it or start a new conversation.'],
+      conversation_gone: ['Tento rozhovor už nie je dostupný (možno je v koši). Otázka pôjde do nového rozhovoru.', 'This conversation is no longer available (it may be in the trash). Your question goes to a new conversation.'],
       network: ['Spojenie sa prerušilo. Skúste to znova.', 'The connection was interrupted. Please try again.'],
       internal_error: ['Nastala chyba. Skúste to prosím znova.', 'Something went wrong. Please try again.']
     };
@@ -702,20 +717,30 @@
       if (nameEl) nameEl.textContent = p ? loc(p, 'display_name') : '';
     }
 
-    function resetChat() {
-      if (chatAbort) { try { chatAbort.abort(); } catch (e) { /* already done */ } }
-      chatAbort = null;
-      chatTurns = [];
-      chatFor = null;
-      chatSuggestionsData = [];
+    function clearChatLog() {
       var log = document.getElementById('chat-log');
       var empty = document.getElementById('chat-empty');
       if (log) {
         Array.prototype.slice.call(log.children).forEach(function (el) { if (el !== empty) log.removeChild(el); });
       }
       if (empty) empty.hidden = false;
+    }
+
+    function resetChat() {
+      if (chatAbort) { try { chatAbort.abort(); } catch (e) { /* already done */ } }
+      chatAbort = null;
+      chatTurns = [];
+      chatFor = null;
+      chatSuggestionsData = [];
+      chatConversationId = null;
+      chatConvs = [];
+      chatTrash = [];
+      chatHistoryOn = false;
+      disarmChatDelete();
+      clearChatLog();
       var sugg = document.getElementById('chat-suggestions');
       if (sugg) clearEl(sugg);
+      renderChatConversations();
       setChatState(null);
       setChatRunning(false);
     }
@@ -733,6 +758,214 @@
       if (chatFor !== currentPatientId) return;  // the patient changed meanwhile
       chatSuggestionsData = (data && Array.isArray(data.suggestions)) ? data.suggestions : [];
       renderChatSuggestions();
+      await loadChatConversations();
+    }
+
+    // ── saved conversations (#1022) ──
+
+    async function loadChatConversations() {
+      var forPatient = currentPatientId;
+      var live = null;
+      var trash = null;
+      // one request at a time (the server holds one DB connection)
+      try { live = await apiFetch('/api/chat/conversations?trash=0'); } catch (e) { live = null; }
+      try { trash = await apiFetch('/api/chat/conversations?trash=1'); } catch (e) { trash = null; }
+      if (forPatient !== currentPatientId) return;
+      chatHistoryOn = !!(live && live.history_available);
+      chatConvs = (live && Array.isArray(live.conversations)) ? live.conversations : [];
+      chatTrash = (trash && Array.isArray(trash.conversations)) ? trash.conversations : [];
+      renderChatConversations();
+    }
+
+    function skDays(n) {
+      return n === 1 ? '1 deň' : (n >= 2 && n <= 4) ? n + ' dni' : n + ' dní';
+    }
+
+    function chatConvTitle(c) {
+      // the stored title is the start of the first question, in its own language
+      // (the demo twin carries an English *_en twin, read through loc)
+      var sk = String((c && c.title) || '').replace(/\s+/g, ' ').trim();
+      var en = String((c && (c.title_en || c.title)) || '').replace(/\s+/g, ' ').trim();
+      return sk ? [sk, en] : ['Rozhovor bez názvu', 'Untitled conversation'];
+    }
+
+    function chatConvItem(c, inTrash) {
+      var id = String(c.conversation_id || '');
+      var li = document.createElement('li');
+      li.className = 'chat-conv' + (!inTrash && id === chatConversationId ? ' is-current' : '');
+      var title = chatConvTitle(c);
+      var turns = Number(c.turns) || 0;
+      var when = c.last_at ? fmtDate(String(c.last_at).slice(0, 10)) : '';
+      var main;
+      if (inTrash) {
+        main = document.createElement('div');
+        main.className = 'chat-conv-main';
+      } else {
+        main = document.createElement('button');
+        main.type = 'button';
+        main.className = 'chat-conv-main chat-conv-open';
+        main.setAttribute('data-action', 'openChatConversation|' + id + '|@this');
+        if (id === chatConversationId) main.setAttribute('aria-current', 'true');
+      }
+      var tEl = document.createElement('span');
+      tEl.className = 'chat-conv-title';
+      main.appendChild(setI18n(tEl, title[0], title[1]));
+      var meta = document.createElement('span');
+      meta.className = 'chat-conv-meta';
+      var sk = (when ? when + ' · ' : '') + turns + ' správ';
+      var en = (when ? when + ' · ' : '') + turns + ' messages';
+      if (inTrash && c.purge_in_days != null) {
+        var left = Math.max(0, Number(c.purge_in_days) || 0);
+        sk += ' · vymaže sa o ' + skDays(left);
+        en += ' · deleted in ' + left + (left === 1 ? ' day' : ' days');
+      }
+      main.appendChild(setI18n(meta, sk, en));
+      li.appendChild(main);
+      var act = document.createElement('button');
+      act.type = 'button';
+      if (inTrash) {
+        act.className = 'copy-btn chat-conv-restore';
+        act.setAttribute('data-action', 'restoreChatConversation|' + id + '|@this');
+        setI18n(act, 'Obnoviť', 'Restore');
+      } else {
+        var armed = chatDeleteArmed === id;
+        act.className = 'copy-btn chat-conv-delete' + (armed ? ' armed' : '');
+        act.setAttribute('data-action', 'deleteChatConversation|' + id + '|@this');
+        if (armed) setI18n(act, 'Naozaj zmazať? Kliknite znova', 'Delete? Click again');
+        else setI18n(act, 'Zmazať', 'Delete');
+      }
+      li.appendChild(act);
+      return li;
+    }
+
+    function renderChatConversations() {
+      var box = document.getElementById('chat-convs');
+      var list = document.getElementById('chat-conv-list');
+      var empty = document.getElementById('chat-conv-empty');
+      var trashBox = document.getElementById('chat-trash');
+      var trashList = document.getElementById('chat-trash-list');
+      var trashSum = document.getElementById('chat-trash-summary');
+      if (!box || !list) return;
+      box.hidden = !(chatHistoryOn || chatConvs.length || chatTrash.length);
+      clearEl(list);
+      chatConvs.forEach(function (c) { if (c && c.conversation_id) list.appendChild(chatConvItem(c, false)); });
+      if (empty) empty.hidden = chatConvs.length > 0;
+      if (trashBox && trashList) {
+        clearEl(trashList);
+        chatTrash.forEach(function (c) { if (c && c.conversation_id) trashList.appendChild(chatConvItem(c, true)); });
+        trashBox.hidden = chatTrash.length === 0;
+        if (trashSum) setI18n(trashSum, 'Kôš (' + chatTrash.length + ')', 'Trash (' + chatTrash.length + ')');
+      }
+    }
+
+    function disarmChatDelete() {
+      chatDeleteArmed = null;
+      if (chatDeleteTimer) { clearTimeout(chatDeleteTimer); chatDeleteTimer = null; }
+    }
+
+    function newChatConversation() {
+      if (chatAbort) return;  // finish or stop the running answer first
+      chatConversationId = null;
+      chatTurns = [];
+      clearChatLog();
+      setChatState(null);
+      renderChatSuggestions();
+      renderChatConversations();
+      var input = document.getElementById('chat-input');
+      if (input) input.focus();
+    }
+
+    async function openChatConversation(id, el) {
+      if (chatAbort || !id) return;
+      var forPatient = currentPatientId;
+      var data = null;
+      try {
+        data = await apiFetch('/api/chat/conversation?conversation_id=' + encodeURIComponent(String(id)));
+      } catch (e) {
+        data = null;
+      }
+      if (forPatient !== currentPatientId) return;
+      if (!data || !Array.isArray(data.turns)) {
+        setChatState('error', 'Rozhovor sa nepodarilo otvoriť.', 'The conversation could not be opened.');
+        await loadChatConversations();
+        return;
+      }
+      chatConversationId = String(id);
+      chatTurns = [];
+      clearChatLog();
+      setChatState(null);
+      var sugg = document.getElementById('chat-suggestions');
+      if (sugg) clearEl(sugg);
+      data.turns.forEach(function (t) {
+        if (!t || (t.role !== 'user' && t.role !== 'assistant')) return;
+        var bubble = chatBubble(t.role);
+        if (typeof t.text !== 'string') {
+          bubble.msg.classList.add('is-unreadable');
+          setI18n(bubble.body, 'Túto správu sa nepodarilo prečítať.', 'This message could not be read.');
+          return;
+        }
+        var text = String(loc(t, 'text'));
+        bubble.body.textContent = text;
+        chatTurns.push({ role: t.role, content: text.slice(0, 3500) });
+        if (t.role === 'assistant') {
+          var cites = (Array.isArray(t.citations) ? t.citations : []).map(function (c) {
+            var doc = c ? findDoc(c.document_id) : null;
+            return { document_id: c && c.document_id, page: c && c.page, label: doc ? doc.filename : '' };
+          });
+          chatAppendSources(bubble, cites);
+        }
+      });
+      renderChatConversations();
+      var log = document.getElementById('chat-log');
+      if (log) log.scrollTop = log.scrollHeight;
+      var input = document.getElementById('chat-input');
+      if (input && el) input.focus();
+    }
+
+    async function chatConversationWrite(action, id) {
+      var resp = await fetch('/api/chat/conversation/' + action, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': authHeader() },
+        body: JSON.stringify({ patient_id: currentPatientId, conversation_id: String(id) })
+      });
+      if (resp.status === 401) { logout(); return false; }
+      return resp.ok;
+    }
+
+    async function deleteChatConversation(id, btn) {
+      if (!currentPatientId || isAdminMode || !id) return;
+      id = String(id);
+      if (chatDeleteArmed !== id) {
+        disarmChatDelete();
+        chatDeleteArmed = id;
+        renderChatConversations();
+        chatDeleteTimer = setTimeout(function () { disarmChatDelete(); renderChatConversations(); }, 6000);
+        return;
+      }
+      disarmChatDelete();
+      if (btn) btn.disabled = true;
+      var ok = false;
+      try { ok = await chatConversationWrite('delete', id); } catch (e) { ok = false; }
+      if (ok) {
+        if (chatConversationId === id) newChatConversation();
+        setChatState('info', 'Rozhovor je v koši. Dá sa obnoviť ešte 30 dní.',
+          'The conversation is in the trash. It can be restored for 30 days.');
+      } else {
+        setChatState('error', 'Rozhovor sa teraz nepodarilo zmazať. Skúste to neskôr.',
+          'The conversation could not be deleted right now. Try again later.');
+      }
+      await loadChatConversations();
+    }
+
+    async function restoreChatConversation(id, btn) {
+      if (!currentPatientId || isAdminMode || !id) return;
+      if (btn) btn.disabled = true;
+      var ok = false;
+      try { ok = await chatConversationWrite('restore', String(id)); } catch (e) { ok = false; }
+      if (ok) setChatState('info', 'Rozhovor je obnovený.', 'The conversation is restored.');
+      else setChatState('error', 'Rozhovor sa teraz nepodarilo obnoviť. Skúste to neskôr.',
+        'The conversation could not be restored right now. Try again later.');
+      await loadChatConversations();
     }
 
     function renderChatSuggestions() {
@@ -885,16 +1118,25 @@
       var disclaimer = '';
       var errorCode = null;
       var done = false;
+      var sentConversation = chatConversationId;
+      var newConversation = null;
+      // a stored conversation: the server reads the earlier turns itself
+      var payload = { patient_id: forPatient, lang: dashLang, messages: chatMessages() };
+      if (sentConversation) {
+        payload.conversation_id = sentConversation;
+        payload.messages = [{ role: 'user', content: text }];
+      }
       try {
         var resp = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Authorization': authHeader(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ patient_id: forPatient, lang: dashLang, messages: chatMessages() }),
+          body: JSON.stringify(payload),
           signal: ac.signal
         });
         if (resp.status === 401) { logout(); return; }
         if (!resp.ok || !resp.body) {
-          errorCode = resp.status === 409 ? 'busy'
+          errorCode = (resp.status === 404 && sentConversation) ? 'conversation_gone'
+            : resp.status === 409 ? 'busy'
             : resp.status === 429 ? 'rate_limited'
             : (resp.status === 404 || resp.status === 403) ? 'refused'
             : (resp.status === 400 || resp.status === 413) ? 'invalid_request'
@@ -921,6 +1163,7 @@
             } else if (ev.type === 'done') {
               done = true;
               disclaimer = String(d.disclaimer || '');
+              if (typeof d.conversation_id === 'string' && d.conversation_id) newConversation = d.conversation_id;
             } else if (ev.type === 'error') {
               errorCode = String(d.code || 'internal_error');
             }
@@ -957,6 +1200,12 @@
       if (errorCode) {
         chatTurns.pop();
         chatError(answer, errorCode);
+        if (errorCode === 'conversation_gone') {
+          // the next question starts a new conversation; the list shows where it went
+          chatConversationId = null;
+          chatTurns = [];
+          await loadChatConversations();
+        }
         return;
       }
       // The disclaimer the core appends goes on its own line under the answer.
@@ -966,7 +1215,20 @@
       }
       answer.body.textContent = body;
       chatTurns.push({ role: 'assistant', content: body.slice(0, 3500) });
-      if (citations.length) {
+      chatAppendSources(answer, citations);
+      setChatState(null);
+      // #1022: the server stored the turn; the next question continues it
+      if (newConversation) {
+        chatConversationId = newConversation;
+        await loadChatConversations();
+      } else if (sentConversation) {
+        await loadChatConversations();
+      }
+    }
+
+    /** Citation chips and the disclaimer under an answer (live or reopened). */
+    function chatAppendSources(answer, citations) {
+      if (citations && citations.length) {
         var cites = document.createElement('div');
         cites.className = 'chat-cites';
         cites.setAttribute('role', 'group');
@@ -983,7 +1245,6 @@
       answer.msg.appendChild(setI18n(disc,
         'Toto nie je lekárska rada. Pri rozhodnutiach o liečbe sa poraďte so svojím lekárom.',
         'This is not medical advice. Ask your doctor before any decision about treatment.'));
-      setChatState(null);
     }
 
     function stopChat() {
@@ -1029,6 +1290,15 @@
       }
       if (path === '/api/patients') return d.patients;
       if (path === '/api/chat/suggestions') return d.chat_suggestions;  // #1023: invented questions
+      if (path === '/api/chat/conversations') {
+        // #1022: an invented saved conversation; the demo trash is empty
+        var ct = new URL(url, location.origin).searchParams.get('trash') === '1';
+        return ct ? d.chat_conversations_trash : d.chat_conversations;
+      }
+      if (path === '/api/chat/conversation') {
+        var cid = new URL(url, location.origin).searchParams.get('conversation_id');
+        return (d.chat_conversation_turns || {})[cid] || { turns: [] };
+      }
       if (path === '/api/patient-budget') return { show_pill: false };
       if (path.indexOf('/api/doc-detail/') === 0) {
         var detailId = path.split('/').pop();

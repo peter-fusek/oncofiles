@@ -165,6 +165,20 @@
  <h2 id="chat-title" data-sk="Chat" data-en="Chat">Chat</h2>
  <span class="section-meta chat-scope"><span data-sk="Odpovedá len z dokumentov:" data-en="Answers only from the records of:">Odpovedá len z dokumentov:</span> <strong id="chat-patient-name"></strong></span>
  </div>
+ <!-- #1022/#1023: saved conversations (encrypted on the server), newest first; hidden while the server keeps no history -->
+ <div class="chat-convs" id="chat-convs" hidden>
+ <div class="chat-convs-head">
+ <h3 class="chat-convs-title" id="chat-convs-title" data-sk="Rozhovory" data-en="Conversations">Rozhovory</h3>
+ <button type="button" class="copy-btn chat-new" id="chat-new-btn" data-action="newChatConversation" data-sk="Nový rozhovor" data-en="New conversation">Nový rozhovor</button>
+ </div>
+ <ul id="chat-conv-list" class="chat-conv-list" aria-labelledby="chat-convs-title"></ul>
+ <p id="chat-conv-empty" class="chat-conv-empty" hidden data-sk="Zatiaľ žiadne uložené rozhovory." data-en="No saved conversations yet.">Zatiaľ žiadne uložené rozhovory.</p>
+ <details id="chat-trash" class="chat-trash" hidden>
+ <summary id="chat-trash-summary" data-sk="Kôš" data-en="Trash">Kôš</summary>
+ <p class="section-meta" data-sk="Rozhovory sa po 90 dňoch samy presunú do koša. Zmazaný rozhovor sa dá z koša obnoviť ešte 30 dní, potom sa jeho text natrvalo vymaže." data-en="Conversations move to the trash by themselves after 90 days. A deleted conversation can be restored from the trash for 30 more days; then its text is deleted for good.">Rozhovory sa po 90 dňoch samy presunú do koša. Zmazaný rozhovor sa dá z koša obnoviť ešte 30 dní, potom sa jeho text natrvalo vymaže.</p>
+ <ul id="chat-trash-list" class="chat-conv-list" aria-labelledby="chat-trash-summary"></ul>
+ </details>
+ </div>
  <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-labelledby="chat-title">
  <p class="chat-empty" id="chat-empty" data-sk="Opýtajte sa na niečo z dokumentov tohto pacienta. Odpoveď sa opiera len o ne a pri každom údaji ukáže zdroj." data-en="Ask something about this patient's records. The answer relies on them only and shows the source of each value.">Opýtajte sa na niečo z dokumentov tohto pacienta. Odpoveď sa opiera len o ne a pri každom údaji ukáže zdroj.</p>
  </div>
