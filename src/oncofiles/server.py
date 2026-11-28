@@ -4272,6 +4272,11 @@ async def readiness(request: Request) -> JSONResponse:
         # #784: one scheduler per process, verifiable after a rolling deploy:
         # every answer must carry the same instance_id. In-memory, no DB.
         result["scheduler"] = scheduler_singleton.status()
+        # #1021: local-model lanes (interactive first): per-lane active/waiting,
+        # wait p50/p95, interactive turns per hour. In-memory counts, no DB.
+        from oncofiles.curated import llm_lanes
+
+        result["llm_lanes"] = llm_lanes.status()
         # Scheduler job status (lightweight summary)
         tracker = lifespan_ctx.get("job_tracker", {})
         jobs: dict = {}

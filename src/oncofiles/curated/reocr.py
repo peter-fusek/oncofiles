@@ -109,7 +109,7 @@ from datetime import datetime
 
 from oncofiles import config
 from oncofiles.curated import extract as extract_mod
-from oncofiles.curated import llm, ocr_markers, orientation
+from oncofiles.curated import llm, llm_lanes, ocr_markers, orientation
 
 logger = logging.getLogger(__name__)
 
@@ -933,13 +933,16 @@ def reread_isolated(
         + b"\n"
     )
     try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "oncofiles.curated.reocr_child"],
-            input=header + content,
-            capture_output=True,
-            env=reocr_child.child_env(),
-            check=False,
-        )
+        # #1021: the child's model calls run in another process, so the parent
+        # holds their background slots (``parallel`` passes at once) for it.
+        with llm_lanes.slot(llm_lanes.BACKGROUND, slots=max(1, int(parallel or 1))):
+            proc = subprocess.run(
+                [sys.executable, "-m", "oncofiles.curated.reocr_child"],
+                input=header + content,
+                capture_output=True,
+                env=reocr_child.child_env(),
+                check=False,
+            )
         if proc.returncode != 0:
             tail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()[-1:]
             logger.warning("re-OCR child failed for doc %s: %s", doc_ref, tail)
@@ -1540,6 +1543,7 @@ def run_reocr(
     for d in docs:
         res = DocResult(d["document_id"], d["filename"], list(d.get("reasons") or []))
         report.documents.append(res)
+        llm_lanes.yield_to_interactive()  # #1021 checkpoint: a waiting chat goes first
         if stop():
             res.result, res.error = "skipped", "stopping"
             continue
