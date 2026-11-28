@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from oncofiles import config
+from oncofiles.curated import llm_lanes
 
 logger = logging.getLogger(__name__)
 
@@ -363,8 +364,14 @@ def chat(
     top_k: int | None = None,
     presence_penalty: float | None = None,
     reasoning_marker: bool | None = None,
+    lane: str = "background",
 ) -> str:
     """One blocking chat completion; returns the answer text.
+
+    ``lane`` (#1021): ``"background"`` (default, every existing caller) or
+    ``"interactive"`` (a person waiting in a chat). The request holds one
+    slot of the process-wide arbiter (:mod:`llm_lanes`) while it is sent;
+    interactive calls are admitted first. The request body never changes.
 
     ``reasoning_effort`` is sent but LM Studio ignores it for the current
     Qwen3.8 MLX model (it logs "cannot be converted to any custom KVs"), so
@@ -396,6 +403,8 @@ def chat(
     if not configured():
         raise LocalLLMTransportError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     require_private_base_url()  # #925: before anything is built or sent
+    if lane not in llm_lanes.LANES:
+        raise ValueError(f"unknown local-model lane: {lane!r}")
     est = estimate_prompt_tokens(system, user_content)
     max_tokens = clamp_budget(max_tokens, est)
     if max_tokens < MIN_ANSWER_TOKENS:
@@ -436,12 +445,15 @@ def chat(
     per_call = {"timeout": timeout} if timeout else {}
     t0 = time.monotonic()
     try:
-        resp = http.post(
-            f"{config.LOCAL_LLM_BASE_URL}/chat/completions",
-            json=payload,
-            headers=headers,
-            **per_call,
-        )
+        # #1021: one arbiter slot for the request only (never while building
+        # or parsing); an in-flight request is never interrupted.
+        with llm_lanes.slot(lane):
+            resp = http.post(
+                f"{config.LOCAL_LLM_BASE_URL}/chat/completions",
+                json=payload,
+                headers=headers,
+                **per_call,
+            )
     except httpx.HTTPError as exc:
         raise LocalLLMTransportError(f"local LLM unreachable: {type(exc).__name__}") from exc
     finally:
