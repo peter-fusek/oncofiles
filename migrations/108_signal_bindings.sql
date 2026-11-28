@@ -18,6 +18,13 @@
 --   phone_hash:           keyed HMAC of the E.164 number when signal-cli showed
 --                         one at bind time (secrets_keys.signal_phone_hash_key);
 --                         informational only, never a lookup key. Never raw.
+--   identity_hash:        keyed HMAC of the sender's identity-key fingerprint as
+--                         signal-cli's listIdentities reported it at bind time
+--                         (secrets_keys.signal_identity_hash_key). Re-checked
+--                         before every answer: a different fingerprint suspends
+--                         the binding; a failed check answers nothing. Never raw.
+--   identity_trust:       signal-cli trust level at bind time (TRUSTED_VERIFIED |
+--                         TRUSTED_UNVERIFIED; UNTRUSTED never binds).
 --   row_uuid:             random UUID per row, part of the AES-GCM associated data.
 --   reply_enc:            the reply address uuid:<ACI>, AES-GCM with
 --                         secrets_keys.signal_phone_key, associated data
@@ -39,6 +46,8 @@ CREATE TABLE IF NOT EXISTS signal_bindings (
     caregiver_email_hash TEXT NOT NULL,
     sender_uuid_hash TEXT NOT NULL,
     phone_hash TEXT,
+    identity_hash TEXT NOT NULL,
+    identity_trust TEXT NOT NULL,
     row_uuid TEXT NOT NULL UNIQUE,
     reply_enc BLOB NOT NULL,
     conversation_uuid TEXT,
@@ -76,7 +85,8 @@ CREATE INDEX IF NOT EXISTS idx_signal_link_codes_patient
 -- signal_sender_limits: persisted per-sender throttle (survives a deploy, #623
 -- lesson): messages in the current hour window, failed code attempts in it,
 -- and when the last neutral "connect in the dashboard first" reply went out
--- (at most one per day). Keyed by the same keyed ACI hash; no patient
+-- (at most one per day), and the last "temporarily unavailable" line (identity
+-- not confirmable, at most one per hour). Keyed by the same keyed ACI hash; no patient
 -- reference, no text.
 CREATE TABLE IF NOT EXISTS signal_sender_limits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,5 +95,6 @@ CREATE TABLE IF NOT EXISTS signal_sender_limits (
     window_messages INTEGER NOT NULL DEFAULT 0,
     window_failed_codes INTEGER NOT NULL DEFAULT 0,
     neutral_reply_at TEXT,
+    unavailable_reply_at TEXT,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );

@@ -14,6 +14,7 @@ import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -68,12 +69,30 @@ async def family(db):
 
 
 class FakeClient:
+    """Fake signal-cli: records sends; ``identity`` answers from ``keys``
+    (sender → Identity, None, or an exception to raise), else a stable
+    trusted fingerprint per sender."""
+
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
+        self.keys: dict = {}
+        self.identity_calls = 0
 
     async def send(self, recipient: str, text: str) -> bool:
         self.sent.append((recipient, text))
         return True
+
+    async def identity(self, sender: str):
+        self.identity_calls += 1
+        if sender in self.keys:
+            value = self.keys[sender]
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return sig.Identity("fp " + sender, "TRUSTED_UNVERIFIED")
+
+
+IDENT = {"identity_hash": "pinned-hash-for-tests", "identity_trust": "TRUSTED_UNVERIFIED"}
 
 
 def _env(text: str, sender: str = PHONE_A, aci=_KEEP, **msg) -> dict:
@@ -133,19 +152,21 @@ async def test_code_shape_and_single_use(db, family):
     async with db.db.execute("SELECT code_hash FROM signal_link_codes") as cur:
         rows = [r[0] for r in await cur.fetchall()]
     assert code not in rows and len(rows) == 1  # only the keyed hash
-    first = await sb.bind_from_message(db, ADDR[PHONE_A], code.lower())
+    first = await sb.bind_from_message(db, ADDR[PHONE_A], code.lower(), **IDENT)
     assert first.status == "bound" and first.patient_id == family["first"]
-    replay = await sb.bind_from_message(db, ADDR[PHONE_B], code)
+    replay = await sb.bind_from_message(db, ADDR[PHONE_B], code, **IDENT)
     assert replay.status == "refused" and replay.reason == "used_code"
 
 
 async def test_wrong_and_expired_codes(db, family):
-    assert (await sb.bind_from_message(db, ADDR[PHONE_A], "ZZ9ZZ9")).reason == "unknown_code"
+    assert (
+        await sb.bind_from_message(db, ADDR[PHONE_A], "ZZ9ZZ9", **IDENT)
+    ).reason == "unknown_code"
     out = await sb.create_link_code(db, patient_id=family["first"], caregiver_email=CARE_A)
     past = (datetime.now(UTC) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     await db.db.execute("UPDATE signal_link_codes SET expires_at = ?", (past,))
     await db.db.commit()
-    res = await sb.bind_from_message(db, ADDR[PHONE_A], out["code"])
+    res = await sb.bind_from_message(db, ADDR[PHONE_A], out["code"], **IDENT)
     assert res.status == "refused" and res.reason == "expired_code"
     assert await sb.binding_for_sender(db, ADDR[PHONE_A]) is None
 
@@ -715,3 +736,152 @@ def test_idle_days_setting(monkeypatch):
     assert sb.idle_days() == 7
     monkeypatch.setenv(sb.IDLE_DAYS_ENV, "nonsense")
     assert sb.idle_days() == sb.DEFAULT_IDLE_DAYS
+
+
+# ── identity key pinned at bind time, checked before every answer ────────
+
+
+@pytest.fixture(autouse=True)
+def _clear_identity_cache():
+    sig._identity_ok.clear()
+    yield
+    sig._identity_ok.clear()
+
+
+async def test_same_fingerprint_answers(db, family, fake_core):
+    client = FakeClient()
+    assert await _bind(db, client, family["first"], CARE_A) == "bound"
+    async with db.db.execute("SELECT identity_hash, identity_trust FROM signal_bindings") as cur:
+        pinned, trust = await cur.fetchone()
+    assert pinned == sb.identity_hash("fp " + ADDR[PHONE_A]) and trust == "TRUSTED_UNVERIFIED"
+    assert "fp " not in pinned  # only the keyed hash is stored
+    assert (await sig.handle_envelope(db, client, _env("Otázka?"))).startswith("answered")
+
+
+async def test_changed_fingerprint_suspends_and_answers_nothing(db, family, fake_core):
+    client = FakeClient()
+    await _bind(db, client, family["first"], CARE_A)
+    client.sent.clear()
+    client.keys[ADDR[PHONE_A]] = sig.Identity("a brand new key", "TRUSTED_UNVERIFIED")
+    assert await sig.handle_envelope(db, client, _env("Otázka?")) == "identity_suspended"
+    assert client.sent == [(ADDR[PHONE_A], sig.TEXTS["reconnect"]["sk"])]
+    assert fake_core["calls"] == []
+    assert await sb.binding_for_sender(db, ADDR[PHONE_A]) is None
+    # a new code reconnects with the new key pinned
+    assert await _bind(db, client, family["first"], CARE_A) == "bound"
+    assert (await sig.handle_envelope(db, client, _env("Otázka?"))).startswith("answered")
+
+
+async def test_untrusted_answers_nothing_and_does_not_suspend(db, family, fake_core):
+    client = FakeClient()
+    await _bind(db, client, family["first"], CARE_A)
+    client.sent.clear()
+    client.keys[ADDR[PHONE_A]] = sig.Identity("fp " + ADDR[PHONE_A], "UNTRUSTED")
+    assert await sig.handle_envelope(db, client, _env("Otázka?")) == "identity_unconfirmed"
+    assert client.sent == [(ADDR[PHONE_A], sig.TEXTS["unavailable"]["sk"])]
+    assert fake_core["calls"] == []
+    assert await sb.binding_for_sender(db, ADDR[PHONE_A]) == family["first"]
+
+
+@pytest.mark.parametrize("failure", [None, TimeoutError("slow"), RuntimeError("odd")])
+async def test_failed_identity_check_answers_nothing(db, family, fake_core, failure):
+    client = FakeClient()
+    await _bind(db, client, family["first"], CARE_A)
+    client.sent.clear()
+    client.keys[ADDR[PHONE_A]] = failure
+    assert await sig.handle_envelope(db, client, _env("Otázka?")) == "identity_unconfirmed"
+    assert await sig.handle_envelope(db, client, _env("Pacient")) == "identity_unconfirmed"
+    # the "temporarily unavailable" line at most once an hour
+    assert client.sent == [(ADDR[PHONE_A], sig.TEXTS["unavailable"]["sk"])]
+    assert fake_core["calls"] == []
+    assert await sb.binding_for_sender(db, ADDR[PHONE_A]) == family["first"]  # not suspended
+
+
+async def test_no_confirmed_identity_no_binding(db, family, fake_core):
+    client = FakeClient()
+    client.keys[ADDR[PHONE_A]] = None
+    code = (await sb.create_link_code(db, patient_id=family["first"], caregiver_email=CARE_A))[
+        "code"
+    ]
+    assert await sig.handle_envelope(db, client, _env(code)) == "identity_unconfirmed"
+    assert await sb.binding_for_sender(db, ADDR[PHONE_A]) is None
+    client.keys[ADDR[PHONE_A]] = sig.Identity("some key", "UNTRUSTED")
+    assert await sig.handle_envelope(db, client, _env(code)) == "identity_unconfirmed"
+    del client.keys[ADDR[PHONE_A]]
+    assert await sig.handle_envelope(db, client, _env(code)) == "bound"  # code not consumed
+
+
+async def test_confirmed_check_is_cached_then_expires(db, family, fake_core, monkeypatch):
+    client = FakeClient()
+    await _bind(db, client, family["first"], CARE_A)
+    calls_after_bind = client.identity_calls
+    await sig.handle_envelope(db, client, _env("Otázka?"))
+    await sig.handle_envelope(db, client, _env("Ďalšia otázka?"))
+    assert client.identity_calls == calls_after_bind + 1  # second answer from the cache
+    clock = {"now": sig.time.monotonic() + sig.IDENTITY_CACHE_S + 1}
+    monkeypatch.setattr(sig.time, "monotonic", lambda: clock["now"])
+    await sig.handle_envelope(db, client, _env("Tretia otázka?"))
+    assert client.identity_calls == calls_after_bind + 2
+
+
+async def test_cache_never_hides_a_change_after_expiry(db, family, fake_core, monkeypatch):
+    client = FakeClient()
+    await _bind(db, client, family["first"], CARE_A)
+    await sig.handle_envelope(db, client, _env("Otázka?"))
+    client.keys[ADDR[PHONE_A]] = sig.Identity("another key", "TRUSTED_UNVERIFIED")
+    clock = {"now": sig.time.monotonic() + sig.IDENTITY_CACHE_S + 1}
+    monkeypatch.setattr(sig.time, "monotonic", lambda: clock["now"])
+    assert await sig.handle_envelope(db, client, _env("Otázka?")) == "identity_suspended"
+
+
+def test_identity_parsing_is_strict():
+    me = UUIDS[PHONE_A]
+    good = {"uuid": me, "fingerprint": "ab cd", "status": "TRUSTED_VERIFIED"}
+    assert sig.identity_from([good], ADDR[PHONE_A]) == sig.Identity("ab cd", "TRUSTED_VERIFIED")
+    other = {**good, "uuid": UUIDS[PHONE_B]}
+    assert sig.identity_from([other], ADDR[PHONE_A]) is None  # not this sender
+    assert sig.identity_from([good, good], ADDR[PHONE_A]) is None  # ambiguous
+    assert sig.identity_from({"identities": [good]}, ADDR[PHONE_A]) is None  # odd shape
+    assert sig.identity_from([{**good, "status": "MAYBE"}], ADDR[PHONE_A]) is None
+    assert sig.identity_from([{**good, "fingerprint": ""}], ADDR[PHONE_A]) is None
+    safety = {"uuid": me, "safety_number": "x y", "status": "UNTRUSTED"}
+    assert sig.identity_from([safety], ADDR[PHONE_A]) == sig.Identity("x y", "UNTRUSTED")
+
+
+async def test_client_identity_over_http():
+    me = UUIDS[PHONE_A]
+    answers = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        answers.append(request.url.raw_path.decode())
+        mode = answers_mode["value"]
+        if mode == "ok":
+            body = [{"uuid": me, "fingerprint": "ab", "status": "TRUSTED_UNVERIFIED"}]
+            return httpx.Response(200, json=body)
+        if mode == "error":
+            return httpx.Response(500, json={"error": "x"})
+        if mode == "odd":
+            return httpx.Response(200, text="not json")
+        raise httpx.ReadTimeout("slow", request=request)
+
+    answers_mode = {"value": "ok"}
+    client = sig.SignalClient(
+        "http://127.0.0.1:1", "+10000000000", transport=httpx.MockTransport(respond)
+    )
+    assert await client.identity(ADDR[PHONE_A]) == sig.Identity("ab", "TRUSTED_UNVERIFIED")
+    for mode in ("error", "odd", "timeout"):
+        answers_mode["value"] = mode
+        assert await client.identity(ADDR[PHONE_A]) is None
+    bot_number = quote("+10000000000", safe="")
+    assert answers[0] == "/v1/identities/" + bot_number
+
+
+def test_probe_summary_has_no_values():
+    me = UUIDS[PHONE_A]
+    data = [{"uuid": me, "fingerprint": "ab cd", "status": "TRUSTED_UNVERIFIED", "number": PHONE_A}]
+    out = sig.probe_summary(200, data)
+    text = json.dumps(out)
+    assert me not in text and "ab cd" not in text and PHONE_A not in text
+    assert out["entries"] == 1 and out["with_uuid"] == 1 and out["expected_shape"] is True
+    assert out["statuses"] == ["TRUSTED_UNVERIFIED"]
+    assert sig.probe_summary(None, None)["expected_shape"] is False

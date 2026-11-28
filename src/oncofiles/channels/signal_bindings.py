@@ -16,9 +16,11 @@ sender to ONE patient; a sender without a valid binding resolves to nothing
   ``reply_enc`` is ``uuid:<aci>`` under AES-GCM (associated data
   ``signal|<patient_id>|<row_uuid>``). Nothing raw is logged; logs carry a short
   prefix of the hash at most.
-* **Identity change → suspended.** When signal-cli reports an untrusted or
-  changed identity key for a sender, :func:`suspend_sender` ends every binding
-  of that sender (``active`` 0 + ``suspended_at``); only a new link code binds
+* **Identity key pinned at bind time.** The bind stores a keyed hash of the
+  sender's identity-key fingerprint as signal-cli reported it (``identity_hash``,
+  plus its trust level); the adapter re-checks it before every answer (fail
+  closed). A definite change → :func:`suspend_sender` ends every binding of
+  that sender (``active`` 0 + ``suspended_at``); only a new link code binds
   again.
 * **Idle expiry.** A binding unused for ``SIGNAL_BINDING_IDLE_DAYS`` (default
   :data:`DEFAULT_IDLE_DAYS`) ends (``active`` 0 + ``expired_at``) the next time
@@ -162,6 +164,18 @@ def phone_hash(number: str) -> str:
     return _hmac(secrets_keys.signal_phone_hash_key(), number)
 
 
+# signal-cli's trust levels of an identity key (listIdentities).
+TRUST_LEVELS = frozenset({"TRUSTED_VERIFIED", "TRUSTED_UNVERIFIED", "UNTRUSTED"})
+UNTRUSTED = "UNTRUSTED"
+
+
+def identity_hash(fingerprint: str) -> str:
+    """Keyed HMAC hex of an identity-key fingerprint / safety number (spaces
+    dropped, lower-case); never stored or logged raw."""
+    value = "".join(fingerprint.split()).lower()
+    return _hmac(secrets_keys.signal_identity_hash_key(), value)
+
+
 def caregiver_hash(email: str | None) -> str | None:
     value = (email or "").strip().lower()
     if not value:
@@ -280,18 +294,29 @@ async def create_link_code(db, *, patient_id: str, caregiver_email: str) -> dict
     raise LinkCodeRefusedError("too_many_codes")
 
 
-async def bind_from_message(db, sender: str, code: str, *, number: str | None = None) -> BindResult:
+async def bind_from_message(
+    db,
+    sender: str,
+    code: str,
+    *,
+    identity_hash: str,
+    identity_trust: str,
+    number: str | None = None,
+) -> BindResult:
     """Consume a code sent by the ACI ``sender`` and bind it to the code's patient.
 
     ``number`` (the E.164 number signal-cli showed with the message, if any) is
-    stored only as a keyed hash. Refused (one neutral reply upstream, nothing
+    stored only as a keyed hash. ``identity_hash`` / ``identity_trust`` are the
+    sender's CURRENT identity key as signal-cli reported it just now
+    (:func:`identity_hash`; the adapter refuses to bind without one); every
+    later message is checked against it. Refused (one neutral reply upstream, nothing
     else): unknown, wrong, expired or used code; a code of another caregiver
     than the one this sender is already bound to; a patient that is gone or
     whose caregiver changed since. A refusal never consumes a valid code.
     """
     aci = normalize_uuid(sender)
     normal = normalize_code(code)
-    if aci is None or normal is None:
+    if aci is None or normal is None or not identity_hash or identity_trust not in TRUST_LEVELS:
         return BindResult("refused", reason="malformed")
     wanted = _code_hash(normal)
     async with db.db.execute(
@@ -339,21 +364,24 @@ async def bind_from_message(db, sender: str, code: str, *, number: str | None = 
         existing = await c.fetchone()
     if existing:
         await db.db.execute(
-            "UPDATE signal_bindings SET selected_at = ?, last_seen_at = ? WHERE id = ?",
-            (_iso_fine(now), _iso(now), existing[0]),
+            "UPDATE signal_bindings SET selected_at = ?, last_seen_at = ?, identity_hash = ?, "
+            "identity_trust = ? WHERE id = ?",
+            (_iso_fine(now), _iso(now), identity_hash, identity_trust, existing[0]),
         )
         await db.db.commit()
         return BindResult("already", patient_id=pid, display_name=patient["display_name"])
     row_uuid = str(uuid.uuid4())
     await db.db.execute(
         "INSERT INTO signal_bindings (patient_id, caregiver_email_hash, sender_uuid_hash, "
-        "phone_hash, row_uuid, reply_enc, selected_at, last_seen_at, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "phone_hash, identity_hash, identity_trust, row_uuid, reply_enc, selected_at, "
+        "last_seen_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             require_patient_id(pid),
             row["caregiver_email_hash"],
             sh,
             phone_hash(number) if is_e164(number) else None,
+            identity_hash,
+            identity_trust,
             row_uuid,
             seal_address(aci, pid, row_uuid),
             _iso_fine(now),
@@ -375,6 +403,7 @@ async def _valid_bindings(db, sh: str) -> list[dict]:
     async with db.db.execute(
         "SELECT b.id, b.patient_id, b.caregiver_email_hash, b.row_uuid, b.reply_enc, "
         "b.conversation_uuid, b.conversation_at, b.selected_at, b.last_seen_at, b.created_at, "
+        "b.identity_hash, b.identity_trust, "
         "p.display_name, p.caregiver_email, p.is_active "
         "FROM signal_bindings b JOIN patients p ON p.patient_id = b.patient_id "
         "WHERE b.sender_uuid_hash = ? AND b.active = 1 ORDER BY b.id",
@@ -445,6 +474,12 @@ async def binding_for_sender(db, sender: str) -> str | None:
     """The patient this ACI may ask about right now, or None (no default)."""
     row = await active_binding(db, sender)
     return row["patient_id"] if row else None
+
+
+async def stored_identity_hashes(db, sender: str) -> set[str]:
+    """The identity-key hashes pinned on the sender's valid bindings (empty =
+    nothing to check against: the caller fails closed)."""
+    return {r["identity_hash"] for r in await _rows_for(db, sender) if r.get("identity_hash")}
 
 
 async def has_bindings(db, sender: str) -> bool:
@@ -612,6 +647,26 @@ async def note_failed_code(db, sh: str) -> None:
         (_iso(_now()), sh),
     )
     await db.db.commit()
+
+
+UNAVAILABLE_REPLY_INTERVAL_S = 3600
+
+
+async def claim_unavailable_reply(db, sh: str) -> bool:
+    """True (and remembered) when this sender may get the "temporarily
+    unavailable" line now (the identity could not be confirmed): at most once
+    per :data:`UNAVAILABLE_REPLY_INTERVAL_S`."""
+    now = _now()
+    await _limits(db, sh)
+    cutoff = _iso(now - timedelta(seconds=UNAVAILABLE_REPLY_INTERVAL_S))
+    cur = await db.db.execute(
+        "UPDATE signal_sender_limits SET unavailable_reply_at = ?, updated_at = ? "
+        "WHERE sender_uuid_hash = ? "
+        "AND (unavailable_reply_at IS NULL OR unavailable_reply_at <= ?)",
+        (_iso(now), _iso(now), sh, cutoff),
+    )
+    await db.db.commit()
+    return cur.rowcount == 1
 
 
 async def claim_neutral_reply(db, sh: str) -> bool:

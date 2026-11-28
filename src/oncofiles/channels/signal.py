@@ -21,9 +21,15 @@ for a few seconds) and reconnects with a doubling back-off.
 * the sender is ONLY the account UUID (ACI, ``sourceUuid``), never the phone
   number (a number can be recycled to someone else); a message without one is
   ignored and counted (``no_uuid``), never answered; replies go to the ACI;
-* a changed / untrusted identity key reported by signal-cli suspends every
-  binding of that sender (one "please reconnect" line, then a new code is
-  needed); bindings idle past ``SIGNAL_BINDING_IDLE_DAYS`` (default 90) expire;
+* the identity key is pinned at bind time (signal-cli ``listIdentities``, a
+  keyed hash of the fingerprint) and re-checked before every answer
+  (:func:`verify_identity`, cached :data:`IDENTITY_CACHE_S` once confirmed):
+  a different fingerprint suspends every binding of that sender (one "please
+  reconnect" line, then a new code is needed); a failed / timed-out / odd
+  answer or ``UNTRUSTED`` answers nothing ("temporarily unavailable" at most
+  once an hour, no suspension). An identity-change report inside a received
+  envelope is an extra trigger only; bindings idle past
+  ``SIGNAL_BINDING_IDLE_DAYS`` (default 90) expire;
 * only direct text messages (group, sync, receipt and typing messages are ignored);
 * the persisted per-sender hour limit (``signal_bindings.note_message``):
   over it one notice, then silence;
@@ -56,6 +62,8 @@ import json
 import logging
 import os
 import re
+import sys
+import time
 import unicodedata
 from collections import Counter
 from collections.abc import AsyncIterator, Callable
@@ -82,6 +90,8 @@ MAX_SOURCES = 5
 SOURCE_TITLE_CHARS = 60
 HISTORY_MESSAGES = 8
 SEND_TIMEOUT_S = 15.0
+IDENTITY_TIMEOUT_S = 5.0
+IDENTITY_CACHE_S = 300.0  # a confirmed identity check is reused this long per sender
 RECEIVE_MAX_BYTES = 256 * 1024
 RECONNECT_MIN_S = 2.0
 RECONNECT_MAX_S = 60.0
@@ -123,6 +133,10 @@ TEXTS: dict[str, dict[str, str]] = {
     "attachments": {
         "sk": "Prílohy zatiaľ nepodporujem.",
         "en": "Attachments are not supported yet.",
+    },
+    "unavailable": {
+        "sk": "Služba je dočasne nedostupná. Skúste to prosím neskôr.",
+        "en": "The service is temporarily unavailable. Please try again later.",
     },
     "busy": {
         "sk": "Model je práve zaneprázdnený. Skúste to prosím o chvíľu.",
@@ -291,6 +305,89 @@ class SignalClient:
             return False
         _counters["sent"] += 1
         return True
+
+    async def identities(self) -> tuple[int | None, Any]:
+        """``GET /v1/identities/<number>`` (signal-cli ``listIdentities``):
+        ``(HTTP status, parsed JSON)``; ``(None, None)`` on a transport error or
+        timeout. Never raises; the body is never logged."""
+        url = f"{self.base_url}/v1/identities/{quote(self.number, safe='')}"
+        try:
+            async with httpx.AsyncClient(
+                transport=self._transport, timeout=IDENTITY_TIMEOUT_S, follow_redirects=False
+            ) as client:
+                resp = await client.get(url)
+        except httpx.HTTPError as exc:
+            _counters["identity_query_failed"] += 1
+            logger.warning("signal: identity query failed (%s)", type(exc).__name__)
+            return None, None
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        return resp.status_code, data
+
+    async def identity(self, sender: str) -> Identity | None:
+        """The CURRENT identity key of one ACI, or None when it cannot be
+        confirmed (error, timeout, HTTP status, no / several entries, odd
+        shape). Fail closed: None never means "fine"."""
+        status, data = await self.identities()
+        if status is None or status >= 300:
+            return None
+        return identity_from(data, sender)
+
+
+@dataclass(frozen=True)
+class Identity:
+    """One sender's identity key as signal-cli reports it (kept in memory only)."""
+
+    fingerprint: str
+    trust: str
+
+
+def identity_from(entries: Any, sender: str) -> Identity | None:
+    """Pick the ONE ``listIdentities`` entry of ``sender`` (``uuid:<aci>``).
+
+    Expected shape (bbernhard ``/v1/identities``; to be verified on the first
+    live run with ``python -m oncofiles.channels.signal --probe``): a list of
+    objects with ``uuid``, ``fingerprint`` (or ``safety_number``) and
+    ``status`` (``TRUSTED_VERIFIED`` | ``TRUSTED_UNVERIFIED`` | ``UNTRUSTED``).
+    Anything else → None."""
+    aci = sb.normalize_uuid(sender)
+    if aci is None or not isinstance(entries, list):
+        return None
+    mine = [e for e in entries if isinstance(e, dict) and sb.normalize_uuid(e.get("uuid")) == aci]
+    if len(mine) != 1:
+        return None
+    entry = mine[0]
+    fingerprint = entry.get("fingerprint") or entry.get("safety_number")
+    trust = entry.get("status") or entry.get("trust_level") or entry.get("trustLevel")
+    if not isinstance(fingerprint, str) or not fingerprint.strip():
+        return None
+    if not isinstance(trust, str) or trust.upper() not in sb.TRUST_LEVELS:
+        return None
+    return Identity(fingerprint.strip(), trust.upper())
+
+
+def probe_summary(status: int | None, data: Any) -> dict:
+    """Shape of a ``listIdentities`` answer for the operator probe: counts,
+    key names and trust levels only, never a number, uuid or fingerprint."""
+    entries = data if isinstance(data, list) else []
+    dicts = [e for e in entries if isinstance(e, dict)]
+    statuses = sorted({str(e.get("status"))[:32] for e in dicts if "status" in e})
+    return {
+        "http_status": status,
+        "top_level": type(data).__name__,
+        "entries": len(entries),
+        "object_entries": len(dicts),
+        "keys": sorted({str(k)[:40] for e in dicts for k in e}),
+        "statuses": statuses,
+        "with_uuid": sum(1 for e in dicts if sb.normalize_uuid(e.get("uuid"))),
+        "with_fingerprint": sum(
+            1 for e in dicts if isinstance(e.get("fingerprint") or e.get("safety_number"), str)
+        ),
+        "expected_shape": all(identity_from([e], "uuid:" + str(e.get("uuid"))) for e in dicts)
+        and bool(dicts),
+    }
 
 
 # ── message parsing ───────────────────────────────────────────────────────
@@ -619,6 +716,52 @@ async def _answer(db, client, binding: dict, sh: str, to: str, text: str, lang: 
     return f"answered:{len(parts)}"
 
 
+_identity_ok: dict[str, tuple[float, str]] = {}  # sender hash → (expires monotonic, hash)
+
+
+async def verify_identity(db, client, sender: str, sh: str) -> str:
+    """Before any patient data: does the sender's CURRENT identity key match
+    the one pinned at bind time? ``ok`` | ``changed`` (a different fingerprint:
+    definite) | ``unknown`` (query failed / timed out / odd shape / UNTRUSTED /
+    nothing pinned). Only ``ok`` lets an answer through. A confirmed check is
+    cached for :data:`IDENTITY_CACHE_S` per sender."""
+    stored = await sb.stored_identity_hashes(db, sender)
+    if not stored:
+        return "unknown"
+    cached = _identity_ok.get(sh)
+    if cached and cached[0] > time.monotonic() and stored == {cached[1]}:
+        return "ok"
+    _identity_ok.pop(sh, None)
+    try:
+        ident = await client.identity(sender)
+    except Exception as exc:  # noqa: BLE001 - a broken check is "cannot confirm"
+        logger.warning("signal: identity check failed (%s)", type(exc).__name__)
+        ident = None
+    if ident is None:
+        return "unknown"
+    current = sb.identity_hash(ident.fingerprint)
+    if stored != {current}:
+        return "changed"
+    if ident.trust == sb.UNTRUSTED:
+        return "unknown"
+    _identity_ok[sh] = (time.monotonic() + IDENTITY_CACHE_S, current)
+    return "ok"
+
+
+async def _suspend(db, client, sender: str, sh: str) -> bool:
+    _identity_ok.pop(sh, None)
+    if await sb.suspend_sender(db, sender):
+        await client.send(sender, _t("reconnect", "sk"))
+        return True
+    return False
+
+
+async def _unavailable(db, client, sender: str, sh: str, lang: str) -> str:
+    if await sb.claim_unavailable_reply(db, sh):
+        await client.send(sender, _t("unavailable", lang))
+    return "identity_unconfirmed"
+
+
 async def handle_envelope(db, client, data: dict) -> str:
     """Process one received envelope; returns an outcome code (logged, tested)."""
     inc = parse_envelope(data)
@@ -629,8 +772,7 @@ async def handle_envelope(db, client, data: dict) -> str:
 
     if inc.kind == "identity_change":
         # fail closed: no answers until the caregiver links again with a new code
-        if await sb.suspend_sender(db, sender):
-            await client.send(sender, _t("reconnect", "sk"))
+        if await _suspend(db, client, sender, sh):
             return "identity_suspended"
         return "identity_change"
 
@@ -645,7 +787,28 @@ async def handle_envelope(db, client, data: dict) -> str:
     if text and sb.looks_like_code(text):
         if not await sb.code_attempt_allowed(db, sh):
             return "code_attempts_exhausted"
-        result = await sb.bind_from_message(db, sender, text, number=inc.number)
+        # pin the sender's identity key now; no confirmed key, no binding
+        ident = None
+        try:
+            ident = await client.identity(sender)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("signal: identity check failed (%s)", type(exc).__name__)
+        if ident is None or ident.trust == sb.UNTRUSTED:
+            return await _unavailable(db, client, sender, sh, lang)
+        current = sb.identity_hash(ident.fingerprint)
+        stored = await sb.stored_identity_hashes(db, sender)
+        if stored and stored != {current}:
+            # the key changed since the earlier bindings: they end, this code reconnects
+            _identity_ok.pop(sh, None)
+            await sb.suspend_sender(db, sender)
+        result = await sb.bind_from_message(
+            db,
+            sender,
+            text,
+            identity_hash=current,
+            identity_trust=ident.trust,
+            number=inc.number,
+        )
         if result.status in ("bound", "already"):
             await client.send(sender, _t("bound", lang, name=result.display_name or ""))
             return result.status
@@ -666,6 +829,12 @@ async def handle_envelope(db, client, data: dict) -> str:
         # the stored reply identity must be this very account (fail closed)
         logger.warning("signal: reply identity mismatch for sender %s", sh[:8])
         return "identity_mismatch"
+    check = await verify_identity(db, client, sender, sh)
+    if check == "changed":
+        await _suspend(db, client, sender, sh)
+        return "identity_suspended"
+    if check != "ok":
+        return await _unavailable(db, client, sender, sh, lang)
     if n_att:
         await client.send(to, _t("attachments", lang))
         if not text:
@@ -741,3 +910,24 @@ def start_reason() -> str | None:
     if missing == [ENABLED_ENV]:
         return "signal adapter off (SIGNAL_ENABLED is not true)"
     return "signal adapter not started; missing or invalid: " + ", ".join(missing)
+
+
+async def _probe() -> int:
+    """Operator check: the shape of signal-cli's ``listIdentities`` answer
+    (counts, key names, trust levels; never a number, uuid or fingerprint).
+    Run in the app container: ``python -m oncofiles.channels.signal --probe``."""
+    url = os.environ.get(API_URL_ENV, "").strip()
+    number = os.environ.get(NUMBER_ENV, "").strip()
+    if api_url_refusal(url) is not None or not sb.is_e164(number):
+        print(json.dumps({"error": "set SIGNAL_API_URL (private) and SIGNAL_NUMBER"}))
+        return 2
+    status, data = await SignalClient(url, number).identities()
+    print(json.dumps(probe_summary(status, data), sort_keys=True))
+    return 0 if status is not None and status < 300 else 1
+
+
+if __name__ == "__main__":  # pragma: no cover - operator tool
+    if sys.argv[1:] != ["--probe"]:
+        print("usage: python -m oncofiles.channels.signal --probe")
+        raise SystemExit(2)
+    raise SystemExit(asyncio.run(_probe()))

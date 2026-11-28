@@ -269,6 +269,7 @@ _SIGNAL_PHONE_HASH_PURPOSE = b"oncofiles.signal.phone_hash.v1"
 _SIGNAL_PHONE_ENC_PURPOSE = b"oncofiles.signal.phone_enc.v1"
 _SIGNAL_LINK_CODE_PURPOSE = b"oncofiles.signal.link_code.v1"
 _SIGNAL_CAREGIVER_PURPOSE = b"oncofiles.signal.caregiver.v1"
+_SIGNAL_IDENTITY_PURPOSE = b"oncofiles.signal.identity_hash.v1"
 
 
 class SignalSecretMissingError(RuntimeError):
@@ -346,3 +347,9 @@ def chat_history_key() -> bytes:
     if not holding_store_secret_set():
         raise ChatHistorySecretMissingError(CHAT_HISTORY_SECRET_ENV)
     return hmac.new(holding_store_key(), _CHAT_HISTORY_PURPOSE, hashlib.sha256).digest()
+
+
+def signal_identity_hash_key() -> bytes:
+    """HMAC key of ``signal_bindings.identity_hash`` (the sender's identity-key
+    fingerprint pinned at bind time; never stored raw)."""
+    return hmac.new(_signal_base(), _SIGNAL_IDENTITY_PURPOSE, hashlib.sha256).digest()
