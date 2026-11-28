@@ -18,6 +18,7 @@ that might one day honour the soft switch.
 from __future__ import annotations
 
 import base64
+import contextlib
 import ipaddress
 import json
 import logging
@@ -447,7 +448,15 @@ def chat(
     try:
         # #1021: one arbiter slot for the request only (never while building
         # or parsing); an in-flight request is never interrupted.
-        with llm_lanes.slot(lane):
+        # Only the production model's instance is budgeted: a per-job ``model``
+        # override (scorecards, benches) runs on another LM Studio instance
+        # with its own parallel slots and must not throttle production.
+        guard = (
+            llm_lanes.slot(lane)
+            if payload["model"] == config.LOCAL_LLM_MODEL
+            else contextlib.nullcontext()
+        )
+        with guard:
             resp = http.post(
                 f"{config.LOCAL_LLM_BASE_URL}/chat/completions",
                 json=payload,

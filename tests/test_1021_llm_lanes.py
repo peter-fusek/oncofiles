@@ -328,6 +328,20 @@ def test_chat_interactive_lane(fresh_arbiter, local_llm):
     assert len(seen) == 1  # nothing sent for the refused lane
 
 
+def test_model_override_bypasses_the_production_budget(fresh_arbiter, local_llm):
+    """A per-job ``model`` override (scorecard, bench) runs on another LM Studio
+    instance with its own slots: it must not take or wait for a production slot."""
+    seen: list = []
+    held = [fresh_arbiter.acquire(BACKGROUND) for _ in range(4)]  # production budget full
+    try:
+        assert llm.chat("sys", "hello", client=_client(seen), model="other-test-model") == "ok"
+    finally:
+        for lease in held:
+            lease.release()
+    assert seen[0]["model"] == "other-test-model"
+    assert fresh_arbiter.status()["admitted"] == {INTERACTIVE: 0, BACKGROUND: 4}
+
+
 def test_chat_releases_the_slot_on_transport_error(fresh_arbiter, local_llm):
     def boom(request):
         raise httpx.ConnectError("down")
