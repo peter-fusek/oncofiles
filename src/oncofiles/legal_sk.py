@@ -31,8 +31,8 @@ z telefónu. Oncofiles číta a mení <strong>len priečinok, ktorý pre pacient
 V tomto priečinku môže súbory premenovať na štandardný názov, presunúť ich do podpriečinkov
 (napríklad Labs alebo Reports), pridať ku každému súboru textový prepis (<code>.md</code>) a viesť
 súbor <code>README.md</code> s pravidlami priečinka a niekoľko súborov, ktoré zaznamenávajú jeho
-vlastnú prácu. <strong>Oncofiles nikdy nič natrvalo nemaže.</strong> Automatické spracovanie
-nepresúva vaše súbory do koša.</li>
+vlastnú prácu. <strong>Vo vašom Google Drive Oncofiles nikdy nič natrvalo nemaže.</strong>
+Automatické spracovanie nepresúva vaše súbory do koša.</li>
 <li><strong>Gmail a Google Kalendár</strong> — momentálne sa nepoužívajú. Ak ich neskôr pridáme,
 najprv vás požiadame o samostatný súhlas.</li>
 </ul>

@@ -23,7 +23,9 @@ async def _text(route) -> str:
 async def test_privacy_matches_the_service():
     html = await _text(server.privacy_policy)
     assert "local AI model" in html and "Slovakia" in html
-    assert "never permanently deletes" in html
+    # maintainer 2026-11-28: the no-deletion promise is about the Drive folder;
+    # chat history has its own 90 + 30 day retention (#1022)
+    assert "never permanently deletes anything in your Google Drive" in html
     assert "only the folder you choose" in html and "access to your Google" in html
     assert "Gmail and Google Calendar</strong> — not used" in html
     assert "Google Analytics" in html and "Our e-mail provider" in html

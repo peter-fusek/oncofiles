@@ -2679,8 +2679,8 @@ phone. Oncofiles reads and changes <strong>only the folder you choose</strong> f
 Inside that folder it may rename files to a standard name, move them into subfolders (for
 example Labs or Reports), add a text transcript (<code>.md</code>) next to each file, and keep a
 <code>README.md</code> with the folder's rules and a few files that record its own work.
-<strong>Oncofiles never permanently deletes anything.</strong> Automatic processing does not
-move your files to the trash.</li>
+<strong>Oncofiles never permanently deletes anything in your Google Drive.</strong>
+Automatic processing does not move your files to the trash.</li>
 <li><strong>Gmail and Google Calendar</strong> — not used at the moment. If we add them later,
 we will ask for your separate consent first.</li>
 </ul>
