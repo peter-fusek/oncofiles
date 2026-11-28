@@ -254,3 +254,35 @@ def quarantine_csrf_key() -> bytes:
 def quarantine_sender_key() -> bytes:
     """HMAC key of the quarantine sender hash (throttle per sender, dedupe)."""
     return hmac.new(holding_store_key(), _QUARANTINE_SENDER_PURPOSE, hashlib.sha256).digest()
+
+
+# #1022 chat history (maintainer decision 2026-11-27/28): every chat question
+# and answer is stored AES-GCM encrypted per patient. The key has its own
+# versioned purpose string. Source, in this order: the dedicated runtime env
+# ``CHAT_HISTORY_SECRET`` when set (raw string, stretched with the purpose
+# string, like ``HOLDING_STORE_SECRET``), else derived from the holding store
+# key (the MANDATORY ``HOLDING_STORE_SECRET``, the quarantine pattern). Never
+# derived from ``MCP_BEARER_TOKEN``, so a bearer rotation never makes stored
+# history unreadable. Neither set → ``ChatHistorySecretMissingError``: the
+# storage API stores nothing (counter ``key_missing``). Rotating the source
+# makes stored history unreadable (the export then marks rows ``unreadable``).
+_CHAT_HISTORY_PURPOSE = b"oncofiles.chat_history.v1"
+CHAT_HISTORY_SECRET_ENV = "CHAT_HISTORY_SECRET"
+
+
+class ChatHistorySecretMissingError(RuntimeError):
+    """Neither ``CHAT_HISTORY_SECRET`` nor ``HOLDING_STORE_SECRET`` is set (#1022)."""
+
+
+def chat_history_secret_set() -> bool:
+    return bool(os.environ.get(CHAT_HISTORY_SECRET_ENV, "")) or holding_store_secret_set()
+
+
+def chat_history_key() -> bytes:
+    """32-byte AES-GCM key of the encrypted chat history (#1022)."""
+    dedicated = os.environ.get(CHAT_HISTORY_SECRET_ENV, "")
+    if dedicated:
+        return hmac.new(dedicated.encode(), _CHAT_HISTORY_PURPOSE, hashlib.sha256).digest()
+    if not holding_store_secret_set():
+        raise ChatHistorySecretMissingError(CHAT_HISTORY_SECRET_ENV)
+    return hmac.new(holding_store_key(), _CHAT_HISTORY_PURPOSE, hashlib.sha256).digest()

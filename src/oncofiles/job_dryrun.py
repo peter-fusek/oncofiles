@@ -10,7 +10,9 @@ a copy of the data directory)::
 
 One subcommand per job (``memory_check`` touches no DB and has none).
 ``oauth_token_cleanup`` (the MCP OAuth token cleanup loop) needs no data
-directory and no option. ``dashboard_access_log_retention`` (the #868
+directory and no option, nor does ``chat_history_retention`` (the #1022
+chat history loop: rows it would move to the trash and purge with
+``CHAT_RETENTION_MODE=on``). ``dashboard_access_log_retention`` (the #868
 access log retention loop) takes ``--retention-days`` (stands for
 ``DASHBOARD_ACCESS_LOG_RETENTION_DAYS``, default 90, clamped to 30 like the
 job) and needs no data directory. ``inbound_maintenance``
@@ -34,9 +36,10 @@ quarantine files live under ``<data-dir>/quarantine``. Guarantees, like ``oncofi
   SMTP call is possible.
 * **The production predicates.** The SQL is ``oncofiles.holding_sql`` /
   ``oncofiles.inbound_sql`` / ``oncofiles.access_log_sql`` /
-  ``oncofiles.oauth_cleanup_sql``, the very statements the ``database`` helpers run
-  for the jobs (and the purge's own path checks, ``purge_plan``), and the
-  limits are the jobs' own constants, so the counts cannot drift.
+  ``oncofiles.oauth_cleanup_sql`` / ``oncofiles.chat_retention_sql``, the very
+  statements the ``database`` helpers run for the jobs (and the purge's own
+  path checks, ``purge_plan``), and the limits are the jobs' own constants,
+  so the counts cannot drift.
 * **Counts only.** The JSON output holds counts, booleans and constants, never
   a patient id, name, address, file name or document text.
 """
@@ -593,8 +596,40 @@ def dry_oauth_token_cleanup(conn: sqlite3.Connection, *, now: datetime, **_opts)
     }
 
 
+# ── chat_history_retention (#1022) ──────────────────────────────────────
+
+
+def dry_chat_history_retention(conn: sqlite3.Connection, *, now: datetime, **_opts) -> dict:
+    """What one ``chat_history_retention`` run with ``CHAT_RETENTION_MODE=on``
+    would do now: rows moved to the trash (90 days) and rows whose content is
+    purged (30 days in the trash), with the production predicates
+    (``oncofiles.chat_retention_sql``). Counts only: never a patient id,
+    conversation id or text (the text is encrypted anyway)."""
+    from oncofiles import chat_retention_sql as q
+
+    def n(where: str = "1", params: tuple = ()) -> int:
+        return _count(conn, f"SELECT COUNT(*) FROM chat_messages WHERE {where}", params)
+
+    would_trash = n(q.TRASH_WHERE, (q.trash_cutoff(now),))
+    would_purge = n(q.PURGE_WHERE, (q.purge_cutoff(now),))
+    return {
+        "trash_after_days": q.TRASH_AFTER_DAYS,
+        "purge_after_trash_days": q.PURGE_AFTER_TRASH_DAYS,
+        "rows_total": n(),
+        "rows_live": n("deleted_at IS NULL AND purged_at IS NULL"),
+        "rows_in_trash": n("deleted_at IS NOT NULL AND purged_at IS NULL"),
+        "rows_purged": n("purged_at IS NOT NULL"),
+        "patients_with_rows": _count(conn, "SELECT COUNT(DISTINCT patient_id) FROM chat_messages"),
+        "would_trash": would_trash,
+        "would_purge": would_purge,
+        "trash_chunks": -(-would_trash // q.CHUNK_ROWS),
+        "purge_chunks": -(-would_purge // q.CHUNK_ROWS),
+    }
+
+
 # job name -> counting function (conn, now=, data_dir=, **options) -> dict
 JOBS: dict[str, Callable[..., dict]] = {
+    "chat_history_retention": dry_chat_history_retention,
     "holding_move": dry_holding_move,
     "inbound_maintenance": dry_inbound_maintenance,
     "dashboard_access_log_retention": dry_access_log_retention,

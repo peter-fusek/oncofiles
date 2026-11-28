@@ -20,7 +20,9 @@ one page of rows plus one chunk of compressed output; one held original at a
 time), JSON Lines per table, a ``manifest.json`` with counts and a bilingual
 ``README.md``. Rows come from the registry's own ``where`` (the patient's rows
 only, SQL-filtered) and never carry credentials, hashes of anyone, encrypted
-blobs or other people's e-mail addresses (:func:`exported_columns`); it does
+blobs or other people's e-mail addresses (:func:`exported_columns`), except
+the patient's own chat history, whose text the rule's ``decoder`` decrypts
+into a readable ``body`` field (#1022); it does
 include the patient's own mail and calendar entries (``email_entries``,
 ``calendar_entries``) with the addresses in them (senders, recipients,
 attendees), because they are the patient's own data. The
@@ -74,6 +76,10 @@ class TableRule:
     # wherever a row can point at another patient's row (e.g. a cross-reference
     # between two documents): the export only includes rows wholly the patient's.
     export_scope: str | None = None
+    # Exported rows pass through a decoder (``_DECODERS``): the table keeps an
+    # encrypted column that is the patient's own data and is exported READABLE
+    # (#1022 chat history: the message text, decrypted for the patient).
+    decoder: str | None = None
 
     @property
     def export_where(self) -> str:
@@ -166,6 +172,8 @@ REGISTRY: tuple[TableRule, ...] = (
     _direct("documents", True, "the document index (originals stay in Drive)"),
     # the patient's own notes and state
     _direct("conversation_entries", True, "session diary"),
+    # #1022: the patient's chat questions and answers, exported decrypted
+    _direct("chat_messages", True, "chat history (text decrypted)", decoder="chat"),
     _direct("research_entries", True, "research notes"),
     _direct("agent_state", True, "assistant state"),
     _direct("patient_context", True, "patient context (profile, treatment)"),
@@ -278,6 +286,26 @@ async def count_rows(db, patient_id: str) -> dict[str, int]:
     return out
 
 
+def _chat_decoder(row: dict, patient_id: str) -> dict:
+    from oncofiles import chat_history
+
+    return chat_history.export_row(row, patient_id)
+
+
+# decoder name -> (raw columns it reads, function(row, patient_id) -> exported row)
+_DECODERS = {
+    "chat": (("conversation_id", "row_uuid", "body_enc"), _chat_decoder),
+}
+
+
+def _select_columns(rule: TableRule, columns: list[str]) -> list[str]:
+    """The exported columns plus the raw ones the rule's decoder reads."""
+    if rule.decoder is None:
+        return columns
+    raw = _DECODERS[rule.decoder][0]
+    return columns + [c for c in raw if c not in columns]
+
+
 async def _iter_rows(db, rule: TableRule, columns: list[str], patient_id: str):
     """The patient's rows of one table, a page at a time (keyset on rowid)."""
     select = ", ".join(_quote(c) for c in columns)
@@ -339,8 +367,10 @@ of the time in `manifest.json`.
   (recognised text per page), `clinical_records` (values with their source
   document, page, printed evidence and verification state) and the other fact
   tables (`conditions`, `procedures`, `medication_events`, `treatment_*`,
-  `encounters`, `provenance`, ...), `conversation_entries` (session diary) and
-  `activity_log` (which AI assistant tools were called, when).
+  `encounters`, `provenance`, ...), `conversation_entries` (session diary),
+  `chat_messages` (questions and answers of the built-in chat, the text
+  decrypted in `body`) and `activity_log` (which AI assistant tools were
+  called, when).
 - Your original files are NOT in this archive: they stay in your own Google
   Drive folder, where Oncofiles left them. Documents held for a trial before a
   Drive was connected are included under `originals/`.
@@ -358,7 +388,8 @@ databáze, k času uvedenému v `manifest.json`.
 - `tables/<tabuľka>.jsonl`: jeden JSON objekt na riadok, jeden súbor na
   tabuľku: profil, kontext, záznam o súhlase, zoznam dokumentov, rozpoznaný
   text strán, hodnoty s odkazom na zdrojový dokument, stranu, vytlačený text a
-  stav overenia, ďalšie fakty, denník a záznam o volaniach AI asistentov.
+  stav overenia, ďalšie fakty, denník, otázky a odpovede vstavaného chatu
+  (text dešifrovaný v poli `body`) a záznam o volaniach AI asistentov.
 - Vaše pôvodné súbory v archíve NIE SÚ: zostávajú vo vašom priečinku na Google
   Drive. Dokumenty uložené počas skúšobnej doby pred pripojením Drive sú v
   priečinku `originals/`.
@@ -390,9 +421,12 @@ async def export_stream(
             if not rule.export:
                 continue
             columns = exported_columns(rule, await _columns(db, rule.table))
+            decode = _DECODERS[rule.decoder][1] if rule.decoder else None
             n = 0
             with zf.open(f"tables/{rule.table}.jsonl", "w") as fh:
-                async for row in _iter_rows(db, rule, columns, patient_id):
+                async for row in _iter_rows(db, rule, _select_columns(rule, columns), patient_id):
+                    if decode is not None:
+                        row = decode(row, patient_id)
                     line = json.dumps(
                         {k: _json_value(v) for k, v in row.items()}, ensure_ascii=False, default=str
                     )

@@ -2629,7 +2629,7 @@
 
     // #857: version of the privacy + terms text the consent checkbox refers to.
     // Must equal oncofiles.patient_consent.CONSENT_VERSION (a test keeps them equal).
-    var CONSENT_VERSION = '2026-11-27.3';
+    var CONSENT_VERSION = '2026-11-28';
 
     async function wizardStep1Submit() {
       var btn = document.getElementById('wiz-create-btn');
