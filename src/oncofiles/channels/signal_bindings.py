@@ -3,15 +3,26 @@
 The dashboard's "Connect Signal" button (a later PR) calls
 :func:`create_link_code` for the signed-in caregiver; the caregiver sends the
 6-character code to the bot number and the adapter calls
-:func:`bind_from_message`. From then on :func:`binding_for_phone` resolves the
+:func:`bind_from_message`. From then on :func:`binding_for_sender` resolves the
 sender to ONE patient; a sender without a valid binding resolves to nothing
 (no default patient, fail closed, #623).
 
-* **Sender address.** The E.164 number, or ``uuid:<account uuid>`` when the
-  sender hides the number. Stored only as a keyed HMAC (``phone_hash``, the
-  lookup key) and AES-GCM (``phone_enc``, to reply; associated data
-  ``signal|<patient_id>|<row_uuid>``). Never logged; logs carry a short prefix
-  of the hash at most.
+* **Identity = the Signal account UUID (ACI), never the phone number.** A
+  number can be recycled to another person or re-registered, so every lookup
+  (bindings, the code bind, the throttle) is keyed on ``sender_uuid_hash``, a
+  keyed HMAC of ``uuid:<aci>``. A message without a ``sourceUuid`` is ignored
+  upstream. The number, when signal-cli shows it, is kept only as a keyed hash
+  (``phone_hash``, informational, never a lookup key). Replies go to the ACI:
+  ``reply_enc`` is ``uuid:<aci>`` under AES-GCM (associated data
+  ``signal|<patient_id>|<row_uuid>``). Nothing raw is logged; logs carry a short
+  prefix of the hash at most.
+* **Identity change → suspended.** When signal-cli reports an untrusted or
+  changed identity key for a sender, :func:`suspend_sender` ends every binding
+  of that sender (``active`` 0 + ``suspended_at``); only a new link code binds
+  again.
+* **Idle expiry.** A binding unused for ``SIGNAL_BINDING_IDLE_DAYS`` (default
+  :data:`DEFAULT_IDLE_DAYS`) ends (``active`` 0 + ``expired_at``) the next time
+  it is looked up; a new link code is needed.
 * **Codes.** Crockford base32, :data:`CODE_LEN` characters, :data:`CODE_TTL_S`
   seconds, single use (a conditional UPDATE), only a keyed HMAC stored; the
   lookup is by that hash and confirmed with ``hmac.compare_digest``. At most
@@ -29,7 +40,7 @@ sender to ONE patient; a sender without a valid binding resolves to nothing
   (:data:`MAX_FAILED_CODES_PER_HOUR`) and the once-a-day neutral reply.
 
 Every DB call runs on the event loop through the one connection; nothing is
-ever deleted (revoke = ``active`` 0 + ``revoked_at``).
+ever deleted (revoke / suspend / expiry = ``active`` 0 + a time column).
 """
 
 from __future__ import annotations
@@ -58,6 +69,8 @@ MAX_FAILED_CODES_PER_HOUR = 5
 NEUTRAL_REPLY_INTERVAL_S = 24 * 3600
 WINDOW_S = 3600
 CONVERSATION_IDLE_S = 6 * 3600
+IDLE_DAYS_ENV = "SIGNAL_BINDING_IDLE_DAYS"
+DEFAULT_IDLE_DAYS = 90
 
 _E164 = re.compile(r"^\+[1-9][0-9]{6,14}$")
 _CROCKFORD_FOLD = str.maketrans({"O": "0", "I": "1", "L": "1"})
@@ -100,51 +113,64 @@ def _iso_fine(dt: datetime) -> str:
 def _parse(value: str | None) -> datetime | None:
     if not value:
         return None
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
+        try:
+            return datetime.strptime(value, fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    return None
+
+
+def idle_days() -> int:
+    """``SIGNAL_BINDING_IDLE_DAYS`` (default 90; at least 1; garbage → default)."""
+    raw = os.environ.get(IDLE_DAYS_ENV, "").strip()
     try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        value = int(raw) if raw else DEFAULT_IDLE_DAYS
     except ValueError:
-        return None
+        value = DEFAULT_IDLE_DAYS
+    return max(1, value)
 
 
-# ── address, hashes, encryption ───────────────────────────────────────────
+# ── identity, hashes, encryption ──────────────────────────────────────────
 
 
 def is_e164(value: object) -> bool:
     return isinstance(value, str) and bool(_E164.match(value))
 
 
-def normalize_address(raw: object) -> str | None:
-    """``+<digits>`` (E.164) or ``uuid:<canonical uuid>``; None for anything else."""
-    if not isinstance(raw, str):
+def normalize_uuid(raw: object) -> str | None:
+    """``uuid:<canonical lower-case uuid>`` of a Signal ACI; None otherwise."""
+    if not isinstance(raw, str) or not raw.strip():
         return None
-    value = raw.strip()
-    if _E164.match(value):
-        return value
-    candidate = value.removeprefix("uuid:")
     try:
-        return "uuid:" + str(uuid.UUID(candidate))
+        return "uuid:" + str(uuid.UUID(raw.strip().removeprefix("uuid:")))
     except ValueError:
         return None
 
 
-def phone_hash(address: str) -> str:
-    """Keyed HMAC hex of a normalised sender address (raises without a key)."""
-    return hmac.new(
-        secrets_keys.signal_phone_hash_key(), address.encode(), hashlib.sha256
-    ).hexdigest()
+def _hmac(key: bytes, value: str) -> str:
+    return hmac.new(key, value.encode(), hashlib.sha256).hexdigest()
+
+
+def sender_hash(sender: str) -> str:
+    """Keyed HMAC hex of a normalised ACI (``uuid:<aci>``); raises without a key."""
+    return _hmac(secrets_keys.signal_sender_hash_key(), sender)
+
+
+def phone_hash(number: str) -> str:
+    """Keyed HMAC hex of an E.164 number (informational only, never a lookup key)."""
+    return _hmac(secrets_keys.signal_phone_hash_key(), number)
 
 
 def caregiver_hash(email: str | None) -> str | None:
     value = (email or "").strip().lower()
     if not value:
         return None
-    return hmac.new(
-        secrets_keys.signal_caregiver_hash_key(), value.encode(), hashlib.sha256
-    ).hexdigest()
+    return _hmac(secrets_keys.signal_caregiver_hash_key(), value)
 
 
 def _code_hash(code: str) -> str:
-    return hmac.new(secrets_keys.signal_link_code_key(), code.encode(), hashlib.sha256).hexdigest()
+    return _hmac(secrets_keys.signal_link_code_key(), code)
 
 
 def _aad(patient_id: str, row_uuid: str) -> bytes:
@@ -161,7 +187,7 @@ def seal_address(address: str, patient_id: str, row_uuid: str) -> bytes:
 
 
 def open_address(blob: bytes, patient_id: str, row_uuid: str) -> str | None:
-    """The stored sender address, or None when it does not decrypt for this row."""
+    """The stored reply address, or None when it does not decrypt for this row."""
     from cryptography.exceptions import InvalidTag
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -189,8 +215,8 @@ def normalize_code(text: object) -> str | None:
 
 
 def looks_like_code(text: object) -> bool:
-    """A message that is nothing but a code (digits required, so a plain
-    six-letter word such as a greeting is not taken for one)."""
+    """A message that is nothing but a code (a digit required in what was
+    typed, so a plain six-letter word such as a greeting is not taken for one)."""
     return normalize_code(text) is not None and any(ch.isdigit() for ch in str(text))
 
 
@@ -254,17 +280,18 @@ async def create_link_code(db, *, patient_id: str, caregiver_email: str) -> dict
     raise LinkCodeRefusedError("too_many_codes")
 
 
-async def bind_from_message(db, phone: str, code: str) -> BindResult:
-    """Consume a code sent by ``phone`` and bind it to the code's patient.
+async def bind_from_message(db, sender: str, code: str, *, number: str | None = None) -> BindResult:
+    """Consume a code sent by the ACI ``sender`` and bind it to the code's patient.
 
-    Refused (one neutral reply upstream, nothing else): unknown, wrong,
-    expired or used code; a code of another caregiver than the one this
-    sender is already bound to; a patient that is gone or whose caregiver
-    changed since. A refusal never consumes a valid code.
+    ``number`` (the E.164 number signal-cli showed with the message, if any) is
+    stored only as a keyed hash. Refused (one neutral reply upstream, nothing
+    else): unknown, wrong, expired or used code; a code of another caregiver
+    than the one this sender is already bound to; a patient that is gone or
+    whose caregiver changed since. A refusal never consumes a valid code.
     """
-    address = normalize_address(phone)
+    aci = normalize_uuid(sender)
     normal = normalize_code(code)
-    if address is None or normal is None:
+    if aci is None or normal is None:
         return BindResult("refused", reason="malformed")
     wanted = _code_hash(normal)
     async with db.db.execute(
@@ -292,8 +319,8 @@ async def bind_from_message(db, phone: str, code: str) -> BindResult:
         or not hmac.compare_digest(current, row["caregiver_email_hash"])
     ):
         return BindResult("refused", reason="caregiver_changed")
-    ph = phone_hash(address)
-    for other in await _valid_bindings(db, ph):
+    sh = sender_hash(aci)
+    for other in await _valid_bindings(db, sh):
         if not hmac.compare_digest(other["caregiver_email_hash"], row["caregiver_email_hash"]):
             return BindResult("refused", reason="other_caregiver")
     cur = await db.db.execute(
@@ -305,52 +332,63 @@ async def bind_from_message(db, phone: str, code: str) -> BindResult:
         await db.db.commit()
         return BindResult("refused", reason="used_code")
     async with db.db.execute(
-        "SELECT id FROM signal_bindings WHERE phone_hash = ? AND patient_id = ? AND active = 1",
-        (ph, pid),
+        "SELECT id FROM signal_bindings WHERE sender_uuid_hash = ? AND patient_id = ? "
+        "AND active = 1",
+        (sh, pid),
     ) as c:
         existing = await c.fetchone()
     if existing:
         await db.db.execute(
-            "UPDATE signal_bindings SET selected_at = ? WHERE id = ?", (_iso_fine(now), existing[0])
+            "UPDATE signal_bindings SET selected_at = ?, last_seen_at = ? WHERE id = ?",
+            (_iso_fine(now), _iso(now), existing[0]),
         )
         await db.db.commit()
         return BindResult("already", patient_id=pid, display_name=patient["display_name"])
     row_uuid = str(uuid.uuid4())
     await db.db.execute(
-        "INSERT INTO signal_bindings (patient_id, caregiver_email_hash, phone_hash, row_uuid, "
-        "phone_enc, selected_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO signal_bindings (patient_id, caregiver_email_hash, sender_uuid_hash, "
+        "phone_hash, row_uuid, reply_enc, selected_at, last_seen_at, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             require_patient_id(pid),
             row["caregiver_email_hash"],
-            ph,
+            sh,
+            phone_hash(number) if is_e164(number) else None,
             row_uuid,
-            seal_address(address, pid, row_uuid),
+            seal_address(aci, pid, row_uuid),
             _iso_fine(now),
+            _iso(now),
             _iso(now),
         ),
     )
     await db.db.commit()
-    logger.info("signal: bound sender %s to patient %s", ph[:8], pid[:4])
+    logger.info("signal: bound sender %s to patient %s", sh[:8], pid[:4])
     return BindResult("bound", patient_id=pid, display_name=patient["display_name"])
 
 
 # ── bindings ──────────────────────────────────────────────────────────────
 
 
-async def _valid_bindings(db, ph: str) -> list[dict]:
+async def _valid_bindings(db, sh: str) -> list[dict]:
     """The sender's active bindings that still count (see the module docstring),
-    oldest first."""
+    oldest first. Bindings idle past :func:`idle_days` are ended here."""
     async with db.db.execute(
-        "SELECT b.id, b.patient_id, b.caregiver_email_hash, b.row_uuid, b.phone_enc, "
-        "b.conversation_uuid, b.conversation_at, b.selected_at, b.created_at, "
+        "SELECT b.id, b.patient_id, b.caregiver_email_hash, b.row_uuid, b.reply_enc, "
+        "b.conversation_uuid, b.conversation_at, b.selected_at, b.last_seen_at, b.created_at, "
         "p.display_name, p.caregiver_email, p.is_active "
         "FROM signal_bindings b JOIN patients p ON p.patient_id = b.patient_id "
-        "WHERE b.phone_hash = ? AND b.active = 1 ORDER BY b.id",
-        (ph,),
+        "WHERE b.sender_uuid_hash = ? AND b.active = 1 ORDER BY b.id",
+        (sh,),
     ) as cur:
         rows = [dict(r) for r in await cur.fetchall()]
-    out = []
+    now = _now()
+    cutoff = now - timedelta(days=idle_days())
+    out, expired = [], []
     for r in rows:
+        last = _parse(r["last_seen_at"]) or _parse(r["created_at"])
+        if last is None or last < cutoff:
+            expired.append(r["id"])
+            continue
         current = caregiver_hash(r.pop("caregiver_email"))
         if (
             r.pop("is_active")
@@ -358,16 +396,34 @@ async def _valid_bindings(db, ph: str) -> list[dict]:
             and hmac.compare_digest(current, r["caregiver_email_hash"])
         ):
             out.append(r)
+    if expired:
+        for bid in expired:
+            await db.db.execute(
+                "UPDATE signal_bindings SET active = 0, expired_at = ? WHERE id = ? AND active = 1",
+                (_iso(now), bid),
+            )
+        await db.db.commit()
+        logger.info("signal: %d idle binding(s) expired for sender %s", len(expired), sh[:8])
     return out
 
 
-async def bound_patients(db, phone: str) -> list[dict]:
+def _selected(rows: list[dict]) -> dict | None:
+    if not rows:
+        return None
+    return max(rows, key=lambda r: (r["selected_at"] or r["created_at"] or "", r["id"]))
+
+
+async def _rows_for(db, sender: str) -> list[dict]:
+    aci = normalize_uuid(sender)
+    if aci is None:
+        return []
+    return await _valid_bindings(db, sender_hash(aci))
+
+
+async def bound_patients(db, sender: str) -> list[dict]:
     """The sender's valid bindings, oldest first: ``binding_id``, ``patient_id``,
     ``display_name``, ``active`` (the selected one)."""
-    address = normalize_address(phone)
-    if address is None:
-        return []
-    rows = await _valid_bindings(db, phone_hash(address))
+    rows = await _rows_for(db, sender)
     chosen = _selected(rows)
     return [
         {
@@ -380,42 +436,55 @@ async def bound_patients(db, phone: str) -> list[dict]:
     ]
 
 
-def _selected(rows: list[dict]) -> dict | None:
-    if not rows:
-        return None
-    return max(rows, key=lambda r: (r["selected_at"] or r["created_at"] or "", r["id"]))
-
-
-async def active_binding(db, phone: str) -> dict | None:
+async def active_binding(db, sender: str) -> dict | None:
     """The sender's active binding row (with ``display_name``), or None."""
-    address = normalize_address(phone)
-    if address is None:
-        return None
-    return _selected(await _valid_bindings(db, phone_hash(address)))
+    return _selected(await _rows_for(db, sender))
 
 
-async def binding_for_phone(db, phone: str) -> str | None:
-    """The patient this sender may ask about right now, or None (no default)."""
-    row = await active_binding(db, phone)
+async def binding_for_sender(db, sender: str) -> str | None:
+    """The patient this ACI may ask about right now, or None (no default)."""
+    row = await active_binding(db, sender)
     return row["patient_id"] if row else None
 
 
-async def select_patient(db, phone: str, number: int) -> dict | None:
+async def has_bindings(db, sender: str) -> bool:
+    return bool(await _rows_for(db, sender))
+
+
+async def select_patient(db, sender: str, number: int) -> dict | None:
     """Make the sender's ``number``-th (1-based, :func:`bound_patients` order)
     binding active. None when there is no such binding."""
-    address = normalize_address(phone)
-    if address is None:
-        return None
-    rows = await _valid_bindings(db, phone_hash(address))
+    rows = await _rows_for(db, sender)
     if not 1 <= number <= len(rows):
         return None
     row = rows[number - 1]
+    now = _now()
     await db.db.execute(
-        "UPDATE signal_bindings SET selected_at = ? WHERE id = ? AND active = 1",
-        (_iso_fine(_now()), row["id"]),
+        "UPDATE signal_bindings SET selected_at = ?, last_seen_at = ? WHERE id = ? AND active = 1",
+        (_iso_fine(now), _iso(now), row["id"]),
     )
     await db.db.commit()
     return {"patient_id": row["patient_id"], "display_name": row["display_name"]}
+
+
+async def suspend_sender(db, sender: str) -> int:
+    """Identity key changed / untrusted: end every active binding of this ACI
+    (``active`` 0 + ``suspended_at``). Returns how many were active."""
+    aci = normalize_uuid(sender)
+    if aci is None:
+        return 0
+    sh = sender_hash(aci)
+    cur = await db.db.execute(
+        "UPDATE signal_bindings SET active = 0, suspended_at = ? "
+        "WHERE sender_uuid_hash = ? AND active = 1",
+        (_iso(_now()), sh),
+    )
+    await db.db.commit()
+    if cur.rowcount:
+        logger.warning(
+            "signal: identity change, %d binding(s) suspended for sender %s", cur.rowcount, sh[:8]
+        )
+    return cur.rowcount
 
 
 async def revoke_binding(db, *, patient_id: str, binding_id: int | None = None) -> int:
@@ -437,11 +506,11 @@ async def revoke_binding(db, *, patient_id: str, binding_id: int | None = None) 
 
 
 async def list_bindings(db, *, patient_id: str) -> list[dict]:
-    """The patient's bindings for the dashboard: ids and times only, never the number."""
+    """The patient's bindings for the dashboard: ids and times only, never an identity."""
     pid = require_patient_id(patient_id)
     async with db.db.execute(
-        "SELECT id, active, created_at, selected_at, revoked_at FROM signal_bindings "
-        "WHERE patient_id = ? ORDER BY id",
+        "SELECT id, active, created_at, selected_at, last_seen_at, revoked_at, suspended_at, "
+        "expired_at FROM signal_bindings WHERE patient_id = ? ORDER BY id",
         (pid,),
     ) as cur:
         return [
@@ -450,28 +519,32 @@ async def list_bindings(db, *, patient_id: str) -> list[dict]:
                 "active": bool(r["active"]),
                 "created_at": r["created_at"],
                 "selected_at": r["selected_at"],
+                "last_seen_at": r["last_seen_at"],
                 "revoked_at": r["revoked_at"],
+                "suspended_at": r["suspended_at"],
+                "expired_at": r["expired_at"],
             }
             for r in await cur.fetchall()
         ]
 
 
 def reply_address(binding: dict) -> str | None:
-    """The address to answer a binding on (decrypted, never logged)."""
-    return open_address(binding["phone_enc"], binding["patient_id"], binding["row_uuid"])
+    """The ACI to answer a binding on (decrypted, never logged)."""
+    return open_address(binding["reply_enc"], binding["patient_id"], binding["row_uuid"])
 
 
 async def conversation_for(db, binding: dict) -> str:
-    """The binding's current chat_history conversation (a new one after an idle gap)."""
+    """The binding's current chat_history conversation (a new one after an idle
+    gap); also marks the binding as used (idle expiry)."""
     now = _now()
     last = _parse(binding.get("conversation_at"))
     conv = binding.get("conversation_uuid")
     if not conv or last is None or (now - last).total_seconds() > CONVERSATION_IDLE_S:
         conv = str(uuid.uuid4())
     await db.db.execute(
-        "UPDATE signal_bindings SET conversation_uuid = ?, conversation_at = ? "
+        "UPDATE signal_bindings SET conversation_uuid = ?, conversation_at = ?, last_seen_at = ? "
         "WHERE id = ? AND patient_id = ?",
-        (conv, _iso(now), binding["id"], binding["patient_id"]),
+        (conv, _iso(now), _iso(now), binding["id"], binding["patient_id"]),
     )
     await db.db.commit()
     return conv
@@ -480,16 +553,16 @@ async def conversation_for(db, binding: dict) -> str:
 # ── throttle ──────────────────────────────────────────────────────────────
 
 
-async def _limits(db, ph: str) -> dict:
+async def _limits(db, sh: str) -> dict:
     await db.db.execute(
-        "INSERT INTO signal_sender_limits (phone_hash) VALUES (?) "
-        "ON CONFLICT(phone_hash) DO NOTHING",
-        (ph,),
+        "INSERT INTO signal_sender_limits (sender_uuid_hash) VALUES (?) "
+        "ON CONFLICT(sender_uuid_hash) DO NOTHING",
+        (sh,),
     )
     async with db.db.execute(
         "SELECT window_started_at, window_messages, window_failed_codes, neutral_reply_at "
-        "FROM signal_sender_limits WHERE phone_hash = ?",
-        (ph,),
+        "FROM signal_sender_limits WHERE sender_uuid_hash = ?",
+        (sh,),
     ) as cur:
         return dict(await cur.fetchone())
 
@@ -499,25 +572,25 @@ def _window_open(row: dict, now: datetime) -> bool:
     return start is not None and (now - start).total_seconds() < WINDOW_S
 
 
-async def note_message(db, ph: str) -> str:
+async def note_message(db, sh: str) -> str:
     """Count one incoming message of a sender: ``ok``, ``limited_notice`` (the
     first one over :data:`MAX_MESSAGES_PER_HOUR` in this window: tell them once)
     or ``limited`` (drop silently)."""
     now = _now()
-    row = await _limits(db, ph)
+    row = await _limits(db, sh)
     if _window_open(row, now):
         count = row["window_messages"] + 1
         await db.db.execute(
             "UPDATE signal_sender_limits SET window_messages = ?, updated_at = ? "
-            "WHERE phone_hash = ?",
-            (count, _iso(now), ph),
+            "WHERE sender_uuid_hash = ?",
+            (count, _iso(now), sh),
         )
     else:
         count = 1
         await db.db.execute(
             "UPDATE signal_sender_limits SET window_started_at = ?, window_messages = 1, "
-            "window_failed_codes = 0, updated_at = ? WHERE phone_hash = ?",
-            (_iso(now), _iso(now), ph),
+            "window_failed_codes = 0, updated_at = ? WHERE sender_uuid_hash = ?",
+            (_iso(now), _iso(now), sh),
         )
     await db.db.commit()
     if count <= MAX_MESSAGES_PER_HOUR:
@@ -525,32 +598,32 @@ async def note_message(db, ph: str) -> str:
     return "limited_notice" if count == MAX_MESSAGES_PER_HOUR + 1 else "limited"
 
 
-async def code_attempt_allowed(db, ph: str) -> bool:
-    row = await _limits(db, ph)
+async def code_attempt_allowed(db, sh: str) -> bool:
+    row = await _limits(db, sh)
     if not _window_open(row, _now()):
         return True
     return row["window_failed_codes"] < MAX_FAILED_CODES_PER_HOUR
 
 
-async def note_failed_code(db, ph: str) -> None:
+async def note_failed_code(db, sh: str) -> None:
     await db.db.execute(
         "UPDATE signal_sender_limits SET window_failed_codes = window_failed_codes + 1, "
-        "updated_at = ? WHERE phone_hash = ?",
-        (_iso(_now()), ph),
+        "updated_at = ? WHERE sender_uuid_hash = ?",
+        (_iso(_now()), sh),
     )
     await db.db.commit()
 
 
-async def claim_neutral_reply(db, ph: str) -> bool:
+async def claim_neutral_reply(db, sh: str) -> bool:
     """True (and remembered) when this sender may get the neutral reply now:
     at most once per :data:`NEUTRAL_REPLY_INTERVAL_S`."""
     now = _now()
-    await _limits(db, ph)
+    await _limits(db, sh)
     cutoff = _iso(now - timedelta(seconds=NEUTRAL_REPLY_INTERVAL_S))
     cur = await db.db.execute(
         "UPDATE signal_sender_limits SET neutral_reply_at = ?, updated_at = ? "
-        "WHERE phone_hash = ? AND (neutral_reply_at IS NULL OR neutral_reply_at <= ?)",
-        (_iso(now), _iso(now), ph, cutoff),
+        "WHERE sender_uuid_hash = ? AND (neutral_reply_at IS NULL OR neutral_reply_at <= ?)",
+        (_iso(now), _iso(now), sh, cutoff),
     )
     await db.db.commit()
     return cur.rowcount == 1

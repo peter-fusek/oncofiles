@@ -18,6 +18,12 @@ for a few seconds) and reconnects with a doubling back-off.
 
 **Per message** (:func:`handle_envelope`, one at a time, DB on the event loop):
 
+* the sender is ONLY the account UUID (ACI, ``sourceUuid``), never the phone
+  number (a number can be recycled to someone else); a message without one is
+  ignored and counted (``no_uuid``), never answered; replies go to the ACI;
+* a changed / untrusted identity key reported by signal-cli suspends every
+  binding of that sender (one "please reconnect" line, then a new code is
+  needed); bindings idle past ``SIGNAL_BINDING_IDLE_DAYS`` (default 90) expire;
 * only direct text messages (group, sync, receipt and typing messages are ignored);
 * the persisted per-sender hour limit (``signal_bindings.note_message``):
   over it one notice, then silence;
@@ -53,6 +59,7 @@ import re
 import unicodedata
 from collections import Counter
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -120,6 +127,13 @@ TEXTS: dict[str, dict[str, str]] = {
     "busy": {
         "sk": "Model je práve zaneprázdnený. Skúste to prosím o chvíľu.",
         "en": "The model is busy right now. Please try again in a moment.",
+    },
+    "reconnect": {
+        "sk": "Spojenie s týmto kontaktom bolo pozastavené (zmenil sa bezpečnostný kód). "
+        "Pripojte Signal prosím znova v nástenke Oncofiles. / This connection was paused "
+        "(the safety number changed). Please reconnect Signal in the Oncofiles dashboard.",
+        "en": "This connection was paused (the safety number changed). Please reconnect "
+        "Signal in the Oncofiles dashboard.",
     },
     "too_many": {
         "sk": "Príliš veľa správ za hodinu. Skúste to prosím neskôr.",
@@ -282,25 +296,72 @@ class SignalClient:
 # ── message parsing ───────────────────────────────────────────────────────
 
 
-def parse_envelope(data: dict) -> tuple[str | None, str, int] | None:
-    """``(sender address, text, attachment count)`` of a direct data message,
-    None for anything else (group, sync, receipt, typing, malformed)."""
+@dataclass(frozen=True)
+class Incoming:
+    """One received envelope, reduced to what the adapter may act on.
+
+    ``kind``: ``message`` (a direct data message), ``identity_change``
+    (signal-cli reported an untrusted / changed identity key), ``no_uuid``
+    (no valid ``sourceUuid``: ignored, counted, never answered) or ``ignored``.
+    ``sender`` is ``uuid:<ACI>``; ``number`` the E.164 number when shown.
+    """
+
+    kind: str
+    sender: str | None = None
+    number: str | None = None
+    text: str = ""
+    attachments: int = 0
+
+
+_IDENTITY_MARKERS = ("untrustedidentity", "identitykey", "identity_key", "safetynumber")
+
+
+def _identity_changed(data: dict, env: dict) -> bool:
+    """signal-cli's report of a changed / untrusted identity key: an
+    ``exception`` / ``error`` object (JSON-RPC receive params or the envelope)
+    whose type or message names it, or an ``untrustedIdentity`` flag. To be
+    confirmed on the first live message (infra keeps signal-cli's default
+    ``--trust-new-identities on-first-use`` so a change is reported, not trusted)."""
+    if env.get("untrustedIdentity") or data.get("untrustedIdentity"):
+        return True
+    for holder in (data, env):
+        for key in ("exception", "error"):
+            obj = holder.get(key)
+            if isinstance(obj, dict):
+                blob = f"{obj.get('type', '')} {obj.get('message', '')}"
+            elif isinstance(obj, str):
+                blob = obj
+            else:
+                continue
+            folded = blob.lower().replace(" ", "")
+            if any(m in folded for m in _IDENTITY_MARKERS):
+                return True
+    return False
+
+
+def parse_envelope(data: dict) -> Incoming:
+    """Reduce one received object (see :class:`Incoming`). The sender is ONLY
+    the account UUID (ACI): a phone number can be recycled to someone else."""
     env = data.get("envelope") if isinstance(data, dict) else None
     if not isinstance(env, dict):
-        return None
+        return Incoming("ignored")
+    sender = sb.normalize_uuid(env.get("sourceUuid"))
+    raw_number = env.get("sourceNumber")
+    number = raw_number if sb.is_e164(raw_number) else None
+    if _identity_changed(data, env):
+        return Incoming("identity_change" if sender else "no_uuid", sender, number)
     msg = env.get("dataMessage")
     if not isinstance(msg, dict):
-        return None
+        return Incoming("ignored")
     if msg.get("groupInfo") or msg.get("groupV2") or msg.get("groupContext"):
-        return None
-    sender = sb.normalize_address(env.get("sourceNumber") or env.get("source") or "")
+        return Incoming("ignored")
     if sender is None:
-        sender = sb.normalize_address(env.get("sourceUuid") or "")
+        return Incoming("no_uuid")
     text = msg.get("message")
     text = text.strip() if isinstance(text, str) else ""
     attachments = msg.get("attachments")
     n_att = len(attachments) if isinstance(attachments, list) else 0
-    return sender, text, n_att
+    return Incoming("message", sender, number, text, n_att)
 
 
 _EN_WORDS = frozenset(
@@ -514,11 +575,10 @@ def fit_messages(history: list[dict], question: str) -> list[dict]:
 # ── one message ───────────────────────────────────────────────────────────
 
 
-async def _answer(db, client, binding: dict, ph: str, sender: str, text: str, lang: str) -> str:
+async def _answer(db, client, binding: dict, sh: str, to: str, text: str, lang: str) -> str:
     from oncofiles.chat import core as chat_core
 
     pid = binding["patient_id"]
-    to = sb.reply_address(binding) or sender
     if len(text.encode()) > chat_core.MAX_MESSAGE_BYTES:
         await client.send(to, _t("too_long", lang))
         return "too_long"
@@ -527,7 +587,7 @@ async def _answer(db, client, binding: dict, ph: str, sender: str, text: str, la
     result = await chat_core.answer_text(
         db,
         patient_id=pid,
-        principal="signal:" + ph[:12],
+        principal="signal:" + sh[:12],
         messages=fit_messages(history, text),
         lang=lang,
     )
@@ -561,15 +621,21 @@ async def _answer(db, client, binding: dict, ph: str, sender: str, text: str, la
 
 async def handle_envelope(db, client, data: dict) -> str:
     """Process one received envelope; returns an outcome code (logged, tested)."""
-    parsed = parse_envelope(data)
-    if parsed is None:
-        return "ignored"
-    sender, text, n_att = parsed
-    if sender is None:
-        return "bad_sender"
-    ph = sb.phone_hash(sender)
+    inc = parse_envelope(data)
+    if inc.kind in ("ignored", "no_uuid"):
+        return inc.kind
+    sender, text, n_att = inc.sender, inc.text, inc.attachments
+    sh = sb.sender_hash(sender)
+
+    if inc.kind == "identity_change":
+        # fail closed: no answers until the caregiver links again with a new code
+        if await sb.suspend_sender(db, sender):
+            await client.send(sender, _t("reconnect", "sk"))
+            return "identity_suspended"
+        return "identity_change"
+
     lang = detect_lang(text) if text else "sk"
-    rate = await sb.note_message(db, ph)
+    rate = await sb.note_message(db, sh)
     if rate == "limited":
         return "rate_limited"
     if rate == "limited_notice":
@@ -577,25 +643,29 @@ async def handle_envelope(db, client, data: dict) -> str:
         return "rate_limited_notice"
 
     if text and sb.looks_like_code(text):
-        if not await sb.code_attempt_allowed(db, ph):
+        if not await sb.code_attempt_allowed(db, sh):
             return "code_attempts_exhausted"
-        result = await sb.bind_from_message(db, sender, text)
+        result = await sb.bind_from_message(db, sender, text, number=inc.number)
         if result.status in ("bound", "already"):
             await client.send(sender, _t("bound", lang, name=result.display_name or ""))
             return result.status
-        await sb.note_failed_code(db, ph)
-        logger.info("signal: code refused for sender %s (%s)", ph[:8], result.reason)
+        await sb.note_failed_code(db, sh)
+        logger.info("signal: code refused for sender %s (%s)", sh[:8], result.reason)
         await client.send(sender, _t("code_invalid", lang))
         return "code_refused"
 
     binding = await sb.active_binding(db, sender)
     if binding is None:
-        if await sb.claim_neutral_reply(db, ph):
+        if await sb.claim_neutral_reply(db, sh):
             await client.send(sender, _t("neutral", lang))
             return "neutral_reply"
         return "unknown_sender"
 
-    to = sb.reply_address(binding) or sender
+    to = sb.reply_address(binding)
+    if to != sender:
+        # the stored reply identity must be this very account (fail closed)
+        logger.warning("signal: reply identity mismatch for sender %s", sh[:8])
+        return "identity_mismatch"
     if n_att:
         await client.send(to, _t("attachments", lang))
         if not text:
@@ -619,7 +689,7 @@ async def handle_envelope(db, client, data: dict) -> str:
         await client.send(to, "\n".join(lines))
         return "patients_listed"
 
-    return await _answer(db, client, binding, ph, sender, text, lang)
+    return await _answer(db, client, binding, sh, to, text, lang)
 
 
 # ── the loop ──────────────────────────────────────────────────────────────

@@ -3,6 +3,9 @@
 -- container exists; the adapter is oncofiles.channels.signal, the storage
 -- oncofiles.channels.signal_bindings.
 --
+-- Identity is the Signal account UUID (ACI), never the phone number: a number
+-- can be recycled to another person or re-registered, the ACI cannot.
+--
 -- signal_bindings: one row per (sender, patient) the caregiver connected with
 -- a one-time dashboard code. No default patient: a sender without an active
 -- row gets nothing but a neutral reply.
@@ -10,38 +13,47 @@
 --                         (secrets_keys.signal_caregiver_hash_key, own purpose);
 --                         a binding stops working when the patient's current
 --                         caregiver no longer hashes to it.
---   phone_hash:           keyed HMAC of the sender address (E.164 number, or
---                         the Signal account uuid when the number is hidden),
---                         secrets_keys.signal_phone_hash_key; never the raw
---                         number in the DB or in a log.
+--   sender_uuid_hash:     keyed HMAC of uuid:<ACI> (secrets_keys.
+--                         signal_sender_hash_key): THE lookup key. Never raw.
+--   phone_hash:           keyed HMAC of the E.164 number when signal-cli showed
+--                         one at bind time (secrets_keys.signal_phone_hash_key);
+--                         informational only, never a lookup key. Never raw.
 --   row_uuid:             random UUID per row, part of the AES-GCM associated data.
---   phone_enc:            the sender address, AES-GCM with
+--   reply_enc:            the reply address uuid:<ACI>, AES-GCM with
 --                         secrets_keys.signal_phone_key, associated data
---                         signal|<patient_id>|<row_uuid>: needed to send replies.
+--                         signal|<patient_id>|<row_uuid>.
 --   conversation_uuid:    the current chat_history conversation of this binding
 --                         (#1022); a new one after an idle gap.
 --   conversation_at:      last turn of that conversation.
 --   selected_at:          the newest selected active binding of a sender is its
 --                         active patient (the `pacient <n>` switch).
---   active / revoked_at:  revoke = active 0 + revoked_at; rows are never deleted
+--   last_seen_at:         last use; idle past SIGNAL_BINDING_IDLE_DAYS (default
+--                         90) → active 0 + expired_at, a new code is needed.
+--   suspended_at:         signal-cli reported a changed / untrusted identity key
+--                         for the sender → active 0, a new code is needed.
+--   active / revoked_at:  revoke = active 0 + revoked_at. Rows are never deleted
 --                         by a job (the #856 erasure removes them with the patient).
 CREATE TABLE IF NOT EXISTS signal_bindings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     patient_id TEXT NOT NULL REFERENCES patients(patient_id),
     caregiver_email_hash TEXT NOT NULL,
-    phone_hash TEXT NOT NULL,
+    sender_uuid_hash TEXT NOT NULL,
+    phone_hash TEXT,
     row_uuid TEXT NOT NULL UNIQUE,
-    phone_enc BLOB NOT NULL,
+    reply_enc BLOB NOT NULL,
     conversation_uuid TEXT,
     conversation_at TEXT,
     selected_at TEXT,
+    last_seen_at TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    revoked_at TEXT
+    revoked_at TEXT,
+    suspended_at TEXT,
+    expired_at TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_signal_bindings_active
-    ON signal_bindings(phone_hash, patient_id) WHERE active = 1;
+    ON signal_bindings(sender_uuid_hash, patient_id) WHERE active = 1;
 CREATE INDEX IF NOT EXISTS idx_signal_bindings_patient
     ON signal_bindings(patient_id, active);
 
@@ -64,11 +76,11 @@ CREATE INDEX IF NOT EXISTS idx_signal_link_codes_patient
 -- signal_sender_limits: persisted per-sender throttle (survives a deploy, #623
 -- lesson): messages in the current hour window, failed code attempts in it,
 -- and when the last neutral "connect in the dashboard first" reply went out
--- (at most one per day). Keyed by the same keyed phone hash; no patient
+-- (at most one per day). Keyed by the same keyed ACI hash; no patient
 -- reference, no text.
 CREATE TABLE IF NOT EXISTS signal_sender_limits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    phone_hash TEXT NOT NULL UNIQUE,
+    sender_uuid_hash TEXT NOT NULL UNIQUE,
     window_started_at TEXT,
     window_messages INTEGER NOT NULL DEFAULT 0,
     window_failed_codes INTEGER NOT NULL DEFAULT 0,

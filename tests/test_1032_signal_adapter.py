@@ -28,6 +28,14 @@ from oncofiles.models import Patient
 PHONE_A = "+10000000001"
 PHONE_B = "+10000000002"
 PHONE_X = "+10000000009"
+# Signal account UUIDs (ACI), the real identity; invented
+UUIDS = {
+    PHONE_A: str(uuid.uuid5(uuid.NAMESPACE_URL, "sender-alpha")),
+    PHONE_B: str(uuid.uuid5(uuid.NAMESPACE_URL, "sender-beta")),
+    PHONE_X: str(uuid.uuid5(uuid.NAMESPACE_URL, "sender-stranger")),
+}
+ADDR = {phone: "uuid:" + aci for phone, aci in UUIDS.items()}
+_KEEP = object()
 CARE_A = "carer.alpha@example.test"
 CARE_B = "carer.beta@example.test"
 ROOT = Path(__file__).resolve().parent.parent
@@ -68,15 +76,12 @@ class FakeClient:
         return True
 
 
-def _env(text: str, sender: str = PHONE_A, **msg) -> dict:
-    return {
-        "envelope": {
-            "sourceNumber": sender,
-            "sourceUuid": str(uuid.UUID(int=1)),
-            "dataMessage": {"message": text, **msg},
-        },
-        "account": "+10000000000",
-    }
+def _env(text: str, sender: str = PHONE_A, aci=_KEEP, **msg) -> dict:
+    env = {"sourceNumber": sender, "dataMessage": {"message": text, **msg}}
+    aci = UUIDS.get(sender) if aci is _KEEP else aci
+    if aci is not None:
+        env["sourceUuid"] = aci
+    return {"envelope": env, "account": "+10000000000"}
 
 
 @pytest.fixture
@@ -128,21 +133,21 @@ async def test_code_shape_and_single_use(db, family):
     async with db.db.execute("SELECT code_hash FROM signal_link_codes") as cur:
         rows = [r[0] for r in await cur.fetchall()]
     assert code not in rows and len(rows) == 1  # only the keyed hash
-    first = await sb.bind_from_message(db, PHONE_A, code.lower())
+    first = await sb.bind_from_message(db, ADDR[PHONE_A], code.lower())
     assert first.status == "bound" and first.patient_id == family["first"]
-    replay = await sb.bind_from_message(db, PHONE_B, code)
+    replay = await sb.bind_from_message(db, ADDR[PHONE_B], code)
     assert replay.status == "refused" and replay.reason == "used_code"
 
 
 async def test_wrong_and_expired_codes(db, family):
-    assert (await sb.bind_from_message(db, PHONE_A, "ZZ9ZZ9")).reason == "unknown_code"
+    assert (await sb.bind_from_message(db, ADDR[PHONE_A], "ZZ9ZZ9")).reason == "unknown_code"
     out = await sb.create_link_code(db, patient_id=family["first"], caregiver_email=CARE_A)
     past = (datetime.now(UTC) - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     await db.db.execute("UPDATE signal_link_codes SET expires_at = ?", (past,))
     await db.db.commit()
-    res = await sb.bind_from_message(db, PHONE_A, out["code"])
+    res = await sb.bind_from_message(db, ADDR[PHONE_A], out["code"])
     assert res.status == "refused" and res.reason == "expired_code"
-    assert await sb.binding_for_phone(db, PHONE_A) is None
+    assert await sb.binding_for_sender(db, ADDR[PHONE_A]) is None
 
 
 async def test_only_the_patients_caregiver_gets_a_code(db, family):
@@ -180,17 +185,20 @@ async def test_number_never_stored_in_clear(db, family):
             assert PHONE_A not in value and PHONE_A[1:] not in value
         if isinstance(value, bytes):
             assert PHONE_A.encode() not in value
-    assert sb.open_address(row["phone_enc"], row["patient_id"], row["row_uuid"]) == PHONE_A
+        if isinstance(value, str):
+            assert UUIDS[PHONE_A] not in value
+    assert row["sender_uuid_hash"] and row["phone_hash"]
+    assert sb.open_address(row["reply_enc"], row["patient_id"], row["row_uuid"]) == ADDR[PHONE_A]
     # the ciphertext is bound to its row
-    assert sb.open_address(row["phone_enc"], family["second"], row["row_uuid"]) is None
+    assert sb.open_address(row["reply_enc"], family["second"], row["row_uuid"]) is None
 
 
 async def test_revoke(db, family):
     client = FakeClient()
     await _bind(db, client, family["first"], CARE_A)
-    assert await sb.binding_for_phone(db, PHONE_A) == family["first"]
+    assert await sb.binding_for_sender(db, ADDR[PHONE_A]) == family["first"]
     assert await sb.revoke_binding(db, patient_id=family["first"]) == 1
-    assert await sb.binding_for_phone(db, PHONE_A) is None
+    assert await sb.binding_for_sender(db, ADDR[PHONE_A]) is None
     listed = await sb.list_bindings(db, patient_id=family["first"])
     assert listed[0]["active"] is False and listed[0]["revoked_at"]
     assert "phone" not in json.dumps(listed)
@@ -203,7 +211,7 @@ async def test_binding_ends_when_the_caregiver_changes(db, family):
         "UPDATE patients SET caregiver_email = ? WHERE patient_id = ?", (CARE_B, family["first"])
     )
     await db.db.commit()
-    assert await sb.binding_for_phone(db, PHONE_A) is None
+    assert await sb.binding_for_sender(db, ADDR[PHONE_A]) is None
 
 
 # ── unknown sender ────────────────────────────────────────────────────────
@@ -213,7 +221,7 @@ async def test_unknown_sender_gets_one_neutral_reply_a_day(db, family, fake_core
     client = FakeClient()
     assert await sig.handle_envelope(db, client, _env("Ako sa mám?", PHONE_X)) == "neutral_reply"
     assert await sig.handle_envelope(db, client, _env("Ešte raz?", PHONE_X)) == "unknown_sender"
-    assert client.sent == [(PHONE_X, sig.TEXTS["neutral"]["sk"])]
+    assert client.sent == [(ADDR[PHONE_X], sig.TEXTS["neutral"]["sk"])]
     assert fake_core["calls"] == []
     # a day later: one more
     old = (datetime.now(UTC) - timedelta(days=1, seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -258,7 +266,7 @@ async def test_bound_sender_gets_an_answer_for_the_bound_patient(db, family, fak
     assert call["lang"] == "sk"
     assert call["principal"].startswith("signal:") and PHONE_A[1:] not in call["principal"]
     assert call["messages"][-1] == {"role": "user", "content": "Aký bol posledný hemoglobín?"}
-    assert client.sent[0][0] == PHONE_A
+    assert client.sent[0][0] == ADDR[PHONE_A]
     assert prompts.DISCLAIMER["sk"] in client.sent[0][1]
     roles = [m["role"] for m in fake_core["stored"]]
     assert roles == ["user", "assistant"]
@@ -287,7 +295,7 @@ async def test_busy_gives_a_short_retry_line_and_stores_nothing(db, family, fake
     }
     out = await sig.handle_envelope(db, client, _env("Otázka?"))
     assert out == "error:model_busy"
-    assert client.sent == [(PHONE_A, sig.TEXTS["busy"]["sk"])]
+    assert client.sent == [(ADDR[PHONE_A], sig.TEXTS["busy"]["sk"])]
     assert fake_core["stored"] == []
 
 
@@ -297,7 +305,7 @@ async def test_attachments_are_not_supported(db, family, fake_core):
     client.sent.clear()
     out = await sig.handle_envelope(db, client, _env("", attachments=[{"id": "a"}]))
     assert out == "attachments"
-    assert client.sent == [(PHONE_A, sig.TEXTS["attachments"]["sk"])]
+    assert client.sent == [(ADDR[PHONE_A], sig.TEXTS["attachments"]["sk"])]
     assert fake_core["calls"] == []
 
 
@@ -309,7 +317,7 @@ async def test_rate_limit_is_persisted(db, family, fake_core):
     client.sent.clear()
     assert await sig.handle_envelope(db, client, _env("Otázka?")) == "rate_limited_notice"
     assert await sig.handle_envelope(db, client, _env("Otázka?")) == "rate_limited"
-    assert client.sent == [(PHONE_A, sig.TEXTS["too_many"]["sk"])]
+    assert client.sent == [(ADDR[PHONE_A], sig.TEXTS["too_many"]["sk"])]
     async with db.db.execute("SELECT window_messages FROM signal_sender_limits") as cur:
         assert (await cur.fetchone())[0] == sb.MAX_MESSAGES_PER_HOUR + 2
 
@@ -333,7 +341,7 @@ async def test_another_caregivers_code_is_refused_after_binding(db, family, fake
         "code"
     ]
     assert await sig.handle_envelope(db, client, _env(code_b)) == "code_refused"
-    rows = await sb.bound_patients(db, PHONE_A)
+    rows = await sb.bound_patients(db, ADDR[PHONE_A])
     assert [r["patient_id"] for r in rows] == [family["first"]]
     # the refusal did not burn B's code: B's own phone can still use it
     assert await sig.handle_envelope(db, client, _env(code_b, PHONE_B)) == "bound"
@@ -429,7 +437,8 @@ async def test_logs_carry_no_text_names_or_numbers(db, family, fake_core, caplog
     text = caplog.text
     bare_a, bare_x = PHONE_A.lstrip("+"), PHONE_X.lstrip("+")
     wrong_code = "ZZ9ZZ9"
-    for secret in (PHONE_A, bare_a, bare_x, "hemoglobín", "Alpha One", CARE_A, wrong_code):
+    secrets_ = (PHONE_A, bare_a, bare_x, UUIDS[PHONE_A], "hemoglobín", "Alpha One", CARE_A)
+    for secret in (*secrets_, wrong_code):
         assert secret not in text
 
 
@@ -522,7 +531,7 @@ async def test_loop_receives_handles_and_survives_errors(db, family, fake_core):
             await task
     finally:
         sig.RECONNECT_MIN_S = old
-    assert client.sent == [(PHONE_X, sig.TEXTS["neutral"]["sk"])]
+    assert client.sent == [(ADDR[PHONE_X], sig.TEXTS["neutral"]["sk"])]
     counts = sig.counters()
     assert counts["receive_failed"] == 1 and counts["ignored"] == 1
     assert counts["neutral_reply"] == 1
@@ -582,12 +591,14 @@ def test_registry_classification():
     codes = data_rights.rule_for("signal_link_codes")
     assert bindings.export and not codes.export
     cols = [
-        "id", "patient_id", "caregiver_email_hash", "phone_hash", "row_uuid", "phone_enc",
+        "id", "patient_id", "caregiver_email_hash", "sender_uuid_hash", "phone_hash", "row_uuid",
+        "reply_enc",
         "conversation_uuid", "conversation_at", "selected_at", "active", "created_at",
         "revoked_at",
     ]  # fmt: skip
     exported = data_rights.exported_columns(bindings, cols)
-    assert not {"caregiver_email_hash", "phone_hash", "phone_enc"} & set(exported)
+    hidden_cols = {"caregiver_email_hash", "sender_uuid_hash", "phone_hash", "reply_enc"}
+    assert not hidden_cols & set(exported)
     assert "signal_sender_limits" in data_rights.NOT_PATIENT_DATA
     names = [r.table for r in data_rights.REGISTRY]
     assert names.index("signal_bindings") < names.index("patients")
@@ -607,3 +618,100 @@ def test_no_delete_in_the_signal_code():
     for name in ("signal.py", "signal_bindings.py"):
         src = (ROOT / "src/oncofiles/channels" / name).read_text()
         assert not re.search(r"DELETE\s+FROM", src, re.I)
+
+
+# ── identity: the account UUID, never the number (security review) ───────
+
+
+async def test_recycled_number_with_another_uuid_gets_nothing(db, family, fake_core):
+    client = FakeClient()
+    await _bind(db, client, family["first"], CARE_A)
+    client.sent.clear()
+    newcomer = str(uuid.uuid5(uuid.NAMESPACE_URL, "next-owner-of-the-number"))
+    out = await sig.handle_envelope(db, client, _env("Aké sú výsledky?", PHONE_A, aci=newcomer))
+    assert out == "neutral_reply"
+    assert fake_core["calls"] == []
+    assert client.sent == [("uuid:" + newcomer, sig.TEXTS["neutral"]["sk"])]
+    # the real owner (same number, original UUID) still works
+    assert (await sig.handle_envelope(db, client, _env("Otázka?"))).startswith("answered")
+    assert fake_core["calls"][-1]["patient_id"] == family["first"]
+
+
+async def test_message_without_uuid_is_ignored(db, family, fake_core):
+    client = FakeClient()
+    await _bind(db, client, family["first"], CARE_A)
+    client.sent.clear()
+    assert await sig.handle_envelope(db, client, _env("Otázka?", aci=None)) == "no_uuid"
+    code = (await sb.create_link_code(db, patient_id=family["second"], caregiver_email=CARE_A))[
+        "code"
+    ]
+    assert await sig.handle_envelope(db, client, _env(code, PHONE_X, aci=None)) == "no_uuid"
+    assert client.sent == [] and fake_core["calls"] == []
+    async with db.db.execute("SELECT COUNT(*) FROM signal_sender_limits") as cur:
+        assert (await cur.fetchone())[0] == 1  # only the bound sender's own row
+
+
+async def test_identity_change_suspends_the_binding(db, family, fake_core):
+    client = FakeClient()
+    await _bind(db, client, family["first"], CARE_A)
+    await _bind(db, client, family["second"], CARE_A)
+    client.sent.clear()
+    event = {
+        "envelope": {"sourceNumber": PHONE_A, "sourceUuid": UUIDS[PHONE_A]},
+        "exception": {"type": "UntrustedIdentityException", "message": "Untrusted identity"},
+    }
+    assert await sig.handle_envelope(db, client, event) == "identity_suspended"
+    assert client.sent == [(ADDR[PHONE_A], sig.TEXTS["reconnect"]["sk"])]
+    assert await sb.binding_for_sender(db, ADDR[PHONE_A]) is None
+    # a second report sends nothing more
+    assert await sig.handle_envelope(db, client, event) == "identity_change"
+    # no answers until a new code
+    assert await sig.handle_envelope(db, client, _env("Otázka?")) == "neutral_reply"
+    assert fake_core["calls"] == []
+    listed = await sb.list_bindings(db, patient_id=family["first"])
+    assert listed[0]["suspended_at"] and not listed[0]["active"]
+    assert await _bind(db, client, family["first"], CARE_A) == "bound"
+    assert await sb.binding_for_sender(db, ADDR[PHONE_A]) == family["first"]
+
+
+def test_identity_change_flag_forms():
+    base = {"sourceUuid": UUIDS[PHONE_A]}
+    flagged = {"envelope": {**base, "untrustedIdentity": True}}
+    assert sig.parse_envelope(flagged).kind == "identity_change"
+    err = {"envelope": base, "error": "org.example.ProtocolUntrustedIdentityException"}
+    assert sig.parse_envelope(err).kind == "identity_change"
+    assert sig.parse_envelope({"envelope": base}).kind == "ignored"
+
+
+async def test_idle_binding_expires(db, family, fake_core, monkeypatch):
+    client = FakeClient()
+    await _bind(db, client, family["first"], CARE_A)
+    monkeypatch.setenv(sb.IDLE_DAYS_ENV, "30")
+    old = (datetime.now(UTC) - timedelta(days=31)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    await db.db.execute("UPDATE signal_bindings SET last_seen_at = ?, created_at = ?", (old, old))
+    await db.db.commit()
+    assert await sb.binding_for_sender(db, ADDR[PHONE_A]) is None
+    listed = await sb.list_bindings(db, patient_id=family["first"])
+    assert listed[0]["expired_at"] and not listed[0]["active"]
+    assert await sig.handle_envelope(db, client, _env("Otázka?")) == "neutral_reply"
+    assert fake_core["calls"] == []
+
+
+async def test_recent_use_keeps_a_binding_alive(db, family, fake_core):
+    client = FakeClient()
+    await _bind(db, client, family["first"], CARE_A)
+    days = sb.DEFAULT_IDLE_DAYS - 1
+    old = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    await db.db.execute("UPDATE signal_bindings SET last_seen_at = ?", (old,))
+    await db.db.commit()
+    assert (await sig.handle_envelope(db, client, _env("Otázka?"))).startswith("answered")
+    async with db.db.execute("SELECT last_seen_at FROM signal_bindings") as cur:
+        assert (await cur.fetchone())[0] > old
+
+
+def test_idle_days_setting(monkeypatch):
+    assert sb.idle_days() == sb.DEFAULT_IDLE_DAYS
+    monkeypatch.setenv(sb.IDLE_DAYS_ENV, "7")
+    assert sb.idle_days() == 7
+    monkeypatch.setenv(sb.IDLE_DAYS_ENV, "nonsense")
+    assert sb.idle_days() == sb.DEFAULT_IDLE_DAYS

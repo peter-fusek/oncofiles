@@ -256,14 +256,15 @@ def quarantine_sender_key() -> bytes:
     return hmac.new(holding_store_key(), _QUARANTINE_SENDER_PURPOSE, hashlib.sha256).digest()
 
 
-# #1032 chat over Signal: the sender address is stored only as a keyed hash
-# (lookup) and AES-GCM (to reply); link codes and the caregiver only as keyed
+# #1032 chat over Signal: the sender's account UUID is stored only as a keyed
+# hash (lookup) and AES-GCM (to reply); link codes and the caregiver only as keyed
 # hashes. Every key derives from ``SIGNAL_SECRET`` when set, else from the
 # MANDATORY ``HOLDING_STORE_SECRET`` (never from the bearer), each with its own
 # purpose string. Neither set → ``SignalSecretMissingError``: the adapter does
 # not start and no code is issued.
 SIGNAL_SECRET_ENV = "SIGNAL_SECRET"
 _SIGNAL_BASE_PURPOSE = b"oncofiles.signal.v1"
+_SIGNAL_SENDER_HASH_PURPOSE = b"oncofiles.signal.sender_uuid_hash.v1"
 _SIGNAL_PHONE_HASH_PURPOSE = b"oncofiles.signal.phone_hash.v1"
 _SIGNAL_PHONE_ENC_PURPOSE = b"oncofiles.signal.phone_enc.v1"
 _SIGNAL_LINK_CODE_PURPOSE = b"oncofiles.signal.link_code.v1"
@@ -289,13 +290,19 @@ def _signal_base() -> bytes:
     return hmac.new(base, _SIGNAL_BASE_PURPOSE, hashlib.sha256).digest()
 
 
+def signal_sender_hash_key() -> bytes:
+    """HMAC key of ``sender_uuid_hash`` (the Signal account UUID, the lookup key
+    of bindings and of ``signal_sender_limits``)."""
+    return hmac.new(_signal_base(), _SIGNAL_SENDER_HASH_PURPOSE, hashlib.sha256).digest()
+
+
 def signal_phone_hash_key() -> bytes:
-    """HMAC key of ``signal_bindings.phone_hash`` / ``signal_sender_limits``."""
+    """HMAC key of ``signal_bindings.phone_hash`` (informational, never a lookup key)."""
     return hmac.new(_signal_base(), _SIGNAL_PHONE_HASH_PURPOSE, hashlib.sha256).digest()
 
 
 def signal_phone_key() -> bytes:
-    """32-byte AES-GCM key of ``signal_bindings.phone_enc``."""
+    """32-byte AES-GCM key of ``signal_bindings.reply_enc``."""
     return hmac.new(_signal_base(), _SIGNAL_PHONE_ENC_PURPOSE, hashlib.sha256).digest()
 
 
