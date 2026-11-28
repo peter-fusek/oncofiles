@@ -28,6 +28,10 @@ removing a deletion path also removes its permission.
    (file, function) pair; ``shutil.rmtree`` / ``os.removedirs`` never appear.
    The #950 quarantine purge (maintainer decision 2026-11-22, RUNBOOK
    lifecycle) is the only one that removes stored user files on a schedule.
+   The #1022 chat history retention (maintainer decision 2026-11-28, RUNBOOK
+   lifecycle) is the only job that soft-deletes (90 days -> trash) and purges
+   (30 days later: the encrypted text NULLed, the row kept) user data; it
+   never hard-deletes a row and ships with ``CHAT_RETENTION_MODE=off``.
 7. The #856 erasure of a patient on request (``patient_erasure``, operator
    tool ``erase_patient``) is the one user-invoked hard delete of a patient's
    rows, core tables included: its registry-built ``DELETE FROM {table}`` is
@@ -383,7 +387,19 @@ FORBIDDEN_IN_JOBS = (
         "_delete_rows_sync",
         "delete_oauth_tokens",
         "disconnect_drive",
+        # #1022 chat history: the user's delete (never from a job) and the two
+        # retention steps (allowlisted below for the retention loop only)
+        "soft_delete_chat_conversation",
+        "trash_expired_chat_messages",
+        "purge_trashed_chat_messages",
     }
+)
+
+# #1022 retention of the chat history (issue #1022, infra condition: ships off).
+CHAT_RETENTION_REASON = (
+    "chat history retention, maintainer decision 2026-11-28, RUNBOOK lifecycle: 90 days "
+    "-> trash (soft delete), 30 more days -> encrypted text purged (row kept); "
+    "CHAT_RETENTION_MODE default off"
 )
 
 # (module file, function, reference) reachable from a job -> reason. May only shrink.
@@ -408,6 +424,16 @@ JOB_REACHABLE_ALLOWLIST: dict[tuple[str, str, str], str] = {
         "_index_patient",
         "delete_ocr_pages",
     ): "curated pages rewritten from the Drive sidecar in the same step",
+    (
+        "chat_retention.py",
+        "chat_retention_iteration",
+        "trash_expired_chat_messages",
+    ): CHAT_RETENTION_REASON,
+    (
+        "chat_retention.py",
+        "chat_retention_iteration",
+        "purge_trashed_chat_messages",
+    ): CHAT_RETENTION_REASON,
 }
 
 REMOVED_JOB_IDS = {"trash_cleanup", "empty_folder_cleanup"}
@@ -528,6 +554,7 @@ def test_scheduler_roots_are_found():
     assert "prompt_log_cleanup" in ids
     # #999: lifespan loops are roots too (create_task inside lifespan)
     assert {"oauth_token_cleanup_loop", "access_log_retention_loop"} <= roots
+    assert "chat_retention_loop" in roots  # #1022
 
 
 def test_removed_jobs_are_not_registered():

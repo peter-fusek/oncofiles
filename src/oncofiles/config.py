@@ -229,6 +229,10 @@ LLM_EXTRACT_STRUCTURED_OUTPUT: bool = (
 LLM_CLINICAL_STRUCTURED_OUTPUT: bool = (
     os.environ.get("LLM_CLINICAL_STRUCTURED_OUTPUT", "false").strip().lower() == "true"
 )
+# Dashboard chat (#1023): POST /api/chat and GET /api/chat/suggestions. OFF by
+# default: while false both routes answer the app's unknown-path 404 and the
+# dashboard hides the Chat section. Enabling it is an infra/maintainer decision.
+CHAT_ENABLED: bool = os.environ.get("CHAT_ENABLED", "false").strip().lower() == "true"
 # LLM-first extraction of the non-lab kinds (#726 item 4): diagnoses, biomarkers,
 # treatments, procedures, lesion sizes, planned dates. MCP tools
 # curated_clinical_extract_preview (dry run) and curated_clinical_extract

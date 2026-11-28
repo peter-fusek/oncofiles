@@ -76,6 +76,9 @@ a chunked body as soon as the running total crosses the limit.
 The dashboard upload (``/api/upload``, #921) keeps the ``api`` buckets but has
 its own body limit ``RATE_LIMIT_UPLOAD_MAX_BODY_BYTES`` (default 26 MiB: one
 25 MiB file plus the multipart framing); the route checks each file again.
+The dashboard chat (``/api/chat``, #1023) likewise has
+``RATE_LIMIT_CHAT_MAX_BODY_BYTES`` (default 32 KiB); its turn limits per
+principal and per IP live in ``chat_dashboard``.
 The ``inbound`` class (#950) is not size-checked here by default
 (``RATE_LIMIT_INBOUND_MAX_BODY_BYTES`` = 0): a disabled inbound route must
 answer 404, never 413, so each route checks that its adapter is on and only
@@ -127,6 +130,10 @@ _JSON_CLASSES = frozenset({MCP, API, AUTH, INBOUND})
 # Paths with their own body limit (bytes); the class buckets still apply.
 UPLOAD_PATHS = frozenset({"/api/upload"})
 DEFAULT_UPLOAD_MAX_BODY_BYTES = 26 * 1024 * 1024
+# The dashboard chat (#1023): a question plus a bounded number of recent turns,
+# never a file. A small cap of its own (the route checks it again).
+CHAT_PATHS = frozenset({"/api/chat"})
+DEFAULT_CHAT_MAX_BODY_BYTES = 32 * 1024
 # 0 = the middleware does not size-check /inbound/*: each route answers 404
 # while its adapter is off and only then caps the body itself (infra review),
 # so a disabled route never answers 413.
@@ -244,6 +251,7 @@ class RateLimitConfig:
     max_principals: int = DEFAULT_MAX_PRINCIPALS
     static_bearer: str = ""
     upload_max_body_bytes: int = DEFAULT_UPLOAD_MAX_BODY_BYTES
+    chat_max_body_bytes: int = DEFAULT_CHAT_MAX_BODY_BYTES
 
     @classmethod
     def from_env(cls, static_bearer: str = "") -> RateLimitConfig:
@@ -284,6 +292,9 @@ class RateLimitConfig:
             static_bearer=static_bearer,
             upload_max_body_bytes=int(
                 _env_num("RATE_LIMIT_UPLOAD_MAX_BODY_BYTES", DEFAULT_UPLOAD_MAX_BODY_BYTES)
+            ),
+            chat_max_body_bytes=int(
+                _env_num("RATE_LIMIT_CHAT_MAX_BODY_BYTES", DEFAULT_CHAT_MAX_BODY_BYTES)
             ),
         )
 
@@ -613,6 +624,8 @@ class RateLimitMiddleware:
         max_body = self.limits[route_class].max_body_bytes
         if path in UPLOAD_PATHS:
             max_body = self.config.upload_max_body_bytes
+        elif path in CHAT_PATHS:
+            max_body = self.config.chat_max_body_bytes
 
         # 1. Body size from Content-Length — before reading anything.
         if max_body > 0:

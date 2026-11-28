@@ -105,7 +105,7 @@ async def _consent_rows(db: Database) -> list[dict]:
 
 
 def test_consent_version_is_the_approved_one():
-    assert CONSENT_VERSION == "2026-11-27.3"
+    assert CONSENT_VERSION == "2026-11-28"
 
 
 @pytest.mark.usefixtures("api")
@@ -290,7 +290,7 @@ async def test_privacy_matches_the_pipeline():
     assert "whole Google" in html and "only the folder you choose" in html
     assert "hasn't verified this app" in html and "at most 100" in html
     # consent record, access log, rights
-    assert "Consent version 2026-11-27.3" in html
+    assert "Consent version 2026-11-28" in html
     assert "keyed hash of your\ne-mail address" in html or "keyed hash of your e-mail" in html
     assert "GDPR Art. 9(2)(a)" in html
     assert "within 30 days" in html
@@ -322,7 +322,7 @@ async def test_privacy_numbers_match_the_code():
 
 async def test_terms_record_consent_and_manual_rights():
     html = await _text(server.terms_of_service)
-    assert "Consent version 2026-11-27.3" in html
+    assert "Consent version 2026-11-28" in html
     assert "legal guardian" in html
     assert "within 30 days" in html
     assert "cannot connect their own Google Drive yet" in html  # ONBOARDING_MODE=closed
@@ -370,8 +370,8 @@ async def test_terms_and_privacy_state_consent_by_sending():
     assert "odosielateľ nedostane žiadnu odpoveď" in privacy_sk
     # #950 (maintainer decision 2026-11-27): seven days to decide
     assert "for at most 7 days" in flat and "najviac 7 dní" in privacy_sk
-    assert "Consent version 2026-11-27.3" in terms and "Consent version 2026-11-27.3" in privacy
-    assert "Verzia súhlasu 2026-11-27.3" in terms_sk and "Verzia súhlasu 2026-11-27.3" in privacy_sk
+    assert "Consent version 2026-11-28" in terms and "Consent version 2026-11-28" in privacy
+    assert "Verzia súhlasu 2026-11-28" in terms_sk and "Verzia súhlasu 2026-11-28" in privacy_sk
 
 
 async def test_privacy_states_backup_restore_after_an_unclaimed_trial():
@@ -421,9 +421,31 @@ async def test_slovak_privacy_matches_the_pipeline():
 
 async def test_slovak_terms_record_consent_and_manual_rights():
     html = _flat(await _text(server.terms_of_service_sk))
-    assert "Verzia súhlasu 2026-11-27.3" in html
+    assert "Verzia súhlasu 2026-11-28" in html
     assert "zákonný zástupca" in html
     assert "do 30 dní" in html
     assert "nemôžu pripojiť vlastný Google Drive" in html and "na pozvánku" in html
     assert "500 dokumentov na pacienta" in html
     assert "nikdy natrvalo nemaže súbory" in html
+
+
+async def test_privacy_states_the_chat_history_rules():
+    """#1022: chat history encrypted per patient, 90 days -> trash, text deleted
+    30 days later, local model only, in the export, erased with the patient."""
+    from oncofiles import chat_retention_sql
+
+    assert chat_retention_sql.TRASH_AFTER_DAYS == 90
+    assert chat_retention_sql.PURGE_AFTER_TRASH_DAYS == 30
+    en = _flat(await _text(server.privacy_policy))
+    assert "encrypted separately for each patient" in en
+    assert "only by the local AI model on our own server, never by a cloud AI model" in en
+    assert "After 90 days a conversation moves to the trash" in en
+    assert "30 days later its text is permanently deleted" in en
+    assert "included in the patient's data export and is deleted together with the patient" in en
+    assert "its text is deleted 30 days later (section 3)" in en
+    sk = _flat(await _text(server.privacy_policy_sk))
+    assert "zašifrované zvlášť pre každého pacienta" in sk
+    assert "len lokálny AI model na našom vlastnom serveri, nikdy cloudový AI model" in sk
+    assert "Po 90 dňoch sa konverzácia presunie do koša" in sk
+    assert "o 30 dní neskôr sa jej text natrvalo vymaže" in sk
+    assert "súčasťou exportu údajov pacienta a vymaže sa spolu s pacientom" in sk

@@ -32,6 +32,7 @@ from typing import Any
 
 from oncofiles import (
     access_log_loop,
+    chat_retention,
     erase_retention,
     holding_loops,
     inbound_loop,
@@ -130,6 +131,18 @@ CATALOGUE: dict[str, tuple[str, str, str, str, str]] = {
         "Zmazanie záznamov prístupov do dashboardu starších ako 90 dní "
         "(beží aj pri SYNC_ENABLED=false)",
         "Delete dashboard access log rows older than 90 days (runs also with SYNC_ENABLED=false)",
+    ),
+    # Lifespan loop (oncofiles.chat_retention), not an APScheduler job (#1022).
+    chat_retention.JOB_ID: (
+        "infra",
+        "Retencia histórie chatu",
+        "Chat history retention",
+        "História chatu staršia ako 90 dní ide do koša a po ďalších 30 dňoch sa jej text "
+        "vymaže; riadi CHAT_RETENTION_MODE (predvolene vypnuté) "
+        "(beží aj pri SYNC_ENABLED=false)",
+        "Chat history older than 90 days moves to the trash and its text is deleted 30 days "
+        "later; controlled by CHAT_RETENTION_MODE (off by default) "
+        "(runs also with SYNC_ENABLED=false)",
     ),
     # A lifespan loop (oncofiles.erase_retention), not an APScheduler job (#856).
     erase_retention.JOB_ID: (
@@ -258,6 +271,7 @@ INTERVAL_LOOPS = {
     **holding_loops.JOBS,
     **inbound_loop.JOBS,
     **access_log_loop.JOBS,
+    **chat_retention.JOBS,
     **oauth_cleanup_loop.JOBS,
     **memory_check_loop.JOBS,
 }

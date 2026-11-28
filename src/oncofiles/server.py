@@ -492,6 +492,21 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         ),
     )
 
+    # #1022: the chat history retention (daily 04:45 UTC: 90 days -> trash,
+    # 30 more days -> text purged). A lifespan loop from the start (never an
+    # APScheduler job); it touches nothing unless CHAT_RETENTION_MODE says
+    # report / on (default off, infra condition). One per process.
+    from oncofiles.chat_retention import JOB_ID as CHAT_RETENTION_JOB
+    from oncofiles.chat_retention import chat_retention_loop
+
+    chat_retention_task, _ = scheduler_singleton.ensure_background_loop(
+        CHAT_RETENTION_JOB,
+        lambda: asyncio.create_task(
+            # literal job name: the #925 lock reads it (== CHAT_RETENTION_JOB, tested)
+            local_only_task("chat_history_retention", chat_retention_loop)(db, _sync_semaphore)
+        ),
+    )
+
     # #999: the MCP OAuth token cleanup (daily 04:00 UTC, expired rows past a
     # 30-day grace) was an APScheduler job, which never starts in prod. This
     # loop is its only owner (startup grace, catch-up past the slot, once per
@@ -579,6 +594,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             (HOLDING_EXTRACT_JOB, holding_extract_task),
             (INBOUND_QUEUE_JOB, inbound_queue_task),
             (ACCESS_LOG_RETENTION_JOB, access_log_task),
+            (CHAT_RETENTION_JOB, chat_retention_task),
             (OAUTH_TOKEN_CLEANUP_JOB, oauth_cleanup_task),
             (MEMORY_CHECK_JOB, memory_check_task),
             (signal_channel.JOB_ID, signal_task),
@@ -2664,8 +2680,8 @@ async def privacy_policy(request: Request) -> HTMLResponse:
             "Privacy Policy",
             path="/privacy",
             body_html="""
-<p class="meta">Effective: March 25, 2026 · Last updated: November 27, 2026 ·
-Consent version 2026-11-27.3</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 28, 2026 ·
+Consent version 2026-11-28</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2682,8 +2698,8 @@ phone. Oncofiles reads and changes <strong>only the folder you choose</strong> f
 Inside that folder it may rename files to a standard name, move them into subfolders (for
 example Labs or Reports), add a text transcript (<code>.md</code>) next to each file, and keep a
 <code>README.md</code> with the folder's rules and a few files that record its own work.
-<strong>Oncofiles never permanently deletes anything.</strong> Automatic processing does not
-move your files to the trash.</li>
+<strong>Oncofiles never permanently deletes anything in your Google Drive.</strong>
+Automatic processing does not move your files to the trash.</li>
 <li><strong>Gmail and Google Calendar</strong> — not used at the moment. If we add them later,
 we will ask for your separate consent first.</li>
 </ul>
@@ -2743,6 +2759,13 @@ plain text of such an e-mail is kept with them,
 encrypted, for the same period and deleted together with the files, and the caregiver's
 dashboard shows a small preview picture of each attachment. Documents removed after an
 unclaimed trial can still be restored from encrypted backups for up to 6 months.</p>
+<h3 id="chat">Chat with your records</h3>
+<p>If you use the chat built into Oncofiles, your questions and its answers are stored on our
+server, encrypted separately for each patient, so that a conversation can be continued. They are
+processed only by the local AI model on our own server, never by a cloud AI model. After 90 days
+a conversation moves to the trash, where it can still be restored, and 30 days later its text is
+permanently deleted. The chat history is included in the patient's data export and is deleted
+together with the patient.</p>
 <p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
 unrelated to managing your medical documents.</p>
 
@@ -2751,8 +2774,8 @@ unrelated to managing your medical documents.</p>
 <li><strong>On our server in Slovakia (EU), on an encrypted disk</strong> — the patient profile
 (name, date of birth, patient type, an optional diagnosis note and the caregiver's e-mail
 address), the Google access token for Drive, the document index, the recognised text, extracted
-values with their verification state, the consent record (section 2) and the access log
-(section 6).</li>
+values with their verification state, the encrypted chat history (section 3), the consent
+record (section 2) and the access log (section 6).</li>
 <li><strong>Backups</strong> — local and encrypted, kept for a limited time. Before a bulk update
 of extracted values, and before deleting a patient on request, the server also makes a safety
 copy of the database; only the 5 newest safety copies are kept.</li>
@@ -2802,7 +2825,8 @@ itself). These rows are deleted automatically after 90 days.</p>
 <p>Your data is retained as long as your account is active. Oncofiles does not delete your
 documents, their text, extracted values or patient records automatically. Only technical
 records expire on a schedule, for example the application log after 7 days, other server logs
-after at most 30 days (section 4) and the dashboard access log after 90 days (section 6). You
+after at most 30 days (section 4) and the dashboard access log after 90 days (section 6). Chat
+history moves to the trash after 90 days and its text is deleted 30 days later (section 3). You
 can ask us to delete all data stored about a patient, including extracted values and the
 access log; see section 8.
 Original files in your Google Drive are never deleted by Oncofiles.</p>
@@ -2856,7 +2880,7 @@ async def terms_of_service(request: Request) -> HTMLResponse:
             path="/terms",
             body_html="""
 <p class="meta">Effective: March 25, 2026 · Last updated: November 27, 2026 ·
-Consent version 2026-11-27.3</p>
+Consent version 2026-11-28</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
@@ -4363,6 +4387,10 @@ async def readiness(request: Request) -> JSONResponse:
                 jobs[job_id]["last_deleted"] = st["last_deleted"]
             if "memory" in st:  # the memory check's report (#999 job 5), counts + codes
                 jobs[job_id]["memory"] = st["memory"]
+            if "mode" in st:  # #1022 chat retention: off | report | on
+                jobs[job_id]["mode"] = st["mode"]
+            if "chat_history" in st:  # #1022 storage API counters (codes, counts)
+                jobs[job_id]["chat_history"] = st["chat_history"]
         result["jobs"] = jobs
         # #441 Layer 6: cluster-wide AI cost in the last 24h. Cheap aggregate
         # query — operator-only, like the rest of the readiness payload.
@@ -6883,10 +6911,17 @@ async def api_list_patients(request: Request) -> JSONResponse:
                 "created_at": p.created_at.isoformat() if p.created_at else None,
             }
 
+        from oncofiles import chat_dashboard
+
         if is_bearer:
-            # MCP/system: all patients as own
+            # MCP/system: all patients as own; the operator bearer has no chat (#1023)
             return JSONResponse(
-                {"own": [_to_dict(p) for p in all_patients], "admin": [], "is_admin": False}
+                {
+                    "own": [_to_dict(p) for p in all_patients],
+                    "admin": [],
+                    "is_admin": False,
+                    "chat_enabled": False,
+                }
             )
 
         own = [p for p in all_patients if _email_matches_caregiver(email or "", p.caregiver_email)]
@@ -6900,6 +6935,9 @@ async def api_list_patients(request: Request) -> JSONResponse:
                 "own": [_to_dict(p) for p in own],
                 "admin": [_to_dict(p) for p in admin_patients],
                 "is_admin": is_admin,
+                # #1023: the Chat section shows only for "own" patients (the
+                # server refuses an admin's read-only view of another one).
+                "chat_enabled": chat_dashboard.enabled(),
             }
         )
     except Exception:
@@ -8193,6 +8231,163 @@ async def api_curated_confirm_review(request: Request) -> JSONResponse:
     except Exception:
         logger.exception("API curated confirm-review error")
         return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+# ── #1023: the dashboard chat (caregiver only, local model only) ───────────
+
+
+def _chat_disabled() -> bool:
+    """True while ``CHAT_ENABLED`` is off: the chat routes then raise the app's
+    unknown-path 404 before anything else (no auth, no body read)."""
+    from oncofiles import chat_dashboard
+
+    return not chat_dashboard.enabled()
+
+
+async def _chat_caregiver_refusal(
+    request: Request, db_inst: Database, patient_id: str
+) -> JSONResponse | None:
+    """Caregiver only (maintainer decision 2026-11-27, #1018): runs after the
+    #867 helper. An admin who is not this patient's caregiver and the operator
+    bearer get the same ``_patient_not_found()`` as a foreign patient; a
+    session caller's refusal is recorded as #868 ``acl_refused``."""
+    if _check_bearer(request) is None:
+        return _patient_not_found()  # the operator is not a dashboard session
+    email = _get_dashboard_email(request)
+    patient = await db_inst.get_patient(patient_id) if email else None
+    if email and patient and _email_matches_caregiver(email, patient.caregiver_email):
+        return None
+    logger.warning(
+        "chat ACL: not the caregiver caller=%s patient=%s",
+        _acl_caller_log_id(email),
+        patient_id[:8],
+    )
+    await dashboard_audit.record(
+        db_inst,
+        "acl_refused",
+        email=email,
+        is_admin=_is_admin_email(email),
+        patient_id=patient_id,
+        route=dashboard_audit.route_name(request),
+    )
+    return _patient_not_found()
+
+
+@mcp.custom_route("/api/chat", methods=["POST"])
+async def api_chat(request: Request) -> Response:
+    """Ask the chat about ONE patient's records (#1023); NDJSON event stream.
+
+    Order: (rate-limit class ``api`` with a 32 KiB body cap, in the middleware)
+    → flag (off = the unknown-path 404) → dashboard auth → body (capped again
+    here) → ``_dashboard_body_patient`` (#867: unknown and foreign are the same
+    404) → caregiver only (admin non-caregiver and operator bearer: the same
+    404, recorded as #868) → Origin check → request validation → one running
+    answer per principal (409 ``busy``) → turn limits per principal and per IP
+    (429 + Retry-After) → ``chat.core.answer`` streamed as NDJSON lines
+    ``{"type": status|delta|citation|done|error, "data": …}``. The local model
+    only (the core; no cloud fallback). Logs: counts and codes only.
+    """
+    if _chat_disabled():
+        from oncofiles.hidden_routes import unknown_path
+
+        raise unknown_path()
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    from starlette.responses import StreamingResponse
+
+    from oncofiles import chat_dashboard
+    from oncofiles.chat import core as chat_core
+
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > chat_dashboard.MAX_BODY_BYTES:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    raw = await request.body()
+    if len(raw) > chat_dashboard.MAX_BODY_BYTES:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    try:
+        body = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    patient_id, acl_err = await _dashboard_body_patient(
+        request, db_inst, str(body.get("patient_id") or "")
+    )
+    if acl_err is not None:
+        return acl_err
+    refusal = await _chat_caregiver_refusal(request, db_inst, patient_id)
+    if refusal is not None:
+        return refusal
+    bad_origin = _cross_origin(request)
+    if bad_origin is not None:
+        return bad_origin
+    lang = body.get("lang")
+    messages = chat_core.validate(body.get("messages"), lang)
+    if messages is None:
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+    email = (_get_dashboard_email(request) or "").strip().lower()
+    if chat_core.is_busy(email):
+        return JSONResponse(
+            {
+                "error": "busy",
+                "message_sk": "Ešte odpovedám na vašu predchádzajúcu otázku.",
+                "message_en": "I am still answering your previous question.",
+            },
+            status_code=409,
+        )
+    wait = chat_dashboard.limiter.take(
+        chat_dashboard.principal_key(email), chat_dashboard.client_ip(request.scope)
+    )
+    if wait > 0:
+        retry_after = max(1, int(wait + 0.999))
+        logger.info("chat http: rate_limited retry_after=%ds", retry_after)
+        return JSONResponse(
+            {"error": "rate_limited", "retry_after": retry_after},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
+    return StreamingResponse(
+        chat_dashboard.stream(
+            db_inst, patient_id=patient_id, principal=email, messages=messages, lang=lang
+        ),
+        media_type=chat_dashboard.MEDIA_TYPE,
+        headers=chat_dashboard.STREAM_HEADERS,
+    )
+
+
+@mcp.custom_route("/api/chat/suggestions", methods=["GET"])
+async def api_chat_suggestions(request: Request) -> JSONResponse:
+    """Three to five suggested questions from the patient's data (#1023).
+
+    The same ACL as ``POST /api/chat`` (#867 helper, then caregiver only), no
+    model call, no Drive call: ``chat_dashboard.suggestions`` (SK + EN)."""
+    if _chat_disabled():
+        from oncofiles.hidden_routes import unknown_path
+
+        raise unknown_path()
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    from oncofiles import chat_dashboard
+
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    patient_id, refusal = await _dashboard_patient_or_refusal(request)
+    if refusal is not None:
+        return refusal
+    refusal = await _chat_caregiver_refusal(request, db_inst, patient_id)
+    if refusal is not None:
+        return refusal
+    try:
+        items = await chat_dashboard.suggestions(db_inst, patient_id)
+    except Exception as exc:
+        logger.warning("chat suggestions failed (%s)", type(exc).__name__)
+        items = []
+    return JSONResponse({"suggestions": items}, headers={"Cache-Control": "no-store"})
 
 
 @mcp.custom_route("/api/inbound-unmatched", methods=["GET"])
