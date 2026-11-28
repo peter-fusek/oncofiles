@@ -351,6 +351,10 @@ MODEL_CALLERS = {
     ("curated/classify.py", "propose"):
         "inbox classification; every propose_fn call in runner.py is guarded by "
         "llm_input.inbox_exclusion",
+    ("chat/core.py", "_call_llm"):
+        "the chat core (#1020): only the caller's question and this patient's read-tool "
+        "results (no page text); chat.tools drops raw genotype documents by "
+        "llm_input.extraction_exclusion and any result with rsIDs",
 }  # fmt: skip
 
 

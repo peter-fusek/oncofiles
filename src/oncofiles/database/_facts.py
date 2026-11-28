@@ -856,6 +856,17 @@ class FactsMixin:
             places = _rows(await cur.fetchall())
         return {"practitioners": people, "organizations": places}
 
+    async def document_institution_counts(self, *, patient_id: str) -> dict[str, int]:
+        """``{institution: documents}`` of one patient's active documents (the
+        exact stored values, for the chat router's institution intent, #1020)."""
+        async with self.db.execute(
+            "SELECT institution, COUNT(*) AS n FROM documents "
+            "WHERE patient_id = ? AND deleted_at IS NULL AND institution IS NOT NULL "
+            "AND TRIM(institution) != '' GROUP BY institution ORDER BY n DESC",
+            (patient_id,),
+        ) as cur:
+            return {r["institution"]: r["n"] for r in _rows(await cur.fetchall())}
+
     async def document_category_counts(self, *, patient_id: str) -> dict:
         async with self.db.execute(
             "SELECT category, COUNT(*) AS n, MIN(document_date) AS first_at, "
