@@ -30,7 +30,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from oncofiles import config
+from oncofiles import cloud_guard, config
 from oncofiles.curated import llm_lanes
 
 logger = logging.getLogger(__name__)
@@ -61,6 +61,47 @@ def job_call_overrides() -> dict | None:
     """The overrides of the current context (``scorecard_call_overrides``), or None."""
     current = _JOB_OVERRIDES.get()
     return dict(current) if current is not None else None
+
+
+# #1044: which code path made a call, for the ``local llm call:`` log line
+# only (never sent to the model, never content). A fixed allowlist: an unknown
+# code is logged as ``other``. ``caller=None`` falls back to the context: the
+# chat scorecard's (``chat_scorecard``), else the enclosing
+# ``cloud_guard.local_only`` zone when its name is a code here (the chat
+# core's zone is "chat", holding's "holding_extract") or is mapped in
+# ``ZONE_CALLERS``, else ``other``.
+CALLERS = frozenset(
+    {
+        "ocr_ingest",  # ingest transcription of one page (curated run)
+        "ocr_retry",  # the #806/#931 near-empty retry of an ingest page
+        "orientation",  # the direction question (#609/#882)
+        "orientation_probe",  # a re-OCR reading that only settles an unsure direction
+        "reocr_pass",  # a re-OCR / re-read / compare pass over a whole page
+        "reocr_tile",  # one half of a re-OCR second pass (#883)
+        "reocr_retry",  # the near-empty retry of a re-OCR pass
+        "classify",  # curated classification (#926)
+        "extract_lab",  # LLM lab extractor (#714)
+        "extract_clinical",  # LLM clinical extractor (#726)
+        "chat",  # the dashboard / Signal chat core (#1020)
+        "chat_scorecard",  # the chat scorecard (#1025)
+        "holding_extract",  # ingest transcription of a held trial document (#950)
+        "other",
+    }
+)
+ZONE_CALLERS = {"curated chat scorecard": "chat_scorecard"}
+
+
+def resolve_caller(caller: str | None) -> str:
+    """The logged caller code: an allowlisted ``caller``; an unknown one is
+    ``other``; ``None`` falls back to the context (see ``CALLERS``)."""
+    if caller is not None:
+        return caller if caller in CALLERS else "other"
+    if _JOB_OVERRIDES.get() is not None:
+        return "chat_scorecard"
+    zone = cloud_guard.local_only_job() or ""
+    if zone in CALLERS:
+        return zone
+    return ZONE_CALLERS.get(zone, "other")
 
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.S)
@@ -403,6 +444,7 @@ def chat(
     reasoning_marker: bool | None = None,
     lane: str = "background",
     slot_timeout: float | None = None,
+    caller: str | None = None,
 ) -> str:
     """One blocking chat completion; returns the answer text.
 
@@ -443,7 +485,11 @@ def chat(
     :class:`LocalLLMLaneBusyError` is raised and nothing is sent. With a
     ``slot_timeout`` ``info`` also gets ``lane_wait_s`` (seconds waited for
     the slot) and, on that error, ``lane_timeout: True``; without one the
-    ``info`` keys are unchanged."""
+    ``info`` keys are unchanged.
+    ``caller`` (#1044): a code from ``CALLERS`` naming the code path, written
+    to the usage log line only (``resolve_caller``) together with
+    ``marker=on|off``; never sent, so the request body is the same with or
+    without it."""
     if not configured():
         raise LocalLLMTransportError("LOCAL_LLM_BASE_URL / LOCAL_LLM_MODEL not set")
     require_private_base_url()  # #925: before anything is built or sent
@@ -556,7 +602,9 @@ def chat(
         )
         info["reasoning_content"] = reasoning if isinstance(reasoning, str) else ""
     effective_timeout = timeout or (config.LOCAL_LLM_TIMEOUT_S if own else "client")
-    usage = _log_usage(resp, choice, payload, est, time.monotonic() - t0, timeout=effective_timeout)
+    usage = _log_usage(resp, choice, payload, est, time.monotonic() - t0,
+                       timeout=effective_timeout, caller=resolve_caller(caller),
+                       marker=marker)  # fmt: skip
     if info is not None:
         info.update(usage)  # counts only
     if not (content or "").strip() and choice.get("finish_reason") == "length":
@@ -579,10 +627,13 @@ def _is_overflow(resp) -> bool:
 
 
 def _log_usage(
-    resp, choice: dict, payload: dict, est: int, seconds: float, *, timeout: float | str | None
-) -> dict:
+    resp, choice: dict, payload: dict, est: int, seconds: float, *, timeout: float | str | None,
+    caller: str = "other", marker: bool = False,
+) -> dict:  # fmt: skip
     """Token counts and the effective request parameters per call — numbers
-    only, never prompt or answer text. Returns the token counts."""
+    and codes only, never prompt or answer text. ``caller`` (an allowlisted
+    code, #1044) and ``marker`` (the #770 reasoning marker, on/off) are
+    logged too. Returns the token counts."""
     try:
         usage = resp.json().get("usage") or {}
     except (ValueError, AttributeError):
@@ -599,7 +650,8 @@ def _log_usage(
     logger.info(
         "local llm call: prompt_tokens=%s completion_tokens=%s reasoning_tokens=%s "
         "max_tokens=%s prompt_estimate=%s finish=%s seconds=%.1f "
-        "temperature=%s top_p=%s top_k=%s presence_penalty=%s thinking=%s timeout=%s",
+        "temperature=%s top_p=%s top_k=%s presence_penalty=%s thinking=%s timeout=%s "
+        "caller=%s marker=%s",
         counts["prompt_tokens"],
         counts["completion_tokens"],
         counts["reasoning_tokens"],
@@ -613,6 +665,8 @@ def _log_usage(
         payload.get("presence_penalty"),
         "default" if thinking is None else ("on" if thinking else "off"),
         timeout,
+        caller if caller in CALLERS else "other",
+        "on" if marker else "off",
     )
     return counts
 

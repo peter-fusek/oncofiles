@@ -416,7 +416,7 @@ def _vision_passes(
     content: bytes, ext: str, dpis: list[int], client, *, parallel: int = 1,
     second_pass_pages: Collection[int] | None = None, adaptive: bool = False,
     usage: list[dict] | None = None, retry_thin: bool = False, diag: dict | None = None,
-    model: str | None = None,
+    model: str | None = None, reasoning_marker: bool | None = None,
 ) -> list[list[str | None]]:  # fmt: skip
     """One answer list per DPI. Memory-bounded (#667): one page is rendered,
     sent and freed at a time. With ``parallel`` ≥ 2 (#593) the passes of that
@@ -468,6 +468,15 @@ def _vision_passes(
     question and its probe readings). Only the dry re-OCR compare passes it
     (validated by the tool first); it is sent only when given, so every
     production request body is unchanged, and the usage records then carry it.
+
+    ``reasoning_marker`` (``None`` = today's behaviour, #1044): the dry re-OCR
+    compare's per-job #770 marker A/B. Given, it is passed explicitly to every
+    call of this read: the orientation question, the probe readings, both
+    passes and the second-pass halves get ``reasoning_marker=<it>`` and, when
+    on, ``thinking=False`` (off keeps ``REOCR_THINKING``); the near-empty
+    retry keeps ``extract.RETRY_MODE`` (thinking off, marker on), which is what
+    production's retry already sends, so "off" reproduces production exactly.
+    The usage records then carry ``reasoning_marker: "on" | "off"``.
     """
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -480,6 +489,10 @@ def _vision_passes(
 
     tiles = second_pass_tiles()
     over = {"model": model} if model is not None else {}
+    marked = {"reasoning_marker": bool(reasoning_marker)} if reasoning_marker is not None else {}
+    # what the usage records carry (codes only): the model and the marker override
+    rec_over = {**over, **({"reasoning_marker": "on" if reasoning_marker else "off"}
+                           if reasoning_marker is not None else {})}  # fmt: skip
 
     def call(part: dict, i: int, total: int, k: int = 0, retry: bool = False,
              probe: bool = False, tile: tuple[int, int] | None = None,
@@ -493,8 +506,15 @@ def _vision_passes(
         error = None
         if retry:  # #806: thinking off through the per-call marker, nothing global
             mode = dict(extract_mod.RETRY_MODE)
+            caller = "reocr_retry"
         else:
             mode = {"thinking": False if config.REOCR_THINKING == "off" else None}
+            if marked:  # #1044 compare A/B: explicit marker, thinking off when on
+                mode.update(marked)
+                if reasoning_marker:
+                    mode["thinking"] = False
+            caller = ("orientation_probe" if probe
+                      else "reocr_tile" if tile is not None else "reocr_pass")  # fmt: skip
         try:
             text = llm.chat(
                 REOCR_SYSTEM_PROMPT,
@@ -503,6 +523,7 @@ def _vision_passes(
                 reasoning_effort="high",
                 client=client,
                 info=info,
+                caller=caller,
                 **mode,
                 **over,
             )
@@ -525,7 +546,9 @@ def _vision_passes(
                         rec.update(tile=tile[0], tiles=tile[1])
                     if meta:
                         rec.update(meta)
-                    rec.update(over)
+                    rec.update(rec_over)
+                    if retry and marked:  # the retry always sends RETRY_MODE's marker
+                        rec["reasoning_marker"] = "on"
                     with lock:
                         usage.append(rec)
                 except Exception as rec_exc:
@@ -570,10 +593,11 @@ def _vision_passes(
             asked[0] += 1
             record: dict = {}
             try:
-                return orientation.ask_rotation(image, client=client, record=record, **over)
+                return orientation.ask_rotation(image, client=client, record=record,
+                                                **over, **marked)  # fmt: skip
             finally:
                 if usage is not None and record:  # #882: the question itself, counts only
-                    rec = {"page": i + 1, "pass": 0, "kind": "orientation", **record, **over}
+                    rec = {"page": i + 1, "pass": 0, "kind": "orientation", **record, **rec_over}
                     if recheck:
                         rec["recheck"] = True
                     with lock:
@@ -826,7 +850,7 @@ def reocr_dpis(passes: int, purpose: str = "reocr") -> list[int]:
 def reread(
     name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None,
     parallel: int = 1, second_pass_pages: Collection[int] | None = None,
-    purpose: str = "reocr", model: str | None = None,
+    purpose: str = "reocr", model: str | None = None, reasoning_marker: bool | None = None,
 ) -> Reread:  # fmt: skip
     """Read a source again, locally. Never raises. ``doc_ref`` (a document id)
     is what logs show: filenames can carry names or diagnoses.
@@ -835,7 +859,8 @@ def reread(
     ``purpose``: "reocr" (default, text written back) or "reread" (verify-only);
     it picks the dpi settings (``reocr_dpis``).
     ``model``: see ``_vision_passes`` (dry re-OCR compare only); the
-    ``engine`` then names that model."""
+    ``engine`` then names that model. ``reasoning_marker``: see
+    ``_vision_passes`` (dry re-OCR compare only, #1044)."""
     ext = extract_mod._ext(name)
     engine = model or llm.model_id()
     usage: list[dict] = []  # per-pass LLM usage (#800), kept also when a pass fails
@@ -863,6 +888,7 @@ def reread(
                 content, ext, dpis, client, parallel=parallel, adaptive=adaptive,
                 second_pass_pages=second_pass_pages if adaptive else None, usage=usage,
                 retry_thin=purpose == "reocr", diag=diag, model=model,
+                reasoning_marker=reasoning_marker,
             )  # fmt: skip
         seconds = round(time.monotonic() - t0, 1)
         first, hand = _strip_handwritten(answers[0])
@@ -898,7 +924,7 @@ def reread(
 def reread_isolated(
     name: str, content: bytes, mime: str = "", *, passes: int = 2, doc_ref: object = None,
     parallel: int = 1, second_pass_pages: Collection[int] | None = None,
-    purpose: str = "reocr", model: str | None = None,
+    purpose: str = "reocr", model: str | None = None, reasoning_marker: bool | None = None,
 ) -> Reread:  # fmt: skip
     """``reread`` in a short-lived child process (#667).
 
@@ -907,7 +933,8 @@ def reread_isolated(
     (``reocr_child``) gets only an allowlisted environment, never a secret, and
     reads inside ``local_only``. Never raises: a failed child is a failed
     document, not a failed job. ``model`` (dry re-OCR compare only) rides in
-    the header only when given, so every production header is unchanged."""
+    the header only when given, so every production header is unchanged;
+    so does ``reasoning_marker`` (#1044)."""
     import json as _json
     import subprocess
     import sys
@@ -927,6 +954,11 @@ def reread_isolated(
                     None if second_pass_pages is None else sorted(second_pass_pages)
                 ),
                 **({"model": model} if model is not None else {}),
+                **(
+                    {"reasoning_marker": bool(reasoning_marker)}
+                    if reasoning_marker is not None
+                    else {}
+                ),
             },
             default=str,  # fmt: skip
         ).encode()

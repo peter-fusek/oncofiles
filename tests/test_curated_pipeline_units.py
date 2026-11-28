@@ -409,8 +409,9 @@ def test_propose_retries_once_with_double_budget_when_truncated(monkeypatch):
     assert classify.propose(CONTRACT, TEXT)["doc_type"] == "Report"
     # CURATED_CLASSIFY_PROMPT=v1 (default): the pre-#926 request, no extra kwargs
     # (v2's retry: tests/test_926_classification.py)
-    # (``info`` is an output dict for token counts, never part of the request)
-    sent = [{k: v for k, v in c.items() if k != "info"} for c in calls]
+    # (``info`` is an output dict for token counts and ``caller`` a #1044 log
+    # code: neither is part of the request)
+    sent = [{k: v for k, v in c.items() if k not in ("info", "caller")} for c in calls]
     first, retry = sent
     assert first == {} and retry["max_tokens"] == 2 * llm.REASONING_BUDGET
     assert calls[1]["timeout"] > 0

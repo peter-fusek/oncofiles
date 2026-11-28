@@ -29,6 +29,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from oncofiles import cloud_guard
 from oncofiles.curated import llm, llm_input, ocr_markers, orientation
 
 logger = logging.getLogger(__name__)
@@ -226,6 +227,10 @@ def _vision_pages(png_pages: list[bytes], hints: list | None = None) -> VisionRe
     ``hints``: per page an ``orientation.Hint`` or None."""
     calls = 0
     retried: set[int] = set()
+    # #1044 log code: the holding reader shares this ingest path
+    ingest = (
+        "holding_extract" if cloud_guard.local_only_job() == "holding_extract" else "ocr_ingest"
+    )
 
     def ask(image: bytes, *, client=None):
         nonlocal calls
@@ -247,7 +252,8 @@ def _vision_pages(png_pages: list[bytes], hints: list | None = None) -> VisionRe
             def once(**mode) -> tuple[str, tuple]:
                 info: dict = {}
                 try:
-                    text = llm.chat(OCR_SYSTEM_PROMPT, content, info=info, **mode)
+                    text = llm.chat(OCR_SYSTEM_PROMPT, content, info=info,
+                                    caller="ocr_retry" if mode else ingest, **mode)  # fmt: skip
                     return text, (info.get("reasoning_tokens"), info.get("completion_tokens"))
                 finally:
                     info.clear()  # the raw answer channels never outlive the call
