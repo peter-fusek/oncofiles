@@ -21,15 +21,24 @@ slug can widen it) and ``cloud_guard.local_only("chat")`` covers every step.
 1. The deterministic person check (``router.other_person``) refuses a
    question about another person BEFORE any model call.
 2. The intent router (``router.route``) picks tool calls for a recognised
-   intent and the model only writes the answer; otherwise the strict JSON
-   next-action loop (``{"action": "tool"|"answer", …}``, at most
-   ``MAX_STEPS`` model calls). Thinking off, no native tool_calls.
+   intent and the model only writes the answer (``ROUTER_ANSWER_BUDGET``);
+   otherwise the strict JSON next-action loop (``{"action": "tool"|"answer",
+   …}``, at most ``MAX_STEPS`` model calls, ``JSON_STEP_BUDGET`` each, the
+   last one told to answer; each tool result shown to the model capped at
+   ``TOOL_RESULT_MODEL_BYTES``, all of them at ``TOOL_CONTEXT_BYTES`` with the
+   oldest summarised to their sources; ``EMPTY_RESULTS_STOP`` tool calls in a
+   row without new data end the loop with the not-found answer). Thinking
+   off, no native tool_calls. A cut answer (``finish_reason=length``) is
+   never shown: it takes the safe path like an empty one.
 3. Guards: an empty answer becomes the deterministic not-found text with the
    tools and documents searched; every number and date must be grounded in
    this turn's tool results or the question (``grounding``), otherwise one
    regeneration naming the offending tokens, then the safe not-found text.
 4. Citations only from tool results, unverified values marked, one fixed
-   SK/EN disclaimer line on every answer.
+   SK/EN disclaimer line on every answer. An ``answered`` result always
+   carries at least one citation (a ``timeline`` citation without a document
+   id when a planned row names none); an answer no tool result supports is
+   replaced by the not-found text (``uncited_replaced``).
 
 The model is only ``oncofiles.curated.llm.chat`` (the #925 host check
 applies). There is NO cloud fallback: a busy or unavailable model is an
@@ -42,6 +51,7 @@ route and model only, never question or answer text, names or values.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -62,9 +72,20 @@ CHAT_JOB = "chat"
 MAX_MESSAGES = 12  # turns the caller may send (user + assistant)
 MAX_MESSAGE_BYTES = 4_000
 MAX_TOTAL_BYTES = 16_000
-MAX_STEPS = 5  # model calls of the JSON loop (the regeneration is extra)
-CALL_TIMEOUT_S = 90.0  # per model call
-ANSWER_BUDGET = 2_000  # max_tokens per call, thinking off
+MAX_STEPS = 3  # model calls of the JSON loop (the regeneration is extra)
+# #1020 tuning after the first #1025 scorecard: the model writes ~17 tokens/s,
+# so the answer length is the speed; the prompt asks for ~120 words.
+ROUTER_ANSWER_BUDGET = 400  # max_tokens of the router's answer call, thinking off
+JSON_STEP_BUDGET = 500  # max_tokens of one JSON-loop reply (an action or the answer)
+TOOL_RESULT_MODEL_BYTES = 2_500  # one tool result as the JSON loop shows it
+TOOL_CONTEXT_BYTES = 6_000  # all tool results of one JSON-loop prompt
+EMPTY_RESULTS_STOP = 2  # tool calls in a row without new data end the JSON loop
+# A person waits for an interactive turn; a background caller (the scorecard,
+# ``llm.job_call_overrides()``) may wait longer for a slot before model_busy.
+CALL_TIMEOUT_S = 90.0  # per model call, interactive
+BACKGROUND_CALL_TIMEOUT_S = 300.0
+INTERACTIVE_LANE_WAIT_S = 60.0  # longest wait for an arbiter slot, interactive
+BACKGROUND_LANE_WAIT_S = 300.0
 MAX_CITATIONS = 8
 # In memory per process and UTC day. TODO(#1022): persist the per-patient
 # daily turn count with the chat history.
@@ -97,8 +118,13 @@ class Stats:
     invalid_actions: int = 0
     answer_errors: int = 0
     max_steps_hit: bool = False
+    early_stop: bool = False  # EMPTY_RESULTS_STOP tool calls without new data
+    truncated: int = 0  # answers cut at the budget (finish=length), never shown
+    tool_context_summarised: int = 0  # tool results shown to the model as sources only
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    lane_wait_seconds: float = 0.0  # summed waits for an arbiter slot
+    lane_timeouts: int = 0
     grounding: dict = field(
         default_factory=lambda: {
             "checked": 0,
@@ -109,6 +135,7 @@ class Stats:
         }  # fmt: skip
     )
     result: str = "answered"  # answered | not_found | refused | grounding_replaced
+    uncited_replaced: bool = False  # an answer without any citation became not-found
 
 
 def _today() -> str:
@@ -275,19 +302,35 @@ async def _frame(db, pid: str) -> Frame:
     return Frame(patient_name=display, vocab=vocab)
 
 
-def _call_llm(system: str, user: str, info: dict) -> str:
+def _background() -> bool:
+    """True inside a background job's context (the chat scorecard, #1025)."""
+    job = llm.job_call_overrides()
+    return bool(job) and job.get("lane") == "background"
+
+
+def lane_limits() -> tuple[float, float]:
+    """(longest slot wait, per-call timeout) for this context: a background
+    caller waits longer before ``model_busy``; a person keeps the short one."""
+    if _background():
+        return BACKGROUND_LANE_WAIT_S, BACKGROUND_CALL_TIMEOUT_S
+    return INTERACTIVE_LANE_WAIT_S, CALL_TIMEOUT_S
+
+
+def _call_llm(system: str, user: str, info: dict, max_tokens: int = ROUTER_ANSWER_BUDGET) -> str:
     """The one place the chat hands content to the local model (thinking off).
 
     Content = this patient's tool results (read tools, raw genotype excluded
     by ``chat.tools``) and the caller's question; no page text is read."""
+    slot_wait, call_timeout = lane_limits()
     return llm.chat(
         system,
         user,
-        max_tokens=ANSWER_BUDGET,
-        timeout=CALL_TIMEOUT_S,
+        max_tokens=max_tokens,
+        timeout=call_timeout,
         thinking=False,
         info=info,
         lane="interactive",  # #1021/#1023: a person is waiting for this answer
+        slot_timeout=slot_wait,
         **llm.sampling_profile("qwen_non_thinking"),
     )
 
@@ -296,23 +339,39 @@ def _unavailable_code(exc: Exception) -> str:
     text = str(exc)
     if isinstance(exc, llm.LocalLLMHostRefusedError):
         return "model_unavailable"
+    if isinstance(exc, llm.LocalLLMLaneBusyError):
+        return "model_busy"
     if re.search(r"HTTP (429|503)|Timeout", text):
         return "model_busy"
     return "model_unavailable"
 
 
-async def _model(system: str, user: str, stats: Stats) -> str:
+def _lane_counts(stats: Stats, info: dict) -> None:
+    wait = info.get("lane_wait_s")
+    if isinstance(wait, int | float) and not isinstance(wait, bool):
+        stats.lane_wait_seconds = round(stats.lane_wait_seconds + float(wait), 3)
+    if info.get("lane_timeout"):
+        stats.lane_timeouts += 1
+
+
+async def _model(system: str, user: str, stats: Stats, max_tokens: int) -> str:
     stats.model_calls += 1
     info: dict = {}
     try:
-        text = await asyncio.to_thread(_call_llm, system, user, info)
+        text = await asyncio.to_thread(_call_llm, system, user, info, max_tokens)
     except llm.LocalLLMAnswerError:
+        _lane_counts(stats, info)
         stats.answer_errors += 1
         return ""
     except llm.LocalLLMError as exc:
+        _lane_counts(stats, info)
         raise ModelUnavailableError(_unavailable_code(exc)) from exc
+    _lane_counts(stats, info)
     stats.prompt_tokens += int(info.get("prompt_tokens") or 0)
     stats.completion_tokens += int(info.get("completion_tokens") or 0)
+    if info.get("finish_reason") == "length":
+        stats.truncated += 1  # never a silent cut: the safe path takes over
+        return ""
     return (text or "").strip()
 
 
@@ -348,11 +407,12 @@ async def _router_path(db, frame, plan, question, history, today, stats, emit):
     )
     system = prompts.router_system(frame.patient_name, today)
     emit(ChatEvent("status", {"status": "writing"}))
-    text = await _model(system, user, stats)
+    text = await _model(system, user, stats, ROUTER_ANSWER_BUDGET)
 
     async def regenerate(bad: list[str]) -> str:
         emit(ChatEvent("status", {"status": "writing"}))
-        return await _model(system, user + "\n\n" + prompts.regenerate_note(bad), stats)
+        again = user + "\n\n" + prompts.regenerate_note(bad)
+        return await _model(system, again, stats, ROUTER_ANSWER_BUDGET)
 
     return text, results, regenerate
 
@@ -373,18 +433,101 @@ def _parse_action(raw: str) -> dict | None:
     return None
 
 
+_COUNT_KEYS = frozenset({"total", "count", "duplicates_removed"})
+
+
+def _has_data(obj) -> bool:
+    """True when a tool result holds anything: a non-empty list or a value
+    other than a count (``{"total": 0}`` and ``{}`` are empty)."""
+    if isinstance(obj, list):
+        return any(_has_data(v) for v in obj) if obj else False
+    if isinstance(obj, dict):
+        return any(_has_data(v) for k, v in obj.items() if k not in _COUNT_KEYS)
+    return obj not in (None, "", 0, False)
+
+
+def _sources_of(result: chat_tools.ToolResult) -> list[str]:
+    """A tool result reduced to its sources (document ids with dates, or
+    timeline dates): what an older result keeps in the JSON loop's prompt."""
+    out: list[str] = []
+    for c in chat_tools.citation_candidates([result]):
+        if c.kind == "timeline":
+            entry = f"timeline {c.date[:10]}" if c.date else "timeline"
+        else:
+            entry = f"doc {c.document_id}" + (f" {c.date[:10]}" if c.date else "")
+        if entry not in out:
+            out.append(entry)
+        if len(out) >= 8:
+            break
+    return out
+
+
+@dataclass
+class _Step:
+    shown: str  # the action as JSON
+    result: chat_tools.ToolResult
+    note: str
+    full: str = ""  # the result capped at TOOL_RESULT_MODEL_BYTES
+    short: str = ""  # the result summarised to its sources
+
+
+def _step_text(step: _Step, summarised: bool) -> str:
+    return f"\nYour action: {step.shown}\n{step.short if summarised else step.full}\n{step.note}"
+
+
+def _render(head: str, steps: list[_Step], tail: str, stats: Stats) -> str:
+    """The JSON loop's prompt: every step's tool result in full (each capped)
+    while all of them fit ``TOOL_CONTEXT_BYTES``; past it the oldest are
+    summarised to their sources first."""
+    summarised = [False] * len(steps)
+
+    def size() -> int:
+        return sum(
+            len((s.short if summed else s.full).encode())
+            for s, summed in zip(steps, summarised, strict=True)
+        )
+
+    for i in range(len(steps)):
+        if size() <= TOOL_CONTEXT_BYTES:
+            break
+        summarised[i] = True
+    stats.tool_context_summarised = max(stats.tool_context_summarised, sum(summarised))
+    body = "".join(_step_text(s, summed) for s, summed in zip(steps, summarised, strict=True))
+    return head + body + tail
+
+
+def _model_view(result: chat_tools.ToolResult) -> str:
+    """One tool result as the JSON loop shows it: at most
+    ``TOOL_RESULT_MODEL_BYTES`` (``fit`` drops the middle of the longest list
+    with a marker, or cuts the text with one). ``fit`` shortens in place, so
+    it works on a copy: citations still see the whole result."""
+    text = result.text
+    if result.ok and len(text.encode()) > TOOL_RESULT_MODEL_BYTES:
+        text = chat_tools.fit(copy.deepcopy(result.data), TOOL_RESULT_MODEL_BYTES)
+    return prompts.data_block(result.name, result.args, text)
+
+
 async def _json_path(db, frame, question, history, today, stats, emit):
-    system = prompts.json_system(frame.patient_name, today, chat_tools.tools_text())
-    transcript = prompts.history_block(history) + f"Question: {question}\n"
+    system = prompts.json_system(
+        frame.patient_name, today, chat_tools.tools_text(), max_steps=MAX_STEPS
+    )
+    head = prompts.history_block(history) + f"Question: {question}\n"
+    steps: list[_Step] = []
+    notes = ""  # loop notes after the steps (invalid actions)
     results: list[chat_tools.ToolResult] = []
     seen: dict[str, chat_tools.ToolResult] = {}
+    seen_texts: set[str] = set()
+    empty_in_a_row = 0
     text = ""
-    for _step in range(MAX_STEPS):
+    for step in range(MAX_STEPS):
+        last = step == MAX_STEPS - 1
+        tail = notes + ("\n" + prompts.LAST_STEP_NOTE + "\n" if last else "")
         emit(ChatEvent("status", {"status": "routing"}))
-        action = _parse_action(await _model(system, transcript, stats))
+        raw = await _model(system, _render(head, steps, tail, stats), stats, JSON_STEP_BUDGET)
+        action = _parse_action(raw)
         if action is None:
             stats.invalid_actions += 1
-            transcript += (
+            notes += (
                 "\n[note] That was not one valid JSON action. Reply with exactly one JSON "
                 "object as specified.\n"
             )
@@ -392,22 +535,40 @@ async def _json_path(db, frame, question, history, today, stats, emit):
         if action["action"] == "answer":
             text = action["text"].strip()
             break
+        if last:  # no reply left to read a result: best effort below, never an error
+            stats.max_steps_hit = True
+            break
         key = json.dumps([action["name"], action["args"]], sort_keys=True, default=str)
         if key in seen:
             result = seen[key]
             note = "\n[note] You already called this tool with these arguments; answer now.\n"
+            new_data = False
         else:
             result = await _tool(db, action["name"], action["args"], stats, emit)
             seen[key] = result
             results.append(result)
             note = ""
+            new_data = result.ok and _has_data(result.data) and result.text not in seen_texts
+            seen_texts.add(result.text)
         shown = json.dumps(
             {"action": "tool", "name": result.name, "args": result.args}, ensure_ascii=False
         )
-        block = prompts.data_block(result.name, result.args, result.text)
-        transcript += f"\nYour action: {shown}\n{block}\n{note}"
+        steps.append(
+            _Step(
+                shown,
+                result,
+                note,
+                full=_model_view(result),
+                short=prompts.summarised_block(result.name, result.args, _sources_of(result)),
+            )
+        )
+        empty_in_a_row = 0 if new_data else empty_in_a_row + 1
+        if empty_in_a_row >= EMPTY_RESULTS_STOP:
+            stats.early_stop = True  # nothing new twice: the not-found answer, no more calls
+            break
     else:
         stats.max_steps_hit = True
+    transcript = _render(head, steps, notes, stats)
 
     async def regenerate(bad: list[str]) -> str:
         emit(ChatEvent("status", {"status": "writing"}))
@@ -417,7 +578,7 @@ async def _json_path(db, frame, question, history, today, stats, emit):
             + f"\nYour action: {prior}\n[note] {prompts.regenerate_note(bad)} Reply with "
             '{"action": "answer", "text": "..."}.\n'
         )
-        action = _parse_action(await _model(system, again, stats))
+        action = _parse_action(await _model(system, again, stats, JSON_STEP_BUDGET))
         return action["text"].strip() if action and action["action"] == "answer" else ""
 
     if text:
@@ -431,6 +592,8 @@ def _not_found_text(results: list[chat_tools.ToolResult], lang: str) -> str:
     lines = [prompts.NOT_FOUND[lang], f"{prompts.SEARCHED[lang]}: {searched}."]
     docs: list[str] = []
     for c in chat_tools.citation_candidates(results):
+        if c.document_id is None:
+            continue
         entry = f"[doc {c.document_id}" + (f", {c.date[:10]}" if c.date else "") + "]"
         if entry not in docs:
             docs.append(entry)
@@ -442,6 +605,27 @@ def _not_found_text(results: list[chat_tools.ToolResult], lang: str) -> str:
 _DOC_REF = re.compile(r"\bdoc\w*\s*#?\s*(\d+)")
 
 
+def _cited(candidates) -> list[dict]:
+    """Citation events (deduplicated, at most ``MAX_CITATIONS``). ``kind`` is
+    ``document`` or ``timeline`` (a timeline row with no source document: a
+    date and a label, ``document_id`` None)."""
+    out, keys = [], set()
+    for c in candidates:
+        key = (c.kind, c.document_id, c.page, c.label, c.date)
+        if key in keys:
+            continue
+        keys.add(key)
+        out.append({
+            "kind": c.kind, "document_id": c.document_id, "page": c.page, "label": c.label,
+            "date": c.date, "evidence": c.evidence, "verification": c.verification,
+            "verification_label": c.verification_label,
+            "unverified": c.verification == "unverified",
+        })  # fmt: skip
+        if len(out) >= MAX_CITATIONS:
+            break
+    return out
+
+
 def _citations(text: str, results: list[chat_tools.ToolResult]) -> list[dict]:
     answer_tokens = set(grounding.tokens(text))
     refs = {int(m) for m in _DOC_REF.findall(grounding.fold(text))}
@@ -449,24 +633,47 @@ def _citations(text: str, results: list[chat_tools.ToolResult]) -> list[dict]:
     for i, c in enumerate(chat_tools.citation_candidates(results)):
         value_hit = bool(set(grounding.tokens(" ".join(c.values[:1]))) & answer_tokens)
         date_hit = bool(set(grounding.tokens(c.date or "")) & answer_tokens)
-        score = 2 * value_hit + date_hit + (c.document_id in refs)
+        score = 2 * value_hit + date_hit + (c.document_id is not None and c.document_id in refs)
         if score:
             scored.append((-score, i, c))
-    out, keys = [], set()
-    for _s, _i, c in sorted(scored, key=lambda t: (t[0], t[1])):
-        key = (c.document_id, c.page, c.label, c.date)
-        if key in keys:
-            continue
-        keys.add(key)
-        out.append({
-            "document_id": c.document_id, "page": c.page, "label": c.label, "date": c.date,
-            "evidence": c.evidence, "verification": c.verification,
-            "verification_label": c.verification_label,
-            "unverified": c.verification == "unverified",
-        })  # fmt: skip
-        if len(out) >= MAX_CITATIONS:
-            break
-    return out
+    return _cited(c for _s, _i, c in sorted(scored, key=lambda t: (t[0], t[1])))
+
+
+_LABEL_STOP = frozenset({"other", "labs", "report", "unknown", "document", "dokument", "sprava"})
+FALLBACK_PER_RESULT = 3
+
+
+def _label_words(label: str | None) -> set[str]:
+    words = re.findall(r"[a-z]{5,}", grounding.fold(label or ""))
+    return {w for w in words if w not in _LABEL_STOP}
+
+
+def _fallback_citations(text: str, results: list[chat_tools.ToolResult], route: str) -> list[dict]:
+    """Citations when no row matched the answer's values, dates or document
+    ids: (1) the rows of every tool result that holds a number or date of the
+    answer; (2) the rows whose label words the answer repeats; (3) on the
+    planned route, the nearest planned row. Empty = nothing supports it."""
+    answer_tokens = set(grounding.tokens(text))
+    picked: list[chat_tools.Candidate] = []
+    if answer_tokens:
+        for r in results:
+            if r.ok and answer_tokens & grounding.pool([r.text]):
+                picked += chat_tools.citation_candidates([r])[:FALLBACK_PER_RESULT]
+    if not picked:
+        words = set(re.findall(r"[a-z]{5,}", grounding.fold(text)))
+        picked = [
+            c for c in chat_tools.citation_candidates(results) if _label_words(c.label) & words
+        ]
+    if not picked and route == "router:planned":
+        rows = [
+            c
+            for r in results
+            if r.name == "timeline"
+            for c in chat_tools.citation_candidates([r])
+            if c.date
+        ]
+        picked = sorted(rows, key=lambda c: c.date)[:1]
+    return _cited(picked)
 
 
 async def _guard(text, results, question, today, regenerate, stats, lang) -> str:
@@ -525,7 +732,12 @@ async def _turn(db, pid, principal, messages, lang, emit: Callable[[ChatEvent | 
                     )
                 shown = await _guard(text, results, question, today, regen, stats, lang)
                 if stats.result == "answered":
-                    citations = _citations(shown, results)
+                    citations = _citations(shown, results) or _fallback_citations(
+                        shown, results, stats.route
+                    )
+                    if not citations:  # invariant: an answer always names its source
+                        stats.result, stats.uncited_replaced = "not_found", True
+                        shown = _not_found_text(results, lang)
             emit(ChatEvent("delta", {"text": shown}))
             if any(c["unverified"] for c in citations):
                 emit(ChatEvent("delta", {"text": "\n\n" + prompts.UNVERIFIED_NOTE[lang]}))
@@ -535,7 +747,11 @@ async def _turn(db, pid, principal, messages, lang, emit: Callable[[ChatEvent | 
             emit(ChatEvent("done", _done(stats, t0, len(citations), lang)))
     except ModelUnavailableError as exc:
         error_code = exc.code
-        emit(_error(exc.code, lang))
+        err = _error(exc.code, lang)
+        # counts only: how long the turn waited for a model slot (scorecard #1025)
+        err.data.update(lane_wait_seconds=stats.lane_wait_seconds,
+                        lane_timeouts=stats.lane_timeouts)  # fmt: skip
+        emit(err)
     except asyncio.CancelledError:
         error_code = "cancelled"
         raise
@@ -587,6 +803,11 @@ async def _audit(db, pid, principal, stats: Stats, seconds: float, error_code) -
         "tool_errors": stats.tool_errors,
         "invalid_actions": stats.invalid_actions,
         "grounding": stats.grounding,
+        "truncated": stats.truncated,
+        "early_stop": stats.early_stop,
+        "uncited_replaced": stats.uncited_replaced,
+        "lane_wait_seconds": stats.lane_wait_seconds,
+        "lane_timeouts": stats.lane_timeouts,
         "model": llm.model_id(),
     }
     try:

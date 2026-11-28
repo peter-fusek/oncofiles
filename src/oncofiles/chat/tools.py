@@ -373,7 +373,7 @@ async def _run_tool(db, name: str, args: Any) -> ToolResult:
 
 @dataclass
 class Candidate:
-    document_id: int
+    document_id: int | None  # None only for a ``timeline`` row without a source document
     page: int | None
     label: str | None
     date: str | None
@@ -381,6 +381,7 @@ class Candidate:
     verification_label: dict | None
     evidence: str | None
     values: list[str]
+    kind: str = "document"  # document | timeline
 
 
 def _first(d: dict, *keys):
@@ -448,4 +449,42 @@ def citation_candidates(results: list[ToolResult]) -> list[Candidate]:
     for r in results:
         if r.ok:
             walk(r.data, None)
+            if r.name == "timeline":
+                out.extend(_timeline_rows_without_document(r.data))
+    return out
+
+
+def _timeline_rows_without_document(data: Any) -> list[Candidate]:
+    """A timeline row (e.g. a planned date) whose source document is unknown is
+    still a source: a ``timeline`` candidate with its date and label, no
+    document id (#1020 tuning: an answered planned date always cites)."""
+    rows = data.get("rows") if isinstance(data, dict) else None
+    out: list[Candidate] = []
+    for row in rows or []:
+        if not isinstance(row, dict) or not row.get("at"):
+            continue
+        src = row.get("sources")
+        has_doc = isinstance(row.get("source_document_id"), int) or any(
+            isinstance(s, dict) and isinstance(s.get("document_id"), int) for s in src or []
+        )
+        if has_doc:
+            continue
+        label = _first(row, "title", "label", "value", "kind")
+        verification = row.get("verification")
+        vlabel = row.get("verification_label")
+        out.append(
+            Candidate(
+                document_id=None,
+                page=None,
+                label=str(label)[:80] if label is not None else None,
+                date=str(row["at"])[:25],
+                verification=verification,
+                verification_label=vlabel
+                if isinstance(vlabel, dict)
+                else verification_label(verification, None),
+                evidence=None,
+                values=[str(row["at"])],
+                kind="timeline",
+            )
+        )
     return out

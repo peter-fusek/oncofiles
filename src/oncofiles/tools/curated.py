@@ -5237,11 +5237,14 @@ async def _chat_scorecard_job(
     from oncofiles.chat import core as chat_core
     from oncofiles.chat import scorecard as chs
     from oncofiles.chat import tools as chat_tools
-    from oncofiles.curated import llm
+    from oncofiles.curated import llm, llm_lanes
 
     started = time.monotonic()
     job = _reocr_jobs[pid]
     cards: list[dict] = [chs.skipped_card(cat, reason) for cat, reason in qset.skipped]
+    # #1020 tuning: the arbiter's active / waiting counts at every question
+    # start; only the max per count reaches the totals (diagnosis of a wait)
+    lane_snaps: list[dict] = []
     stopped = False
     lang = qset.lang
     principal = f"{CHAT_SCORECARD_PRINCIPAL}:{row_id}"
@@ -5264,6 +5267,7 @@ async def _chat_scorecard_job(
                     history = [{"role": "user", "content": prior[0]},
                                {"role": "assistant", "content": prior[1]}]  # fmt: skip
                 messages = [*history, {"role": "user", "content": q.text}]
+                lane_snaps.append(chs.lane_snapshot(llm_lanes.status()))
                 t0 = time.monotonic()
                 with (
                     chat_tools.record_results() as recorded,
@@ -5293,7 +5297,7 @@ async def _chat_scorecard_job(
                 )  # fmt: skip
             if stopped:
                 break
-        totals = chs.totals(cards, repeat=repeat)
+        totals = chs.totals(cards, repeat=repeat, lane_peak=chs.lane_peaks(lane_snaps))
         totals["speed"]["wall_seconds"] = round(time.monotonic() - started, 1)
         versions = chs.versions(question_set=qset.name, model=model or llm.model_id())
         prev = await db.get_last_scorecard(
