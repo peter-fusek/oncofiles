@@ -159,6 +159,26 @@
  <p id="pending-note" class="pending-note" hidden></p>
  </section>
 
+ <!-- #1023: chat over this patient's records (caregiver only, local model only; hidden until the server enables it) -->
+ <section class="panel chat-card" id="chat-card" hidden aria-labelledby="chat-title">
+ <div class="section-head">
+ <h2 id="chat-title" data-sk="Chat" data-en="Chat">Chat</h2>
+ <span class="section-meta chat-scope"><span data-sk="Odpovedá len z dokumentov:" data-en="Answers only from the records of:">Odpovedá len z dokumentov:</span> <strong id="chat-patient-name"></strong></span>
+ </div>
+ <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-labelledby="chat-title">
+ <p class="chat-empty" id="chat-empty" data-sk="Opýtajte sa na niečo z dokumentov tohto pacienta. Odpoveď sa opiera len o ne a pri každom údaji ukáže zdroj." data-en="Ask something about this patient's records. The answer relies on them only and shows the source of each value.">Opýtajte sa na niečo z dokumentov tohto pacienta. Odpoveď sa opiera len o ne a pri každom údaji ukáže zdroj.</p>
+ </div>
+ <div id="chat-suggestions" class="chat-suggestions" role="group" aria-label="Návrhy otázok" data-sk-label="Návrhy otázok" data-en-label="Suggested questions"></div>
+ <p id="chat-state" class="chat-state" role="status" aria-live="polite" hidden></p>
+ <div class="chat-composer">
+ <label for="chat-input" class="sr-only" data-sk="Vaša otázka" data-en="Your question">Vaša otázka</label>
+ <textarea id="chat-input" class="chat-input" rows="2" maxlength="2000" data-sk-placeholder="Napíšte otázku… (Enter odošle, Shift+Enter nový riadok)" data-en-placeholder="Type a question… (Enter sends, Shift+Enter new line)" placeholder="Napíšte otázku… (Enter odošle, Shift+Enter nový riadok)"></textarea>
+ <button type="button" class="btn-primary chat-send" id="chat-send-btn" data-action="sendChat" data-sk="Odoslať" data-en="Send">Odoslať</button>
+ <button type="button" class="copy-btn chat-stop" id="chat-stop-btn" data-action="stopChat" hidden data-sk="Zastaviť" data-en="Stop">Zastaviť</button>
+ </div>
+ <p class="chat-note" data-sk="Odpovedá lokálny model na našom serveri; vaše dokumenty neodchádzajú do cloudovej AI. Nenahrádza lekára." data-en="A local model on our own server answers; your records never go to a cloud AI. It does not replace a doctor.">Odpovedá lokálny model na našom serveri; vaše dokumenty neodchádzajú do cloudovej AI. Nenahrádza lekára.</p>
+ </section>
+
  <!-- #950: the patient's private document e-mail address (caregiver only; hidden until the server enables it) -->
  <section class="panel inbound-card" id="inbound-card" hidden aria-labelledby="inbound-title">
  <div class="section-head">

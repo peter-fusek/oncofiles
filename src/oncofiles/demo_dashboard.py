@@ -12,6 +12,8 @@ for every API path the dashboard calls an answer of the same shape:
     activity   ~ GET /api/activity
     inbound_address ~ GET /api/inbound-address   (#950, invented address)
     trial_status ~ GET /api/trial-status   (#950 phase 2, not a trial)
+    chat_suggestions ~ GET /api/chat/suggestions   (#1023, invented questions;
+                 the demo never sends a chat question)
     inbound_quarantine ~ GET /api/inbound-quarantine   (#950 quarantine, one
                  invented item from an invented sender, with an invented text)
     inbound_quarantine_previews ~ GET /api/inbound-quarantine/preview  (#976,
@@ -38,6 +40,13 @@ PATIENT_ID = "demo-patient"
 # Invented, never derived from any key: the demo address cannot reach a patient.
 DEMO_INBOUND_TOKEN = "7mq3x9k2ta"
 _HOSPITAL = ("Nemocnica Príkladov", "Example Hospital")
+# #1023: suggested chat questions of the invented patient (same shape as the route).
+CHAT_SUGGESTIONS = [
+    {"sk": "Aká je posledná hodnota HGB?", "en": "What is the latest HGB value?"},
+    {"sk": "Ako sa menil PLT v čase?", "en": "How has PLT changed over time?"},
+    {"sk": "Kedy je najbližší plánovaný termín?", "en": "When is the next planned date?"},
+    {"sk": "Čo bolo v poslednej správe?", "en": "What did the last report say?"},
+]
 _FILE_TOKENS = ("JanaTestova_NemPrikladov", "JaneDoe_ExampleHospital")
 
 
@@ -499,7 +508,11 @@ def build(showcase_documents: list[dict], version: str) -> dict:
             ],
             "admin": [],
             "is_admin": False,
+            # #1023: the demo shows the Chat section; sending only explains itself
+            "chat_enabled": True,
         },
+        # #1023: the demo twin of GET /api/chat/suggestions (invented questions)
+        "chat_suggestions": {"suggestions": CHAT_SUGGESTIONS},
         "status": {
             "status": "ok",
             "version": version,

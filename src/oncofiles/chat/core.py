@@ -119,6 +119,11 @@ def _utc_day() -> str:
     return datetime.now(UTC).date().isoformat()
 
 
+def is_busy(principal: str) -> bool:
+    """True while this principal has an answer in progress (adapters pre-check it)."""
+    return principal in _running
+
+
 def reset_state() -> None:
     """Forget locks and counters (tests)."""
     _running.clear()
@@ -282,6 +287,7 @@ def _call_llm(system: str, user: str, info: dict) -> str:
         timeout=CALL_TIMEOUT_S,
         thinking=False,
         info=info,
+        lane="interactive",  # #1021/#1023: a person is waiting for this answer
         **llm.sampling_profile("qwen_non_thinking"),
     )
 
