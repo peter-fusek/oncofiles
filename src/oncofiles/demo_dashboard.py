@@ -12,10 +12,12 @@ for every API path the dashboard calls an answer of the same shape:
     activity   ~ GET /api/activity
     inbound_address ~ GET /api/inbound-address   (#950, invented address)
     trial_status ~ GET /api/trial-status   (#950 phase 2, not a trial)
-    chat_suggestions ~ GET /api/chat/suggestions   (#1023, invented questions;
-                 the demo never sends a chat question)
+    chat_suggestions ~ GET /api/chat/suggestions   (#1023, invented questions)
+    chat_script  the scripted demo chat (#1024): per suggested question its
+                 pre-written answer + citations, and the one free-text answer;
+                 the page streams them itself and never sends a question
     chat_conversations / chat_conversations_trash ~ GET /api/chat/conversations
-                 (?trash=0|1; #1022, one invented saved conversation, empty trash)
+                 (?trash=0|1; #1022, two invented saved conversations, empty trash)
     chat_conversation_turns ~ GET /api/chat/conversation   (keyed by
                  conversation_id; the invented conversation's turns)
     inbound_quarantine ~ GET /api/inbound-quarantine   (#950 quarantine, one
@@ -44,66 +46,218 @@ PATIENT_ID = "demo-patient"
 # Invented, never derived from any key: the demo address cannot reach a patient.
 DEMO_INBOUND_TOKEN = "7mq3x9k2ta"
 _HOSPITAL = ("Nemocnica Príkladov", "Example Hospital")
-# #1023: suggested chat questions of the invented patient (same shape as the route).
-CHAT_SUGGESTIONS = [
-    {"sk": "Aká je posledná hodnota HGB?", "en": "What is the latest HGB value?"},
-    {"sk": "Ako sa menil PLT v čase?", "en": "How has PLT changed over time?"},
-    {"sk": "Kedy je najbližší plánovaný termín?", "en": "When is the next planned date?"},
-    {"sk": "Čo bolo v poslednej správe?", "en": "What did the last report say?"},
+
+
+def _cite(doc_id: int, date: str, sk: str, en: str, *, unverified: bool = False) -> dict:
+    """A citation of the scripted demo chat (the live stream's shape + an EN label)."""
+    c = {"document_id": doc_id, "page": 1, "label": sk, "label_en": en, "date": date}
+    if unverified:
+        c["unverified"] = True
+    return c
+
+
+_LAB = ("Laboratórny výsledok", "Lab report")
+_BLOOD = ("Krvný obraz", "Blood count")
+_CLINIC = ("Správa z onkologickej ambulancie", "Oncology clinic report")
+
+# #1024: the scripted demo chat. Each entry is one suggested question (SK +
+# EN), its pre-written answer and the citations into the demo's own invented
+# documents (ids of ``_EXTRA`` and of the showcase documents that
+# ``server._demo_payload`` builds). ``status`` names the chat tools the real
+# core would read, so the simulated stream shows the same status lines. The
+# page streams the answer itself in small chunks; nothing is ever sent (no
+# model, no request but /api/demo-data). Everything is invented, dated 2027.
+CHAT_SCRIPT = [
+    {
+        "q": "Aká je posledná hodnota HGB?",
+        "q_en": "What is the latest HGB value?",
+        "status": ["fact_series"],
+        "text": (
+            "Posledná hodnota HGB (hemoglobín) je 127 g/L z odberu 13. 4. 2027. "
+            "Laboratórium pri nej uvádza referenčný rozsah 120–160 g/L, takže je v rozsahu. "
+            "Deň predtým, 12. 4. 2027, bola 129 g/L."
+        ),
+        "text_en": (
+            "The latest HGB (haemoglobin) value is 127 g/L from the sample of 13 Apr 2027. "
+            "The lab prints a reference range of 120–160 g/L next to it, so it is within range. "
+            "The day before, on 12 Apr 2027, it was 129 g/L."
+        ),
+        "citations": [_cite(11, "2027-04-13", *_BLOOD), _cite(10, "2027-04-12", *_LAB)],
+    },
+    {
+        "q": "Ako sa menil PLT v čase?",
+        "q_en": "How has PLT changed over time?",
+        "status": ["fact_catalog", "fact_series"],
+        "text": (
+            "Trombocyty (PLT) v ×10⁹/L: 262 (12. 1. 2027), 198 (9. 2. 2027), 219 (9. 3. 2027), "
+            "248 (15. 3. 2027), 236 (12. 4. 2027) a 241 (13. 4. 2027). Vo februári klesli, "
+            "potom stúpli. Všetky hodnoty sú v rozsahu 150–400, ktorý uvádza laboratórium."
+        ),
+        "text_en": (
+            "Platelets (PLT) in ×10⁹/L: 262 (12 Jan 2027), 198 (9 Feb 2027), 219 (9 Mar 2027), "
+            "248 (15 Mar 2027), 236 (12 Apr 2027) and 241 (13 Apr 2027). They dipped in February "
+            "and then rose again. Every value is within the lab's printed range of 150–400."
+        ),
+        "citations": [
+            _cite(1, "2027-01-14", *_LAB),
+            _cite(2, "2027-02-11", *_LAB),
+            _cite(3, "2027-03-10", *_LAB),
+            _cite(4, "2027-03-17", *_LAB),
+            _cite(10, "2027-04-12", *_LAB),
+            _cite(11, "2027-04-13", *_BLOOD),
+        ],
+    },
+    {
+        "q": "Čo bolo v poslednej správe?",
+        "q_en": "What did the last report say?",
+        "status": ["search_documents", "document_detail"],
+        "text": (
+            "Posledná správa je z onkologickej ambulancie z 2. 4. 2027: liečbu znáša dobre, "
+            "bez nových ťažkostí; krvný obraz z 15. 3. 2027 nebráni ďalšiemu cyklu. "
+            "Odporúčanie: pokračovať podľa plánu, kontrola o 3 týždne. Neskoršia rukou písaná "
+            "poznámka z 9. 4. 2027 ešte čaká na kontrolu, preto je označená ako neoverená."
+        ),
+        "text_en": (
+            "The last report is from the oncology clinic on 2 Apr 2027: treatment is well "
+            "tolerated, no new complaints; the blood count of 15 Mar 2027 allows the next cycle. "
+            "Plan: continue as planned, follow-up in 3 weeks. A later handwritten note of "
+            "9 Apr 2027 is still waiting for review, so it is marked unverified."
+        ),
+        "citations": [
+            _cite(6, "2027-04-02", *_CLINIC),
+            _cite(12, "2027-04-09", "Poznámka z kontroly", "Note from a visit", unverified=True),
+        ],
+    },
+    {
+        "q": "Ktoré dokumenty sú z Nemocnice Príkladov?",
+        "q_en": "Which documents are from Example Hospital?",
+        "status": ["search_documents"],
+        "text": (
+            "Z Nemocnice Príkladov je pomenovaných 10 dokumentov: histológia (15. 1. 2027), "
+            "prepúšťacia správa (28. 1. 2027), CT brucha a malej panvy (20. 2. 2027), "
+            "správa z onkologickej ambulancie (2. 4. 2027), recept (6. 4. 2027) a päť "
+            "laboratórnych výsledkov (14. 1., 11. 2., 10. 3., 17. 3. a 13. 4. 2027). Dva ďalšie "
+            "(sken z 12. 4. a poznámka z 9. 4. 2027) ešte nemajú určené zariadenie."
+        ),
+        "text_en": (
+            "10 named documents are from Example Hospital: histology (15 Jan 2027), a discharge "
+            "summary (28 Jan 2027), a CT of abdomen and pelvis (20 Feb 2027), an oncology clinic "
+            "report (2 Apr 2027), a prescription (6 Apr 2027) and five lab reports (14 Jan, "
+            "11 Feb, 10 Mar, 17 Mar and 13 Apr 2027). Two more (a scan of 12 Apr and a note of "
+            "9 Apr 2027) have no institution yet."
+        ),
+        "citations": [
+            _cite(8, "2027-01-15", "Histologické vyšetrenie", "Histology report"),
+            _cite(7, "2027-01-28", "Prepúšťacia správa", "Discharge summary"),
+            _cite(5, "2027-02-20", "CT brucha a malej panvy", "CT of abdomen and pelvis"),
+            _cite(6, "2027-04-02", *_CLINIC),
+            _cite(9, "2027-04-06", "Lekársky predpis", "Prescription"),
+        ],
+    },
+    {
+        "q": "Kedy je najbližší plánovaný termín?",
+        "q_en": "When is the next planned date?",
+        "status": ["timeline", "document_detail"],
+        "text": (
+            "Presný dátum ďalšej návštevy v dokumentoch nie je. Správa z 2. 4. 2027 odporúča "
+            "kontrolu o 3 týždne, teda približne okolo 23. 4. 2027. Termín si overte v ambulancii."
+        ),
+        "text_en": (
+            "The records hold no exact date for the next visit. The report of 2 Apr 2027 advises "
+            "a follow-up in 3 weeks, so around 23 Apr 2027. Please confirm the date with the "
+            "clinic."
+        ),
+        "citations": [_cite(6, "2027-04-02", *_CLINIC)],
+    },
+    {
+        "q": "Aká je hodnota vitamínu D?",
+        "q_en": "What is the vitamin D level?",
+        "status": ["fact_catalog"],
+        "text": (
+            "Vitamín D sa v dokumentoch tejto pacientky nenachádza: žiadny z laboratórnych "
+            "výsledkov ho neuvádza. Ak ho lekár meral, pridajte výsledok a odpoveď sa bude "
+            "opierať oň."
+        ),
+        "text_en": (
+            "Vitamin D is not in this patient's records: none of the lab reports lists it. "
+            "If a doctor measured it, add the result and the answer will rely on it."
+        ),
+        "citations": [],
+    },
 ]
+# Free text typed in the demo gets this one fixed answer (the demo has no model).
+CHAT_FREE_TEXT = {
+    "text": (
+        "V skutočnej aplikácii na túto otázku odpovedá lokálny model na našom serveri "
+        "z vašich dokumentov. Táto ukážka má pripravené odpovede len na navrhnuté otázky."
+    ),
+    "text_en": (
+        "In the real app the local model on our server answers this from your documents. "
+        "This demo has pre-written answers to the suggested questions only."
+    ),
+}
+# #1023: the suggested questions, the same shape as GET /api/chat/suggestions.
+CHAT_SUGGESTIONS = [{"sk": e["q"], "en": e["q_en"]} for e in CHAT_SCRIPT]
 _FILE_TOKENS = ("JanaTestova_NemPrikladov", "JaneDoe_ExampleHospital")
-# #1022: one invented saved conversation (same shapes as the routes; the demo
-# never stores, deletes or restores anything).
+# #1022: two invented saved conversations replaying scripted answers (same
+# shapes as the routes; the demo never stores, deletes or restores anything).
 DEMO_CONVERSATION_ID = "00000000-0000-4000-8000-00000000d1a1"
-_DEMO_Q = ("Aká je posledná hodnota HGB?", "What is the latest HGB value?")
-_DEMO_A = (
-    "Posledná hodnota HGB je 131 g/l zo 14. 3. 2027 (ukážka, vymyslené údaje).",
-    "The latest HGB value is 131 g/l from 14 Mar 2027 (demo, invented data).",
-)
+DEMO_CONVERSATION_ID_2 = "00000000-0000-4000-8000-00000000d1a2"
+# (conversation id, index into CHAT_SCRIPT, asked at, answered at)
+_DEMO_CONVERSATIONS = [
+    (DEMO_CONVERSATION_ID, 0, "2027-04-14T09:11:40Z", "2027-04-14T09:12:00Z"),
+    (DEMO_CONVERSATION_ID_2, 2, "2027-04-05T18:30:10Z", "2027-04-05T18:30:40Z"),
+]
 
 
-def _chat_demo(doc_id) -> dict:
-    cite = [{"document_id": doc_id, "page": 1}] if isinstance(doc_id, int) else []
-    return {
-        "chat_conversations": {
-            "conversations": [
-                {
-                    "conversation_id": DEMO_CONVERSATION_ID,
-                    "title": _DEMO_Q[0],
-                    "title_en": _DEMO_Q[1],
-                    "last_at": "2027-03-15T09:12:00Z",
-                    "turns": 2,
-                }
-            ],
-            "history_available": True,
-            "trash_after_days": 90,
-            "purge_after_trash_days": 30,
-        },
-        "chat_conversations_trash": {
-            "conversations": [],
-            "history_available": True,
-            "trash_after_days": 90,
-            "purge_after_trash_days": 30,
-        },
-        "chat_conversation_turns": {
-            DEMO_CONVERSATION_ID: {
-                "turns": [
-                    {
-                        "role": "user",
-                        "text": _DEMO_Q[0],
-                        "text_en": _DEMO_Q[1],
-                        "citations": [],
-                        "created_at": "2027-03-15T09:11:40Z",
-                    },
-                    {
-                        "role": "assistant",
-                        "text": _DEMO_A[0],
-                        "text_en": _DEMO_A[1],
-                        "citations": cite,
-                        "created_at": "2027-03-15T09:12:00Z",
-                    },
-                ]
+def _chat_demo() -> dict:
+    convs: list[dict] = []
+    turns: dict[str, dict] = {}
+    for cid, idx, asked, answered in _DEMO_CONVERSATIONS:
+        entry = CHAT_SCRIPT[idx]
+        convs.append(
+            {
+                "conversation_id": cid,
+                "title": entry["q"],
+                "title_en": entry["q_en"],
+                "last_at": answered,
+                "turns": 2,
             }
+        )
+        turns[cid] = {
+            "turns": [
+                {
+                    "role": "user",
+                    "text": entry["q"],
+                    "text_en": entry["q_en"],
+                    "citations": [],
+                    "created_at": asked,
+                },
+                {
+                    "role": "assistant",
+                    "text": entry["text"],
+                    "text_en": entry["text_en"],
+                    # the stored shape: document ids + pages only
+                    "citations": [
+                        {"document_id": c["document_id"], "page": c["page"]}
+                        for c in entry["citations"]
+                    ],
+                    "created_at": answered,
+                },
+            ]
+        }
+    convs.sort(key=lambda c: c["last_at"], reverse=True)
+    retention = {"history_available": True, "trash_after_days": 90, "purge_after_trash_days": 30}
+    return {
+        "chat_conversations": {"conversations": convs, **retention},
+        "chat_conversations_trash": {"conversations": [], **retention},
+        "chat_conversation_turns": turns,
+        # #1024: the scripted engine's data, answers in the order of the suggestions
+        "chat_script": {
+            "answers": [
+                {k: e[k] for k in ("status", "text", "text_en", "citations")} for e in CHAT_SCRIPT
+            ],
+            "free_text": CHAT_FREE_TEXT,
         },
     }
 
@@ -572,7 +726,7 @@ def build(showcase_documents: list[dict], version: str) -> dict:
         # #1023: the demo twin of GET /api/chat/suggestions (invented questions)
         "chat_suggestions": {"suggestions": CHAT_SUGGESTIONS},
         # #1022: the demo twins of the saved conversations (invented)
-        **_chat_demo(next((r["id"] for r in rows if isinstance(r.get("id"), int)), None)),
+        **_chat_demo(),
         "status": {
             "status": "ok",
             "version": version,

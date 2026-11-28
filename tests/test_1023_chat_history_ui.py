@@ -572,10 +572,12 @@ async def test_demo_twins_have_the_route_shapes():
         "trash_after_days",
         "purge_after_trash_days",
     }
-    [conv] = live["conversations"]
-    assert {"conversation_id", "title", "last_at", "turns"} <= set(conv)
-    assert conv["last_at"] >= "2027"
+    convs = live["conversations"]
+    assert 1 <= len(convs) <= 2  # #1024: one or two invented past conversations
     assert data["chat_conversations_trash"]["conversations"] == []
-    turns = data["chat_conversation_turns"][conv["conversation_id"]]["turns"]
-    assert [t["role"] for t in turns] == ["user", "assistant"]
-    assert all(set(c) == {"document_id", "page"} for t in turns for c in t["citations"])
+    for conv in convs:
+        assert {"conversation_id", "title", "last_at", "turns"} <= set(conv)
+        assert conv["last_at"] >= "2027"
+        turns = data["chat_conversation_turns"][conv["conversation_id"]]["turns"]
+        assert [t["role"] for t in turns] == ["user", "assistant"]
+        assert all(set(c) == {"document_id", "page"} for t in turns for c in t["citations"])
