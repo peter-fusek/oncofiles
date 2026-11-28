@@ -147,6 +147,7 @@ _NO_WRITE_KINDS = frozenset(
         "lab_preview",
         "reocr_compare",
         "classify_scorecard",
+        "chat_scorecard",
     }  # fmt: skip
 )
 
@@ -5187,6 +5188,283 @@ async def curated_classify_scorecard(
     return json.dumps(_public_job(pid), ensure_ascii=False)
 
 
+# ── chat scorecard (#1025): the chat's quality gate, counts only ──────────
+
+CHAT_SCORECARD_PRINCIPAL = "chat-scorecard"
+
+
+async def _chat_citation_checks(db, pid: str, shown: str, citations: list[dict]) -> dict[int, str]:
+    """Per cited document: does its detail (re-read through the chat's own
+    ``document_detail`` tool, in the chat scope) hold a number or date of the
+    answer? ``found`` | ``missing`` | ``unavailable``."""
+    from oncofiles.chat import grounding
+    from oncofiles.chat import scorecard as chs
+    from oncofiles.chat import tools as chat_tools
+    from oncofiles.chat.scope import chat_scope
+
+    answer_tokens = set(grounding.tokens(shown))
+    out: dict[int, str] = {}
+    for doc_id in sorted({c["document_id"] for c in citations
+                          if isinstance(c.get("document_id"), int)}):  # fmt: skip
+        with chat_scope(pid):
+            result = await chat_tools.run_tool(db, "document_detail", {"document_id": doc_id})
+        detail = json.dumps(result.data, ensure_ascii=False, default=str) if result.ok else None
+        out[doc_id] = chs.citation_value_found(answer_tokens, detail)
+    return out
+
+
+async def _chat_scorecard_job(
+    db,
+    pid: str,
+    qset,
+    *,
+    row_id: int,
+    label: str,
+    compare_to_label: str | None,
+    repeat: int,
+    model: str | None,
+) -> None:
+    """Run every question of ``qset`` through the REAL chat core
+    (``chat.core.answer_text``, chat scope, local model) ``repeat`` times.
+    DRY RUN: the chat tools are read-only and nothing is filed or stored as a
+    fact; the writes are this job's ``curated_runs`` row and the core's own
+    per-turn ``activity_log`` row (counts only). Every model call of the job
+    goes to the BACKGROUND lane (``llm.scorecard_call_overrides``), so a
+    scorecard never takes the slot reserved for a person in a chat, and gets
+    ``model`` (validated by the tool) when given. Question and answer texts
+    live in memory for one turn only (the follow-up needs the previous
+    answer); the job report and the row hold codes and counts."""
+    from oncofiles.chat import core as chat_core
+    from oncofiles.chat import scorecard as chs
+    from oncofiles.chat import tools as chat_tools
+    from oncofiles.curated import llm
+
+    started = time.monotonic()
+    job = _reocr_jobs[pid]
+    cards: list[dict] = [chs.skipped_card(cat, reason) for cat, reason in qset.skipped]
+    stopped = False
+    lang = qset.lang
+    principal = f"{CHAT_SCORECARD_PRINCIPAL}:{row_id}"
+    try:
+        progress = job["progress"] = {"turns_total": len(qset.questions) * repeat,
+                                      "turns_done": 0}  # fmt: skip
+        for run in range(1, repeat + 1):
+            answers: dict[str, tuple[str, str]] = {}  # id → (question, shown answer), in memory
+            for q in qset.questions:
+                if _stopping.is_set():
+                    stopped = True
+                    break
+                history: list[dict] = []
+                if q.follow_up_of:
+                    prior = answers.get(q.follow_up_of)
+                    if prior is None:
+                        cards.append(chs.skipped_card(q.category, "follow_up_base_missing", run))
+                        progress["turns_done"] += 1
+                        continue
+                    history = [{"role": "user", "content": prior[0]},
+                               {"role": "assistant", "content": prior[1]}]  # fmt: skip
+                messages = [*history, {"role": "user", "content": q.text}]
+                t0 = time.monotonic()
+                with (
+                    chat_tools.record_results() as recorded,
+                    llm.scorecard_call_overrides(model=model),
+                ):
+                    out = await chat_core.answer_text(
+                        db, patient_id=pid, principal=principal, messages=messages, lang=lang
+                    )
+                seconds = time.monotonic() - t0
+                shown = chs.strip_fixed(out.get("text") or "", lang)
+                if shown and not out.get("error"):
+                    cut = shown.encode()[: chat_core.MAX_MESSAGE_BYTES - 500]
+                    answers[q.id] = (q.text, cut.decode("utf-8", "ignore"))
+                checks = await _chat_citation_checks(db, pid, shown, out.get("citations") or [])
+                c = chs.card(
+                    q, out, recorded_texts=[r.text for r in recorded],
+                    today=chat_core._today(), lang=lang, citation_checks=checks,
+                    seconds=seconds, run=run,
+                )  # fmt: skip
+                cards.append(c)
+                progress["turns_done"] += 1
+                logger.info(
+                    "chat scorecard row=%s %d/%d category=%s result=%s route=%s model_calls=%d "
+                    "seconds=%.1f",
+                    row_id, progress["turns_done"], progress["turns_total"], c["category"],
+                    c["result"], c["route"], c["model_calls"], c["seconds"],
+                )  # fmt: skip
+            if stopped:
+                break
+        totals = chs.totals(cards, repeat=repeat)
+        totals["speed"]["wall_seconds"] = round(time.monotonic() - started, 1)
+        versions = chs.versions(question_set=qset.name, model=model or llm.model_id())
+        prev = await db.get_last_scorecard(
+            patient_id=pid, label_prefix=compare_to_label, before_id=row_id, kind=chs.KIND
+        )
+        prev_report = (prev or {}).get("report") or {}
+        job.update(state="done", report={
+            "kind": chs.KIND, "dry_run": True, "scorecard": chs.SCORECARD_VERSION,
+            "label": label, "partial": stopped, "versions": versions,
+            "settings": {"question_set": qset.name, "lang": lang, "repeat": repeat,
+                         "model": model or llm.model_id(), "lane": "background",
+                         "overrides": {"model": model} if model else {}},
+            "totals": totals, "gate": chs.gate(totals),
+            "compared_to": {"row_id": prev["id"], "label": prev_report.get("label"),
+                            "finished_at": prev.get("finished_at")} if prev else None,
+            **chs.compare(prev_report if prev else None, versions, totals),
+            "questions": cards,
+        })  # fmt: skip
+    except Exception as exc:
+        logger.exception("chat scorecard failed for %s", pid[:8])
+        job.update(state="failed", error=type(exc).__name__,
+                   report={"kind": chs.KIND, "dry_run": True, "label": label,
+                           "questions": cards})  # fmt: skip
+    finally:
+        job["finished_at"] = datetime.now(UTC).isoformat()
+        status = "failed"
+        if job.get("state") == "done":
+            status = "partial" if stopped else "ok"  # only "ok" is a delta baseline
+        try:
+            await db.finish_curated_run(
+                row_id, patient_id=pid, status=status, message=job.get("error") or "",
+                report=chs.persisted(job.get("report") or {}),
+            )  # fmt: skip
+        except Exception:
+            logger.exception("could not persist the chat scorecard for %s", pid[:8])
+
+
+async def _chat_question_set(db, pid: str, question_set: str):
+    """The default set built from this patient's own data, or a question file."""
+    from oncofiles.chat import core as chat_core
+    from oncofiles.chat import scorecard as chs
+
+    if question_set == "default":
+        frame = await chat_core._frame(db, pid)
+        catalog = await db.fact_catalog_rows(patient_id=pid)
+        institutions = await db.document_institution_counts(patient_id=pid)
+        return chs.build_default(catalog, institutions, frame.vocab.allowed_names)
+    return await asyncio.to_thread(chs.load_file, question_set)
+
+
+async def curated_chat_scorecard(
+    ctx: Context,
+    patient_slug: str,
+    question_set: str = "default",
+    label: str | None = None,
+    compare_to_label: str | None = None,
+    model: str | None = None,
+    repeat: int = 1,
+) -> str:
+    """DRY RUN chat scorecard (#1025): the quality gate of the chat before
+    caregivers get it, and for every later model or prompt change.
+
+    Runs a question set through the REAL chat core for ONE patient (chat
+    scope as in production, read-only tools, LOCAL model on the background
+    lane, so it never takes the slot reserved for a person in a chat) and
+    reports counts and codes only: answered / refused / not found, citations
+    present and whether each cited document holds a number or date of the
+    answer (re-read through the chat's ``document_detail``), grounding
+    regenerations and replacements plus an independent re-check of every
+    shown answer, wrong-patient questions refused without a model call,
+    empty-answer guard hits, p50/p95 seconds and tokens, route mix (router vs
+    JSON loop), and a ``gate`` (0 ungrounded answers, 100 % other-person
+    refusals, citations on ≥ 95 % of answered questions, p95 ≤ 30 s; pass /
+    fail per item; thresholds to be confirmed by the maintainer).
+
+    Nothing is filed or stored as a fact. The writes are one summary row
+    (trigger ``scorecard``, report ``kind: chat``: label, settings, versions,
+    totals, gate) and the chat core's own per-turn activity row (counts
+    only); no question, answer, name or value is kept. ``delta`` against the
+    previous ok chat scorecard (or the newest whose label starts with
+    ``compare_to_label``), withheld when the scorecard version, model,
+    question set or chat prompt version differs. Poll curated_reocr_status
+    (kind ``chat_scorecard``). Admin only; refused while any curated run or a
+    job of this patient is active.
+
+    Args:
+        patient_slug: the patient (required).
+        question_set: "default" (generic questions built from this patient's
+            own lab codes, institutions, report and planned dates at run time)
+            or an absolute path to a JSON question file on the server (e.g.
+            the production questions of the private RUNBOOK; its content is
+            never stored or echoed, only a digest).
+        label: short name, e.g. "before-1025" (letters, digits, ``. _ : -``;
+            max 60); null = "chat".
+        compare_to_label: compare with the newest chat scorecard whose label
+            starts with this; null = the previous one.
+        model: LM Studio model id for this job only (dry run); null =
+            LOCAL_LLM_MODEL. Refused unless LM Studio reports it loaded.
+            Another model is another definition (no delta).
+        repeat: runs of the whole set (1-3); 2 measures stability.
+    """
+    from oncofiles.chat import scorecard as chs
+    from oncofiles.curated import llm
+    from oncofiles.tools._helpers import _require_admin_or_raise
+
+    try:
+        _require_admin_or_raise("curated_chat_scorecard")
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    if not (patient_slug or "").strip():
+        return json.dumps({"error": "patient_slug is required"})
+    label = "chat" if label is None else label
+    for name, value in (("label", label), ("compare_to_label", compare_to_label)):
+        if value is not None and not _SCORECARD_LABEL.fullmatch(str(value)):
+            return json.dumps({"error": f"{name} must be 1-60 letters, digits or . _ : - "
+                               "(starting with a letter or digit)"})  # fmt: skip
+    if isinstance(repeat, bool) or not isinstance(repeat, int) or not 1 <= repeat <= chs.MAX_REPEAT:
+        return json.dumps({"error": f"repeat must be an int, 1-{chs.MAX_REPEAT}"})
+    if not isinstance(question_set, str) or not question_set:
+        return json.dumps({"error": "question_set must be 'default' or a JSON file path"})
+    if err := llm.model_override_error(model, None):
+        return json.dumps({"error": err})
+    if not llm.configured():
+        return json.dumps({"error": "local model not configured (LOCAL_LLM_BASE_URL/MODEL)"})
+    if run_active():
+        return json.dumps({"error": "busy: a curated run or a writing job is in progress"})
+    if refused := await _model_override_refusal(model):
+        return json.dumps(refused)
+    pid = await _resolve_patient_id(patient_slug, ctx)
+    db = _get_db(ctx)
+    if _busy(pid):
+        return json.dumps({"error": "busy: a curated run, re-OCR, re-read, extraction, "
+                           "scorecard or preview is in progress for this patient"})  # fmt: skip
+    try:
+        qset = await _chat_question_set(db, pid, question_set)
+    except chs.QuestionFileError as exc:
+        return json.dumps({"error": "question_file_invalid", "reason": exc.code})
+    if not qset.questions:
+        return json.dumps({"status": "nothing to do", "skipped": len(qset.skipped)})
+    if run_active() or _busy(pid):  # re-checked after the awaits above
+        return json.dumps({"error": "busy: a curated run or job started meanwhile"})
+    previous = _reocr_jobs.get(pid)
+    _reocr_jobs[pid] = job = {
+        "state": "running", "kind": "chat_scorecard", "dry_run": True, "label": label,
+        "compare_to_label": compare_to_label, "started_at": datetime.now(UTC).isoformat(),
+        "repeat": repeat, "question_set": qset.name, "questions": len(qset.questions),
+        "skipped": len(qset.skipped), "lane": "background",
+        "overrides": {"model": model} if model else {},
+    }  # fmt: skip
+    try:
+        row_id = await db.insert_curated_run(patient_id=pid, dry_run=True, trigger="scorecard")
+    except Exception as exc:
+        if previous is not None:
+            _reocr_jobs[pid] = previous
+        else:
+            _reocr_jobs.pop(pid, None)
+        logger.exception("could not start the chat scorecard for %s", pid[:8])
+        return json.dumps({"error": f"could not record the scorecard ({type(exc).__name__})"})
+    job["run_row_id"] = row_id
+    from oncofiles.cloud_guard import local_only
+
+    with local_only("curated chat scorecard"):
+        job["task"] = asyncio.create_task(
+            _chat_scorecard_job(
+                db, pid, qset, row_id=row_id, label=label, compare_to_label=compare_to_label,
+                repeat=repeat, model=model,
+            )
+        )  # fmt: skip
+    return json.dumps(_public_job(pid), ensure_ascii=False)
+
+
 async def curated_reocr_status(ctx: Context, patient_slug: str | None = None) -> str:
     """State and report of the last re-OCR job for this patient (#660). Read-only."""
     pid = await _resolve_patient_id(patient_slug, ctx)
@@ -5830,6 +6108,7 @@ def register(mcp):
     mcp.tool()(curated_extraction_scorecard)
     # dry run (#926): re-classifies stored sidecar texts; only its summary row
     mcp.tool()(curated_classify_scorecard)
+    mcp.tool()(curated_chat_scorecard)
     # admin, user-invoked (#806): replaces a sidecar's text, its current text
     # is backed up first; never scheduled
     mcp.tool(annotations=_RETRACT_ANNOTATIONS)(curated_restore_sidecar)
