@@ -147,6 +147,9 @@ REGISTRY: tuple[TableRule, ...] = (
     _direct("inbound_jobs", False, "encrypted mail queue"),
     _direct("inbound_addresses", False, "document e-mail address token hashes (credential)"),
     _direct("trial_accounts", False, "welcome@ trial bookkeeping, keyed sender hash"),
+    # chat over Signal (#1032): the number only as keyed hash + AES-GCM, never exported
+    _direct("signal_link_codes", False, "one-time Signal link code hashes (credential)"),
+    _direct("signal_bindings", True, "connected Signal senders: times and state only"),
     # facts model (#603, #711)
     _direct("provenance", True, "where each fact came from", exclude=frozenset({"agent_user"})),
     _direct("codings", True, "codes attached to the patient's facts"),
@@ -205,6 +208,7 @@ NOT_PATIENT_DATA: dict[str, str] = {
     "mcp_oauth_tokens": "MCP connector tokens of a Google account, not of a patient",
     "newsletter_subscribers": "waitlist addresses, per e-mail, not per patient",
     "session_revocations": "dashboard logout denylist",
+    "signal_sender_limits": "per-sender Signal throttle counters, keyed phone hash, no patient",
     "schema_migrations": "migration bookkeeping",
     "sqlite_sequence": "SQLite internal",
     "documents_fts": "full-text index kept in step with documents by triggers",

@@ -256,6 +256,67 @@ def quarantine_sender_key() -> bytes:
     return hmac.new(holding_store_key(), _QUARANTINE_SENDER_PURPOSE, hashlib.sha256).digest()
 
 
+# #1032 chat over Signal: the sender's account UUID is stored only as a keyed
+# hash (lookup) and AES-GCM (to reply); link codes and the caregiver only as keyed
+# hashes. Every key derives from ``SIGNAL_SECRET`` when set, else from the
+# MANDATORY ``HOLDING_STORE_SECRET`` (never from the bearer), each with its own
+# purpose string. Neither set → ``SignalSecretMissingError``: the adapter does
+# not start and no code is issued.
+SIGNAL_SECRET_ENV = "SIGNAL_SECRET"
+_SIGNAL_BASE_PURPOSE = b"oncofiles.signal.v1"
+_SIGNAL_SENDER_HASH_PURPOSE = b"oncofiles.signal.sender_uuid_hash.v1"
+_SIGNAL_PHONE_HASH_PURPOSE = b"oncofiles.signal.phone_hash.v1"
+_SIGNAL_PHONE_ENC_PURPOSE = b"oncofiles.signal.phone_enc.v1"
+_SIGNAL_LINK_CODE_PURPOSE = b"oncofiles.signal.link_code.v1"
+_SIGNAL_CAREGIVER_PURPOSE = b"oncofiles.signal.caregiver.v1"
+_SIGNAL_IDENTITY_PURPOSE = b"oncofiles.signal.identity_hash.v1"
+
+
+class SignalSecretMissingError(RuntimeError):
+    """Neither ``SIGNAL_SECRET`` nor ``HOLDING_STORE_SECRET`` is set (#1032)."""
+
+
+def signal_secret_set() -> bool:
+    return bool(os.environ.get(SIGNAL_SECRET_ENV, "")) or holding_store_secret_set()
+
+
+def _signal_base() -> bytes:
+    secret = os.environ.get(SIGNAL_SECRET_ENV, "")
+    if secret:
+        return hmac.new(secret.encode(), _SIGNAL_BASE_PURPOSE, hashlib.sha256).digest()
+    try:
+        base = holding_store_key()
+    except HoldingStoreSecretMissingError as exc:
+        raise SignalSecretMissingError(SIGNAL_SECRET_ENV) from exc
+    return hmac.new(base, _SIGNAL_BASE_PURPOSE, hashlib.sha256).digest()
+
+
+def signal_sender_hash_key() -> bytes:
+    """HMAC key of ``sender_uuid_hash`` (the Signal account UUID, the lookup key
+    of bindings and of ``signal_sender_limits``)."""
+    return hmac.new(_signal_base(), _SIGNAL_SENDER_HASH_PURPOSE, hashlib.sha256).digest()
+
+
+def signal_phone_hash_key() -> bytes:
+    """HMAC key of ``signal_bindings.phone_hash`` (informational, never a lookup key)."""
+    return hmac.new(_signal_base(), _SIGNAL_PHONE_HASH_PURPOSE, hashlib.sha256).digest()
+
+
+def signal_phone_key() -> bytes:
+    """32-byte AES-GCM key of ``signal_bindings.reply_enc``."""
+    return hmac.new(_signal_base(), _SIGNAL_PHONE_ENC_PURPOSE, hashlib.sha256).digest()
+
+
+def signal_link_code_key() -> bytes:
+    """HMAC key of ``signal_link_codes.code_hash`` (only the hash is stored)."""
+    return hmac.new(_signal_base(), _SIGNAL_LINK_CODE_PURPOSE, hashlib.sha256).digest()
+
+
+def signal_caregiver_hash_key() -> bytes:
+    """HMAC key of the caregiver hash on Signal codes and bindings."""
+    return hmac.new(_signal_base(), _SIGNAL_CAREGIVER_PURPOSE, hashlib.sha256).digest()
+
+
 # #1022 chat history (maintainer decision 2026-11-27/28): every chat question
 # and answer is stored AES-GCM encrypted per patient. The key has its own
 # versioned purpose string. Source, in this order: the dedicated runtime env
@@ -286,3 +347,9 @@ def chat_history_key() -> bytes:
     if not holding_store_secret_set():
         raise ChatHistorySecretMissingError(CHAT_HISTORY_SECRET_ENV)
     return hmac.new(holding_store_key(), _CHAT_HISTORY_PURPOSE, hashlib.sha256).digest()
+
+
+def signal_identity_hash_key() -> bytes:
+    """HMAC key of ``signal_bindings.identity_hash`` (the sender's identity-key
+    fingerprint pinned at bind time; never stored raw)."""
+    return hmac.new(_signal_base(), _SIGNAL_IDENTITY_PURPOSE, hashlib.sha256).digest()
