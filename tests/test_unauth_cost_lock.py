@@ -112,6 +112,11 @@ FORBIDDEN_NAMES = {
 }
 
 AUTH_GATES = {"_check_dashboard_auth", "_require_admin", "_check_bearer"}
+# Argument-less feature-flag checks that may precede the auth gate as
+# ``if CHECK(): [import]; raise unknown_path()``: they read an env flag only
+# and answer the app's unknown-path 404 (#1023: a disabled chat route must not
+# reveal itself with a 401). Nothing else may sit in that ``if``.
+FEATURE_OFF_CHECKS = {"_chat_disabled"}
 
 # ── allowlists (may only shrink) ─────────────────────────────────────────
 
@@ -617,6 +622,28 @@ def _is_gate_pair(stmt: ast.stmt, nxt: ast.stmt | None, gates: set[str]) -> bool
     )
 
 
+def _is_feature_off(stmt: ast.stmt) -> bool:
+    """``if CHECK(): [from … import unknown_path] raise unknown_path()``."""
+    if not (
+        isinstance(stmt, ast.If)
+        and not stmt.orelse
+        and isinstance(stmt.test, ast.Call)
+        and isinstance(stmt.test.func, ast.Name)
+        and stmt.test.func.id in FEATURE_OFF_CHECKS
+        and not stmt.test.args
+        and not stmt.test.keywords
+    ):
+        return False
+    body = [s for s in stmt.body if not isinstance(s, (ast.Import, ast.ImportFrom))]
+    return (
+        len(body) == 1
+        and isinstance(body[0], ast.Raise)
+        and isinstance(body[0].exc, ast.Call)
+        and isinstance(body[0].exc.func, ast.Name)
+        and body[0].exc.func.id == "unknown_path"
+    )
+
+
 def _is_gated(fn: ast.AST) -> bool:
     """The handler's first real statement pair is an auth gate.
 
@@ -638,6 +665,8 @@ def _is_gated(fn: ast.AST) -> bool:
             i += 1
         elif _is_gate_pair(stmt, nxt, {"_check_rate_limit"}):
             i += 2
+        elif _is_feature_off(stmt):
+            i += 1
         else:
             return False
     return False

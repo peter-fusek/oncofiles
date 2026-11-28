@@ -6864,10 +6864,17 @@ async def api_list_patients(request: Request) -> JSONResponse:
                 "created_at": p.created_at.isoformat() if p.created_at else None,
             }
 
+        from oncofiles import chat_dashboard
+
         if is_bearer:
-            # MCP/system: all patients as own
+            # MCP/system: all patients as own; the operator bearer has no chat (#1023)
             return JSONResponse(
-                {"own": [_to_dict(p) for p in all_patients], "admin": [], "is_admin": False}
+                {
+                    "own": [_to_dict(p) for p in all_patients],
+                    "admin": [],
+                    "is_admin": False,
+                    "chat_enabled": False,
+                }
             )
 
         own = [p for p in all_patients if _email_matches_caregiver(email or "", p.caregiver_email)]
@@ -6881,6 +6888,9 @@ async def api_list_patients(request: Request) -> JSONResponse:
                 "own": [_to_dict(p) for p in own],
                 "admin": [_to_dict(p) for p in admin_patients],
                 "is_admin": is_admin,
+                # #1023: the Chat section shows only for "own" patients (the
+                # server refuses an admin's read-only view of another one).
+                "chat_enabled": chat_dashboard.enabled(),
             }
         )
     except Exception:
@@ -8174,6 +8184,163 @@ async def api_curated_confirm_review(request: Request) -> JSONResponse:
     except Exception:
         logger.exception("API curated confirm-review error")
         return JSONResponse({"error": "internal error"}, status_code=500)
+
+
+# ── #1023: the dashboard chat (caregiver only, local model only) ───────────
+
+
+def _chat_disabled() -> bool:
+    """True while ``CHAT_ENABLED`` is off: the chat routes then raise the app's
+    unknown-path 404 before anything else (no auth, no body read)."""
+    from oncofiles import chat_dashboard
+
+    return not chat_dashboard.enabled()
+
+
+async def _chat_caregiver_refusal(
+    request: Request, db_inst: Database, patient_id: str
+) -> JSONResponse | None:
+    """Caregiver only (maintainer decision 2026-11-27, #1018): runs after the
+    #867 helper. An admin who is not this patient's caregiver and the operator
+    bearer get the same ``_patient_not_found()`` as a foreign patient; a
+    session caller's refusal is recorded as #868 ``acl_refused``."""
+    if _check_bearer(request) is None:
+        return _patient_not_found()  # the operator is not a dashboard session
+    email = _get_dashboard_email(request)
+    patient = await db_inst.get_patient(patient_id) if email else None
+    if email and patient and _email_matches_caregiver(email, patient.caregiver_email):
+        return None
+    logger.warning(
+        "chat ACL: not the caregiver caller=%s patient=%s",
+        _acl_caller_log_id(email),
+        patient_id[:8],
+    )
+    await dashboard_audit.record(
+        db_inst,
+        "acl_refused",
+        email=email,
+        is_admin=_is_admin_email(email),
+        patient_id=patient_id,
+        route=dashboard_audit.route_name(request),
+    )
+    return _patient_not_found()
+
+
+@mcp.custom_route("/api/chat", methods=["POST"])
+async def api_chat(request: Request) -> Response:
+    """Ask the chat about ONE patient's records (#1023); NDJSON event stream.
+
+    Order: (rate-limit class ``api`` with a 32 KiB body cap, in the middleware)
+    → flag (off = the unknown-path 404) → dashboard auth → body (capped again
+    here) → ``_dashboard_body_patient`` (#867: unknown and foreign are the same
+    404) → caregiver only (admin non-caregiver and operator bearer: the same
+    404, recorded as #868) → Origin check → request validation → one running
+    answer per principal (409 ``busy``) → turn limits per principal and per IP
+    (429 + Retry-After) → ``chat.core.answer`` streamed as NDJSON lines
+    ``{"type": status|delta|citation|done|error, "data": …}``. The local model
+    only (the core; no cloud fallback). Logs: counts and codes only.
+    """
+    if _chat_disabled():
+        from oncofiles.hidden_routes import unknown_path
+
+        raise unknown_path()
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    from starlette.responses import StreamingResponse
+
+    from oncofiles import chat_dashboard
+    from oncofiles.chat import core as chat_core
+
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > chat_dashboard.MAX_BODY_BYTES:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    raw = await request.body()
+    if len(raw) > chat_dashboard.MAX_BODY_BYTES:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    try:
+        body = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    patient_id, acl_err = await _dashboard_body_patient(
+        request, db_inst, str(body.get("patient_id") or "")
+    )
+    if acl_err is not None:
+        return acl_err
+    refusal = await _chat_caregiver_refusal(request, db_inst, patient_id)
+    if refusal is not None:
+        return refusal
+    bad_origin = _cross_origin(request)
+    if bad_origin is not None:
+        return bad_origin
+    lang = body.get("lang")
+    messages = chat_core.validate(body.get("messages"), lang)
+    if messages is None:
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
+    email = (_get_dashboard_email(request) or "").strip().lower()
+    if chat_core.is_busy(email):
+        return JSONResponse(
+            {
+                "error": "busy",
+                "message_sk": "Ešte odpovedám na vašu predchádzajúcu otázku.",
+                "message_en": "I am still answering your previous question.",
+            },
+            status_code=409,
+        )
+    wait = chat_dashboard.limiter.take(
+        chat_dashboard.principal_key(email), chat_dashboard.client_ip(request.scope)
+    )
+    if wait > 0:
+        retry_after = max(1, int(wait + 0.999))
+        logger.info("chat http: rate_limited retry_after=%ds", retry_after)
+        return JSONResponse(
+            {"error": "rate_limited", "retry_after": retry_after},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
+    return StreamingResponse(
+        chat_dashboard.stream(
+            db_inst, patient_id=patient_id, principal=email, messages=messages, lang=lang
+        ),
+        media_type=chat_dashboard.MEDIA_TYPE,
+        headers=chat_dashboard.STREAM_HEADERS,
+    )
+
+
+@mcp.custom_route("/api/chat/suggestions", methods=["GET"])
+async def api_chat_suggestions(request: Request) -> JSONResponse:
+    """Three to five suggested questions from the patient's data (#1023).
+
+    The same ACL as ``POST /api/chat`` (#867 helper, then caregiver only), no
+    model call, no Drive call: ``chat_dashboard.suggestions`` (SK + EN)."""
+    if _chat_disabled():
+        from oncofiles.hidden_routes import unknown_path
+
+        raise unknown_path()
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    from oncofiles import chat_dashboard
+
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    patient_id, refusal = await _dashboard_patient_or_refusal(request)
+    if refusal is not None:
+        return refusal
+    refusal = await _chat_caregiver_refusal(request, db_inst, patient_id)
+    if refusal is not None:
+        return refusal
+    try:
+        items = await chat_dashboard.suggestions(db_inst, patient_id)
+    except Exception as exc:
+        logger.warning("chat suggestions failed (%s)", type(exc).__name__)
+        items = []
+    return JSONResponse({"suggestions": items}, headers={"Cache-Control": "no-store"})
 
 
 @mcp.custom_route("/api/inbound-unmatched", methods=["GET"])
