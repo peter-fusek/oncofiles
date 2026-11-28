@@ -523,6 +523,24 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         ),
     )
 
+    # #1032: chat over Signal. OFF by default: the loop starts only with
+    # SIGNAL_ENABLED=true, a private SIGNAL_API_URL, SIGNAL_NUMBER and a key;
+    # otherwise one warning naming the missing variables. One per process.
+    from oncofiles.channels import signal as signal_channel
+
+    signal_task = None
+    _signal_off = signal_channel.start_reason()
+    if _signal_off is None:
+        signal_task, _ = scheduler_singleton.ensure_background_loop(
+            signal_channel.JOB_ID,
+            lambda: asyncio.create_task(
+                # literal job name: the #925 lock reads it (== signal_channel.JOB_ID, tested)
+                local_only_task("signal_adapter", signal_channel.signal_loop)(db)
+            ),
+        )
+    else:
+        logger.warning(_signal_off)
+
     curated_nightly_task = None
     if nightly_settings()[0] and GOOGLE_INTEGRATION_ENABLED:
         # #784: one curated loop per process; a second lifespan gets the same task.
@@ -563,6 +581,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             (ACCESS_LOG_RETENTION_JOB, access_log_task),
             (OAUTH_TOKEN_CLEANUP_JOB, oauth_cleanup_task),
             (MEMORY_CHECK_JOB, memory_check_task),
+            (signal_channel.JOB_ID, signal_task),
         ):
             if scheduler_singleton.release_background_loop(_name, _task):
                 _task.cancel()

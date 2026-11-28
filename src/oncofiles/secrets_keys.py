@@ -254,3 +254,56 @@ def quarantine_csrf_key() -> bytes:
 def quarantine_sender_key() -> bytes:
     """HMAC key of the quarantine sender hash (throttle per sender, dedupe)."""
     return hmac.new(holding_store_key(), _QUARANTINE_SENDER_PURPOSE, hashlib.sha256).digest()
+
+
+# #1032 chat over Signal: the sender address is stored only as a keyed hash
+# (lookup) and AES-GCM (to reply); link codes and the caregiver only as keyed
+# hashes. Every key derives from ``SIGNAL_SECRET`` when set, else from the
+# MANDATORY ``HOLDING_STORE_SECRET`` (never from the bearer), each with its own
+# purpose string. Neither set → ``SignalSecretMissingError``: the adapter does
+# not start and no code is issued.
+SIGNAL_SECRET_ENV = "SIGNAL_SECRET"
+_SIGNAL_BASE_PURPOSE = b"oncofiles.signal.v1"
+_SIGNAL_PHONE_HASH_PURPOSE = b"oncofiles.signal.phone_hash.v1"
+_SIGNAL_PHONE_ENC_PURPOSE = b"oncofiles.signal.phone_enc.v1"
+_SIGNAL_LINK_CODE_PURPOSE = b"oncofiles.signal.link_code.v1"
+_SIGNAL_CAREGIVER_PURPOSE = b"oncofiles.signal.caregiver.v1"
+
+
+class SignalSecretMissingError(RuntimeError):
+    """Neither ``SIGNAL_SECRET`` nor ``HOLDING_STORE_SECRET`` is set (#1032)."""
+
+
+def signal_secret_set() -> bool:
+    return bool(os.environ.get(SIGNAL_SECRET_ENV, "")) or holding_store_secret_set()
+
+
+def _signal_base() -> bytes:
+    secret = os.environ.get(SIGNAL_SECRET_ENV, "")
+    if secret:
+        return hmac.new(secret.encode(), _SIGNAL_BASE_PURPOSE, hashlib.sha256).digest()
+    try:
+        base = holding_store_key()
+    except HoldingStoreSecretMissingError as exc:
+        raise SignalSecretMissingError(SIGNAL_SECRET_ENV) from exc
+    return hmac.new(base, _SIGNAL_BASE_PURPOSE, hashlib.sha256).digest()
+
+
+def signal_phone_hash_key() -> bytes:
+    """HMAC key of ``signal_bindings.phone_hash`` / ``signal_sender_limits``."""
+    return hmac.new(_signal_base(), _SIGNAL_PHONE_HASH_PURPOSE, hashlib.sha256).digest()
+
+
+def signal_phone_key() -> bytes:
+    """32-byte AES-GCM key of ``signal_bindings.phone_enc``."""
+    return hmac.new(_signal_base(), _SIGNAL_PHONE_ENC_PURPOSE, hashlib.sha256).digest()
+
+
+def signal_link_code_key() -> bytes:
+    """HMAC key of ``signal_link_codes.code_hash`` (only the hash is stored)."""
+    return hmac.new(_signal_base(), _SIGNAL_LINK_CODE_PURPOSE, hashlib.sha256).digest()
+
+
+def signal_caregiver_hash_key() -> bytes:
+    """HMAC key of the caregiver hash on Signal codes and bindings."""
+    return hmac.new(_signal_base(), _SIGNAL_CAREGIVER_PURPOSE, hashlib.sha256).digest()
