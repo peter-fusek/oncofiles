@@ -182,7 +182,7 @@ def update_peak_rss() -> float:
 
 
 def get_rss_trend() -> dict:
-    """Return RSS trend data for /health endpoint."""
+    """Return RSS trend data for the operator /readiness memory block (#1027)."""
     current = get_rss_mb()
     elapsed_h = (time.time() - _rss_started_at) / 3600 if _rss_started_at else 0
     growth_rate = (current - _rss_startup) / elapsed_h if elapsed_h > 0.01 else 0.0
@@ -195,7 +195,7 @@ def get_rss_trend() -> dict:
 
 
 def get_semaphore_status() -> dict:
-    """Return current semaphore slot availability for /health endpoint (OF-3)."""
+    """Return current semaphore slot availability for operator /readiness (OF-3, #1027)."""
     return {
         "query": {"total": _QUERY_SLOTS, "available": _query_semaphore._value},
         "express": {"total": _EXPRESS_SLOTS, "available": _db_express._value},

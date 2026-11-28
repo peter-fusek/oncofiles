@@ -176,6 +176,9 @@ def reset_state() -> None:
 def lm_busy(now_mono: float | None = None) -> str | None:
     """Why the reader must leave the shared local model to real patients now.
 
+    An interactive chat (in flight, waiting, or within its hold window; #1021,
+    ``llm_lanes.interactive_active``) comes first: ``interactive_chat``.
+
     A curated patient's runnable inbox work (pending minus parked) counts
     until that signal has stayed the same for ``CURATED_PENDING_STALE_S``: a
     stuck, unparked item then no longer stops trial reading forever. Ignoring
@@ -184,9 +187,12 @@ def lm_busy(now_mono: float | None = None) -> str | None:
     """
     import time
 
+    from oncofiles.curated import llm_lanes
     from oncofiles.tools import curated
 
     now_mono = time.monotonic() if now_mono is None else now_mono
+    if llm_lanes.interactive_active():
+        return "interactive_chat"  # #1021: a person is chatting; the trial reader waits
     if curated.run_active():
         return "curated_run_active"
     if any(j.get("state") == "running" for j in curated._reocr_jobs.values()):

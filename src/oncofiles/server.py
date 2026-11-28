@@ -4116,6 +4116,11 @@ async def health(request: Request) -> JSONResponse:
 
     Used by the Coolify healthcheck and UptimeRobot.  Must never block on
     external I/O so the process is never killed by a slow dependency.
+
+    #1027: public and unauthenticated, so no operational numbers that help
+    time load (memory, semaphores, uptime, curated probe age): those are on
+    the operator ``/readiness``. Infra contract: ``"commit":"<sha7>"`` and
+    ``"curated_run_active":<bool>`` stay, in Starlette's compact JSON.
     """
     # Hard RSS ceiling (#1012) — failsafe independent of scheduler health. Above
     # the ceiling: graceful SIGTERM when idle, else keep answering 200 (degraded
@@ -4123,10 +4128,12 @@ async def health(request: Request) -> JSONResponse:
     # above the last resort: SIGTERM always. In memory only, no DB.
     from oncofiles import memory_ceiling
 
-    _rss_now = get_rss_mb()
-    memory_ceiling.check(_rss_now, _sync_semaphore)
+    memory_outcome = memory_ceiling.check(get_rss_mb(), _sync_semaphore)
 
     result: dict = {"status": "ok", "version": VERSION}
+    # #1013: still 200 while over the ceiling; a code only, never a number.
+    if memory_outcome != "ok":
+        result["memory_state"] = "degraded"
     # #708: config only (flag + key presence), no DB — the nightly AI phases
     # are skipped while this reads "disabled".
     from oncofiles.cloud_guard import cloud_ai_enabled
@@ -4143,20 +4150,11 @@ async def health(request: Request) -> JSONResponse:
     if commit:
         result["commit"] = commit
     try:
-        lifespan_ctx = request.app.state.fastmcp_server._lifespan_result
-        started_at = lifespan_ctx.get("started_at")
-        if started_at:
-            result["uptime_s"] = int((datetime.now(UTC) - started_at).total_seconds())
-        result["memory_rss_mb"] = round(_rss_now, 1)
-        result["memory"] = get_rss_trend()
-        # CI waits for False before deploying (a deploy kills a run). In-memory,
-        # no patient detail.
-        from oncofiles.tools.curated import heartbeat, run_active
+        # CI, the merge gate and the bench scripts wait for False before a
+        # deploy (a deploy kills a run). In-memory, no patient detail.
+        from oncofiles.tools.curated import run_active
 
         result["curated_run_active"] = run_active()
-        # Public endpoint: an age and a boolean only (detail: admin overview).
-        result.update(heartbeat())
-        result["semaphores"] = get_semaphore_status()
         # Folder sync status — surface COUNTS only, not patient IDs (#488).
         # /health is unauthenticated (Railway liveness probe) so per-patient
         # keys leaked active UUIDs + which caregivers were experiencing sync
@@ -4186,7 +4184,7 @@ async def health(request: Request) -> JSONResponse:
         if not GOOGLE_INTEGRATION_ENABLED:
             result["google_integration"] = "disabled"
     except Exception:
-        logger.debug("Health: lifespan context not yet available", exc_info=True)
+        logger.debug("Health: in-memory telemetry not available", exc_info=True)
     return JSONResponse(result)
 
 
@@ -4257,7 +4255,18 @@ async def readiness(request: Request) -> JSONResponse:
         result["memory_rss_mb"] = round(get_rss_mb(), 1)
         from oncofiles import memory_ceiling
 
-        result["memory"] = memory_ceiling.status()  # #1012: ok | degraded, levels
+        # #1012: ok | degraded, levels; #1027: plus the RSS trend (current,
+        # startup, peak, growth) that used to be on the public /health.
+        result["memory"] = {**memory_ceiling.status(), **get_rss_trend()}
+        # #1027: moved from /health (in memory, no DB).
+        started_at = lifespan_ctx.get("started_at")
+        result["uptime_s"] = (
+            int((datetime.now(UTC) - started_at).total_seconds()) if started_at else None
+        )
+        result["semaphores"] = get_semaphore_status()
+        from oncofiles.tools.curated import heartbeat
+
+        result.update(heartbeat())  # curated_last_probe_age_s, curated_loop_suspected
         from oncofiles.onboarding_gate import onboarding_mode
 
         result["onboarding"] = onboarding_mode()  # #852, mode only
@@ -4287,6 +4296,11 @@ async def readiness(request: Request) -> JSONResponse:
         # #784: one scheduler per process, verifiable after a rolling deploy:
         # every answer must carry the same instance_id. In-memory, no DB.
         result["scheduler"] = scheduler_singleton.status()
+        # #1021: local-model lanes (interactive first): per-lane active/waiting,
+        # wait p50/p95, interactive turns per hour. In-memory counts, no DB.
+        from oncofiles.curated import llm_lanes
+
+        result["llm_lanes"] = llm_lanes.status()
         # Scheduler job status (lightweight summary)
         tracker = lifespan_ctx.get("job_tracker", {})
         jobs: dict = {}

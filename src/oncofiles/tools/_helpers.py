@@ -196,7 +196,22 @@ async def _resolve_patient_id(
         ctx: FastMCP request context.
         required: If True (default), raises ValueError when neither slug nor
             middleware-resolved patient is available.
+
+    Chat scope (#1020): inside ``chat.scope.chat_scope(pid)`` the patient is
+    fixed whoever the caller is (admin included): no slug or that patient's
+    own slug gives ``pid``, any other slug the same not-accessible error.
     """
+    from oncofiles.chat.scope import chat_patient_id
+
+    scoped = chat_patient_id()
+    if scoped is not None:
+        if patient_slug:
+            patient = await _get_db(ctx).get_patient_by_slug(patient_slug)
+            if patient is None or patient.patient_id != scoped:
+                raise ValueError(_patient_not_accessible_message(patient_slug))
+        _note_resolved(scoped)
+        return scoped
+
     if not patient_slug:
         return _get_patient_id(required=required)
 
@@ -262,7 +277,14 @@ def _is_admin_caller() -> bool:
     function calls from tests or stdio transport) need to opt in if they
     want admin behavior. Returning False here for stdio is the safe
     default — tests that need admin should set the ContextVar explicitly.
+
+    Always False inside a chat turn (#1020): the chat is fixed to one patient
+    and no admin bypass may widen it.
     """
+    from oncofiles.chat.scope import chat_patient_id
+
+    if chat_patient_id() is not None:
+        return False
     try:
         from oncofiles.persistent_oauth import _verified_caller_is_admin
 

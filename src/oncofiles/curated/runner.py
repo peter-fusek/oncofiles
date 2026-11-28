@@ -40,7 +40,7 @@ from datetime import UTC, datetime
 
 from oncofiles.curated import classify as classify_mod
 from oncofiles.curated import extract as extract_mod
-from oncofiles.curated import llm, llm_input, review_codes
+from oncofiles.curated import llm, llm_input, llm_lanes, review_codes
 from oncofiles.curated import naming as naming_mod
 from oncofiles.curated import normalise as normalise_mod
 from oncofiles.curated import orientation as orientation_mod
@@ -1150,6 +1150,8 @@ class Runner:
                 self.report.held.append({"source": label, "reason": hold})
                 continue  # #855: stays in the inbox, unread
             done += 1
+            if not duplicate:
+                llm_lanes.yield_to_interactive()  # #1021 checkpoint: a waiting chat first
             if duplicate:
                 self._quarantine(tree, contract, folder, item, sidecar, filed[item.sha256])
                 continue
