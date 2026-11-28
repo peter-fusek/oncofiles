@@ -356,6 +356,8 @@ async def stream(
     cites: list[dict] = []
     stored = None
     try:
+        # ``lang`` (the UI language) is only the fallback: the core answers in
+        # the language of the question and says so in ``done.answer_lang`` (#1020)
         async for ev in core.answer(
             db, patient_id=patient_id, principal=principal, messages=messages, lang=lang
         ):

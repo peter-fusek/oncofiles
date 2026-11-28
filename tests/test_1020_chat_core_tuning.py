@@ -139,13 +139,13 @@ async def test_concise_prompt_and_answer_budgets(seeded, db, monkeypatch):
     fake = _fake(monkeypatch, _seq("CEA je 7,9 ug/L."))
     await ask(db, "Aká je posledná hodnota CEA?")
     kw = fake.calls[0]["kw"]
-    assert kw["max_tokens"] == core.ROUTER_ANSWER_BUDGET <= 400
-    assert kw["thinking"] is False
+    assert kw["max_tokens"] == core.ROUTER_ANSWER_BUDGET == 800  # headroom, #1043
+    assert kw["thinking"] is False and kw["reasoning_marker"] is True
     assert f"at most about {prompts.ANSWER_MAX_WORDS} words" in fake.calls[0]["system"]
     assert "no disclaimer" in fake.calls[0]["system"]
     fake = _fake(monkeypatch, _seq(act("answer", text="Neviem.")))
     await ask(db, "Je to tak?")
-    assert fake.calls[0]["kw"]["max_tokens"] == core.JSON_STEP_BUDGET <= 500
+    assert fake.calls[0]["kw"]["max_tokens"] == core.JSON_STEP_BUDGET == 800
 
 
 async def test_a_cut_answer_is_never_shown(seeded, db, monkeypatch):
@@ -161,7 +161,9 @@ async def test_a_cut_answer_is_never_shown(seeded, db, monkeypatch):
 
     monkeypatch.setattr(llm, "chat", with_length)
     out = await ask(db, "Aká je posledná hodnota CEA?")
-    assert out["done"]["truncated"] == ONE and out["done"]["result"] == "not_found"
+    # cut twice (the one short retry included): the safe not-found text
+    assert out["done"]["truncated"] == ONE + ONE and out["done"]["result"] == "not_found"
+    assert out["done"]["retried_short"] and out["done"]["not_found_reason"] == "truncated"
     assert "dlhý text" not in out["text"]
 
 
@@ -414,11 +416,11 @@ def test_lane_snapshot_and_peaks():
                      "waiting_interactive": 1, "waiting_background": 3}  # fmt: skip
     t = chs.totals([], lane_peak=peaks)
     assert t["lanes"]["max_active_background"] == 3 and t["lanes"]["max_waiting_background"] == 3
-    assert chs.SCORECARD_VERSION == "chat-scorecard-v2"
+    assert chs.SCORECARD_VERSION == "chat-scorecard-v3"
 
 
 def test_prompt_revision_is_part_of_the_prompt_version():
-    assert prompts.PROMPT_REVISION == "chat-prompts-v2"
+    assert prompts.PROMPT_REVISION == "chat-prompts-v3"
     assert len(chs.prompt_version()) == 16
 
 
@@ -450,7 +452,7 @@ async def test_scorecard_job_records_lane_peaks(db, admin_scope, monkeypatch):
         lanes = report["totals"]["lanes"]
         assert lanes["max_active_background"] == TWO and lanes["max_waiting_background"] == TWO
         assert lanes["timeouts"] == 0
-        assert report["versions"]["scorecard_version"] == "chat-scorecard-v2"
+        assert report["versions"]["scorecard_version"] == "chat-scorecard-v3"
         assert report["totals"]["citations"]["pct_answered_with_citations"] == 100.0
     finally:
         tool._reocr_jobs.clear()

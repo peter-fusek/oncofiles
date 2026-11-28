@@ -524,10 +524,17 @@ def parse_switch(text: str) -> tuple[bool, int | None]:
 # ── answer formatting ─────────────────────────────────────────────────────
 
 
-def chunk_text(text: str, lang: str, limit: int = CHUNK_CHARS, max_parts: int = MAX_PARTS):
+def chunk_text(
+    text: str,
+    lang: str,
+    limit: int = CHUNK_CHARS,
+    max_parts: int = MAX_PARTS,
+    *,
+    disclaimer: str | None = None,
+):
     """Split on paragraphs into at most ``max_parts`` parts of at most ``limit``
     characters. When it does not fit, the last part is cut and ends with the
-    disclaimer, so it is never lost."""
+    disclaimer (``disclaimer``, else the one of ``lang``), so it is never lost."""
     from oncofiles.chat import prompts
 
     pieces: list[str] = []
@@ -550,7 +557,7 @@ def chunk_text(text: str, lang: str, limit: int = CHUNK_CHARS, max_parts: int = 
             parts.append(piece)
     if len(parts) <= max_parts:
         return parts
-    disclaimer = prompts.DISCLAIMER.get(lang, prompts.DISCLAIMER["en"])
+    disclaimer = disclaimer or prompts.phrase(prompts.DISCLAIMER, lang)
     tail = "…\n\n" + disclaimer
     kept = parts[:max_parts]
     kept[-1] = kept[-1][: max(0, limit - len(tail))].rstrip() + tail
@@ -589,11 +596,26 @@ async def source_lines(db, patient_id: str, citations: list[dict], lang: str) ->
     return lines
 
 
+def labels_lang(answer_lang: str | None, fallback: str) -> str:
+    """The language of this adapter's own SK/EN labels (sources, page) for an
+    answer in ``answer_lang``: SK for Slovak and Czech, EN for any other
+    detected language, ``fallback`` when none is known."""
+    if not answer_lang:
+        return fallback
+    return "sk" if answer_lang in ("sk", "cs") else "en"
+
+
 async def format_answer(db, patient_id: str, result: dict, lang: str) -> list[str]:
+    """The answer as Signal messages. ``lang`` is the fallback; the core's
+    ``done.answer_lang`` (#1020: the language of the question) picks the
+    disclaimer, and the SK/EN labels follow it (``labels_lang``)."""
     from oncofiles.chat import prompts
 
+    done = result.get("done") if isinstance(result.get("done"), dict) else {}
+    answer_lang = done.get("answer_lang") if isinstance(done.get("answer_lang"), str) else None
+    disclaimer = prompts.phrase(prompts.DISCLAIMER, answer_lang or lang)
+    lang = labels_lang(answer_lang, lang)
     text = (result.get("text") or "").strip()
-    disclaimer = prompts.DISCLAIMER.get(lang, prompts.DISCLAIMER["en"])
     if disclaimer not in text:
         text = f"{text}\n\n{disclaimer}" if text else disclaimer
     lines = await source_lines(db, patient_id, result.get("citations") or [], lang)
@@ -601,7 +623,7 @@ async def format_answer(db, patient_id: str, result: dict, lang: str) -> list[st
         # sources go before the disclaimer, which stays the last paragraph
         body = text[: text.rfind(disclaimer)].rstrip()
         text = f"{body}\n\n{_t('sources', lang)}\n" + "\n".join(lines) + f"\n\n{disclaimer}"
-    return chunk_text(text, lang)
+    return chunk_text(text, lang, disclaimer=disclaimer)
 
 
 # ── chat history (#1022) ──────────────────────────────────────────────────
@@ -686,7 +708,7 @@ async def _answer(db, client, binding: dict, sh: str, to: str, text: str, lang: 
         patient_id=pid,
         principal="signal:" + sh[:12],
         messages=fit_messages(history, text),
-        lang=lang,
+        lang=lang,  # only the fallback: the core answers in the question's language
     )
     err = result.get("error")
     if err:
