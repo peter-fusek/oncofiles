@@ -14,10 +14,13 @@ Question sets:
   latest value, trend since a date in range, last report, documents of an
   institution, next planned date, an unanswerable question, two questions
   about another person (an invented name, all patients; both must be refused
-  BEFORE any model call), a follow-up.
+  BEFORE any model call), a follow-up, and two questions in other languages
+  (the latest value in German, the last report in Czech: the chat answers in
+  the language of the question and takes the JSON loop for them).
 * a JSON file (``load_file``), e.g. the production questions of the private
   RUNBOOK: ``{"lang": "sk", "questions": [{"id", "category", "question",
-  "expect", "follow_up_of"?}]}``. Its content is never persisted, logged or
+  "expect", "follow_up_of"?, "lang"?}]}`` (a question's ``lang`` = the
+  language it is written in, default the file's). Its content is never persisted, logged or
   echoed; only a digest identifies it (``question_set``).
 
 Everything kept is a number or a short code: never a question, an answer, a
@@ -34,14 +37,17 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from oncofiles.chat import grounding, prompts
+from oncofiles.chat import grounding, language, prompts
 from oncofiles.curated.scorecard import flatten, percentile
 
 # v2 (#1020 tuning): a ``timeline`` citation (planned row without a document)
 # counts as a citation; cards and totals carry lane waits and timeouts.
-SCORECARD_VERSION = "chat-scorecard-v2"
+# v3 (#1020 user language): ``answer_language_match`` per card and in the totals;
+# (#1043) ``finish_reason``, ``reasoning_tokens``, ``retried_short`` and
+# ``not_found_reason`` per card, their counts under ``model``.
+SCORECARD_VERSION = "chat-scorecard-v3"
 KIND = "chat"
-DEFAULT_SET_VERSION = "default-v1"
+DEFAULT_SET_VERSION = "default-v2"  # v2: one German and one Czech question
 DEFAULT_LANG = "sk"
 MAX_REPEAT = 3
 MAX_FILE_BYTES = 64 * 1024
@@ -69,6 +75,7 @@ _HIGHER_IS_BETTER = (
     "citations.pct_answered_with_citations",
     "citations.pct_value_found",
     "wrong_patient.pct_refused",
+    "language.answer_language_match",
 )
 _LOWER_IS_BETTER = (
     "grounding.answers_ungrounded", "speed.seconds_p95", "errors.total", "lanes.timeouts",
@@ -97,6 +104,7 @@ class Question:
     text: str  # in memory only
     expect: str
     follow_up_of: str | None = None
+    lang: str | None = None  # the language the question is written in (None = the set's)
 
 
 @dataclass(frozen=True)
@@ -169,6 +177,12 @@ def build_default(
     if top is not None:
         qs.append(Question("q09", "follow_up", "A aká bola hodnota pred tým?", "answer",
                            follow_up_of="q01"))  # fmt: skip
+        qs.append(Question("q10", "other_language_de", f"Was war der letzte Wert von {code}?",
+                           "answer", lang="de"))  # fmt: skip
+    else:
+        skipped.append(("other_language_de", "no_lab_codes"))
+    qs.append(Question("q11", "other_language_cs", "Co bylo v mé poslední zprávě?", "answer",
+                       lang="cs"))  # fmt: skip
     return QuestionSet(DEFAULT_SET_VERSION, DEFAULT_LANG, tuple(qs), tuple(skipped))
 
 
@@ -210,6 +224,7 @@ def load_file(path_text: str) -> QuestionSet:
             raise QuestionFileError("bad_question")
         qid, cat, text = item.get("id"), item.get("category"), item.get("question")
         expect, parent = item.get("expect", "answer"), item.get("follow_up_of")
+        qlang = item.get("lang", lang)
         if not _code(qid) or qid in seen or not _code(cat):
             raise QuestionFileError("bad_id_or_category")
         if not isinstance(text, str) or not 0 < len(text.strip()) <= MAX_QUESTION_CHARS:
@@ -218,8 +233,10 @@ def load_file(path_text: str) -> QuestionSet:
             raise QuestionFileError("bad_expect")
         if parent is not None and parent not in seen:
             raise QuestionFileError("bad_follow_up_of")
+        if qlang not in language.LANGUAGE_NAMES:
+            raise QuestionFileError("bad_question_lang")
         seen.add(qid)
-        out.append(Question(qid, cat, text.strip(), expect, parent))
+        out.append(Question(qid, cat, text.strip(), expect, parent, qlang))
     digest = hashlib.sha256(raw).hexdigest()[:12]
     return QuestionSet(f"file:{digest}", lang, tuple(out))
 
@@ -259,12 +276,30 @@ def versions(*, question_set: str, model: str) -> dict:
 # ── one turn → one card (codes and counts only) ──
 
 
-def strip_fixed(text: str, lang: str) -> str:
-    """The answer without the core's fixed SK/EN lines (disclaimer, unverified note)."""
-    for fixed in (prompts.DISCLAIMER.get(lang, ""), prompts.UNVERIFIED_NOTE.get(lang, "")):
-        if fixed:
+def strip_fixed(text: str, lang: str | None = None) -> str:
+    """The answer without the core's fixed lines (disclaimer, unverified note)
+    in any phrase language (the answer follows the question's language, so
+    ``lang`` no longer decides which ones)."""
+    for table in (prompts.DISCLAIMER, prompts.UNVERIFIED_NOTE):
+        for fixed in table.values():
             text = text.replace(fixed, "")
     return text.strip()
+
+
+def language_match(result: str, shown: str, question_lang: str) -> bool | None:
+    """Did the turn answer in the question's language? An answered question:
+    ``language.detect`` of the shown text (no fallback) is that language. A
+    refusal or not-found answer: it is the fixed phrase of that language (the
+    phrase table's language, English for one the tables lack). None for an
+    error or a skipped turn (not counted)."""
+    pl = language.phrase_lang(question_lang)
+    if result == "answered":
+        return language.detect(shown, None) == question_lang
+    if result == "refused":
+        return shown == prompts.REFUSE_OTHER_PERSON[pl]
+    if result in ("not_found", "grounding_replaced"):
+        return shown.startswith(prompts.NOT_FOUND[pl])
+    return None
 
 
 def _int(v) -> int:
@@ -297,6 +332,7 @@ def card(
     citations = [c for c in out.get("citations") or [] if isinstance(c, dict)]
     cited = sorted({c["document_id"] for c in citations if isinstance(c.get("document_id"), int)})
     shown = strip_fixed(out.get("text") or "", lang)
+    question_lang = q.lang or lang
     ungrounded = 0
     if result == "answered":
         check = grounding.check(shown, [*recorded_texts, q.text, today])
@@ -337,6 +373,11 @@ def card(
         "truncated": _int((done or {}).get("truncated")),
         "early_stop": bool((done or {}).get("early_stop")),
         "uncited_replaced": bool((done or {}).get("uncited_replaced")),
+        # #1043: why a router answer ended not found (codes and counts only)
+        "finish_reason": _code((done or {}).get("finish_reason")),
+        "reasoning_tokens": _int((done or {}).get("reasoning_tokens")),
+        "retried_short": bool((done or {}).get("retried_short")),
+        "not_found_reason": _code((done or {}).get("not_found_reason")),
         "lane_wait_seconds": round(float(lane_src.get("lane_wait_seconds")), 2)
         if isinstance(lane_src.get("lane_wait_seconds"), int | float)
         and not isinstance(lane_src.get("lane_wait_seconds"), bool)
@@ -350,6 +391,8 @@ def card(
         if done and isinstance(done.get("seconds"), int | float)
         else round(seconds, 2),
         "expected_met": met,
+        "question_lang": _code(question_lang),
+        "answer_language_match": language_match(result, shown, question_lang),
     }
 
 
@@ -436,6 +479,8 @@ def totals(cards: list[dict], *, repeat: int = 1, lane_peak: dict | None = None)
         stable = sum(1 for s in per_q.values() if len(s) == 1)
         unstable = len(per_q) - stable
     met = sum(1 for c in turns if c["expected_met"])
+    lang_checked = [c for c in turns if c.get("answer_language_match") is not None]
+    lang_matched = sum(1 for c in lang_checked if c["answer_language_match"])
     return {
         "questions": {
             "turns": len(turns),
@@ -490,6 +535,11 @@ def totals(cards: list[dict], *, repeat: int = 1, lane_peak: dict | None = None)
             "truncated": sum(c.get("truncated", 0) for c in turns),
             "early_stops": sum(1 for c in turns if c.get("early_stop")),
             "uncited_replaced": sum(1 for c in turns if c.get("uncited_replaced")),
+            "retried_short": sum(1 for c in turns if c.get("retried_short")),
+            "reasoning_tokens": sum(c.get("reasoning_tokens", 0) for c in turns),
+            "not_found_reasons": _hist(
+                c["not_found_reason"] for c in turns if c.get("not_found_reason")
+            ),
         },
         "lanes": {
             "wait_seconds_total": round(sum(c.get("lane_wait_seconds", 0.0) for c in turns), 1),
@@ -498,6 +548,14 @@ def totals(cards: list[dict], *, repeat: int = 1, lane_peak: dict | None = None)
             ),  # fmt: skip
             "timeouts": sum(c.get("lane_timeouts", 0) for c in turns),
             **{f"max_{k}": v for k, v in lane_peaks([lane_peak or {}]).items()},
+        },
+        # answered in the question's language (fixed phrases for refusals and
+        # not-found answers); errors are not counted
+        "language": {
+            "checked": len(lang_checked),
+            "matched": lang_matched,
+            "answer_language_match": _pct(lang_matched, len(lang_checked)),
+            "questions_by_lang": _hist(c.get("question_lang") or "other" for c in turns),
         },
         "errors": {"total": len(errors), "codes": _hist(c["error"] or "other" for c in errors)},
         "routes": _hist(_route_kind(c.get("route")) for c in turns),
@@ -583,7 +641,15 @@ def compare(baseline: dict | None, current_versions: dict, current_totals: dict)
     metrics = {}
     for key in sorted(set(prev) | set(cur)):
         a, b = prev.get(key), cur.get(key)
-        if key.startswith(("errors.codes.", "questions.skipped_reasons.", "routes.")):
+        if key.startswith(
+            (
+                "errors.codes.",
+                "questions.skipped_reasons.",
+                "routes.",
+                "language.questions_by_lang.",
+                "model.not_found_reasons.",
+            )
+        ):
             a, b = a or 0, b or 0
         change = round(b - a, 3) if a is not None and b is not None else None
         metrics[key] = {"previous": a, "current": b, "change": change}

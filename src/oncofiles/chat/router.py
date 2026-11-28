@@ -161,8 +161,17 @@ def institution_terms(value: str, names: list[str] | None = None) -> set[str]:
     return out
 
 
-def route(question: str, vocab: Vocab, today: str) -> Route | None:
-    """The fixed tool plan of a recognised intent, or None (→ the JSON loop)."""
+ROUTER_LANGS = ("sk", "en")  # the keyword intents are Slovak / English only
+
+
+def route(question: str, vocab: Vocab, today: str, lang: str | None = None) -> Route | None:
+    """The fixed tool plan of a recognised intent, or None (→ the JSON loop).
+
+    ``lang`` is the DETECTED language of the question (``chat.language``,
+    None when unclear): the keywords are SK/EN, so a question detected as any
+    other language always goes to the JSON loop, never to a keyword route."""
+    if lang is not None and lang not in ROUTER_LANGS:
+        return None
     folded = fold(question)
     codes = find_codes(question, vocab.codes)
     if codes:
@@ -186,7 +195,11 @@ def route(question: str, vocab: Vocab, today: str) -> Route | None:
 
 _ALL_PATIENTS = re.compile(
     r"\b(all|other|every|another)\s+patients?\b|\bvsetk\w*\s+pacient\w*|\bin\w*\s+pacient\w*|"
-    r"\bostatn\w*\s+pacient\w*|\bzoznam\s+pacient\w*|\blist\s+(?:of\s+)?patients\b"
+    r"\bostatn\w*\s+pacient\w*|\bzoznam\s+pacient\w*|\blist\s+(?:of\s+)?patients\b|"
+    # #1020: the same in the other chat languages (folded: cs, de, pl, hu)
+    r"\bvsech\w*\s+pacient\w*|\bjin\w*\s+pacient\w*|\bseznam\s+pacient\w*|"
+    r"\b(?:alle|andere\w*)\s+patient\w*|\bwszystk\w*\s+pacjent\w*|\binn\w*\s+pacjent\w*|"
+    r"\b(?:osszes|mas|tobbi)\s+beteg\w*"
 )
 _TITLES = frozenset({
     "mudr", "mddr", "mvdr", "dr", "doc", "prof", "prim", "phdr", "rndr", "mgr", "ing", "bc",
@@ -196,8 +209,17 @@ _CUES = (
     "pre", "pacient", "pacienta", "pacientka", "pacientky", "patient", "brat", "brata", "sestra",
     "sestry", "brother", "sister", "mother", "father", "son", "daughter", "husband", "wife",
     "friend", "kamarat", "kamaratka", "sused", "neighbour", "neighbor",
+    # German (#1020): with them a German question names a person after a cue
+    "von", "für", "über", "patientin", "bruder", "schwester", "mutter", "vater", "sohn",
+    "tochter", "frau", "herr", "freund", "freundin",
 )  # fmt: skip
-_NAME = r"[A-ZÁÄČĎÉÍĽĹŇÓÔŔŠŤÚÝŽ][a-záäčďéíľĺňóôŕšťúýž]+"
+# German capitalises every noun, so two capitalised words in a row are a
+# person in a German question only right after one of these cues
+_DE_TWO_NAME_CUES = frozenset({"von", "fur", "uber", "patient", "patientin", "frau", "herr"})
+_NAME = (
+    r"[A-ZÁÄČĎÉÍĽĹŇÓÔŔŠŤÚÝŽÖÜŐŰĚŘŮĄĘŁŚŹŻĆŃ]"
+    r"[a-záäčďéíľĺňóôŕšťúýžöüßőűěřůąęłśźżćń]+"
+)
 _TWO_NAMES = re.compile(rf"\b({_NAME}(?:\s+{_NAME})+)\b")
 # the cue word in any case, the name capitalised (case-sensitive)
 _CUE_NAME = re.compile(rf"\b(?i:({'|'.join(_CUES)}))\s+({_NAME})\b")
@@ -211,6 +233,14 @@ _SENTENCE_WORDS = frozenset({
     "january", "february", "march", "april", "may", "june", "july", "august", "september",
     "october", "november", "december", "monday", "tuesday", "wednesday", "thursday", "friday",
     "saturday", "sunday",
+    # question words of the other chat languages (#1020: German capitalises
+    # nouns, so "Zeige Befunde" must not read as a person's name)
+    "wann", "wie", "welche", "welcher", "welches", "wo", "wer", "zeige", "zeig", "gib",
+    "nenne", "ist", "war", "hat", "gibt", "habe", "mein", "meine", "der", "die", "das",
+    "jaka", "jaky", "jake", "kdy", "jak", "kolik", "proc",
+    "mi", "mikor", "milyen", "mennyi", "mutasd", "melyik", "hol",
+    "jaki", "jakie", "kiedy", "pokaz", "ile", "gdzie", "czy",
+    "januar", "marz", "mai", "juni", "juli", "oktober", "dezember",
 })  # fmt: skip
 
 
@@ -242,9 +272,13 @@ def _foreign(words: list[str], allowed: set[str]) -> bool:
     return not any(_matches(w, allowed) for w in content)
 
 
-def other_person(question: str, allowed: set[str]) -> bool:
+def other_person(question: str, allowed: set[str], lang: str | None = None) -> bool:
     """True when the question is about other patients or names someone who is
-    not this patient (nor a doctor, institution or name on their record)."""
+    not this patient (nor a doctor, institution or name on their record).
+
+    ``lang`` = the question's detected language: in German (every noun
+    capitalised) two capitalised words count as a name only after a cue
+    (``von``, ``für``, ``Frau``, …); the cue + one name rule applies as usual."""
     folded = fold(question)
     if _ALL_PATIENTS.search(folded):
         return True
@@ -252,6 +286,8 @@ def other_person(question: str, allowed: set[str]) -> bool:
         before = question[: m.start()].rstrip(" .").split()
         if before and fold(before[-1]).rstrip(".") in _TITLES:
             continue  # "MUDr. Hana Vymyslená": a doctor, the model answers
+        if lang == "de" and not (before and fold(before[-1]) in _DE_TWO_NAME_CUES):
+            continue  # "Zeige Befunde": German nouns, not a person
         if _foreign(m[1].split(), allowed):
             return True
     for m in _CUE_NAME.finditer(question):

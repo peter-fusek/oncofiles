@@ -78,21 +78,32 @@ class Fake:
         if prompts.JSON_PROTOCOL_TAG in system:
             if "krvná skupina" in q:
                 return act("answer", text="")
+            if "zprávě" in q:  # the Czech question (#1020 user language)
+                assert "Answer in Czech" in system
+                if "TOOL RESULT" in user:
+                    return act("answer", text="Poslední zpráva je z 3. 6. 2027.")
+                return act("tool", name="search_documents", args={"category": "report"})
+            if "Wert" in q:  # the German question
+                assert "Answer in German" in system
+                if "TOOL RESULT" in user:
+                    return act("answer", text="Der letzte Wert von HGB war 109 g/L am 4. 5. 2027.")
+                return act("tool", name="fact_series", args={"codes": ["HGB"]})
             if "TOOL RESULT" in user:
                 return act("answer", text="Predtým bola hodnota HGB 118 g/L z 2. 3. 2027.")
             return act("tool", name="fact_series", args={"codes": ["HGB"]})
+        # every answer is long enough for ``language.detect`` to read it as Slovak
         if "posledná hodnota" in q:
             if self.bad_latest:
                 return "Posledná hodnota HGB je 555 g/L."
-            return "Posledná hodnota HGB je 109 g/L z 4. 5. 2027."
+            return "Posledná hodnota HGB bola 109 g/L z 4. 5. 2027."
         if "vyvíjal" in q:
-            return "Od 2. 4. 2027 je HGB 109 g/L (4. 5. 2027)."
+            return "Od 2. 4. 2027 sa HGB vyvíjal: bola 109 g/L (4. 5. 2027)."
         if "správe" in q:
-            return "Posledná správa je z 3. 6. 2027."
+            return "Posledná správa bola z 3. 6. 2027."
         if "dokumenty" in q:
-            return "Z nemocnice sú dokumenty z 2. 3. 2027 a 4. 5. 2027."
+            return "Z nemocnice sú aj dokumenty z 2. 3. 2027 a 4. 5. 2027."
         if "termín" in q:
-            return "Najbližší plánovaný termín je 15. 7. 2027."
+            return "Najbližší termín pre vás je 15. 7. 2027."
         return ""
 
 
@@ -140,7 +151,7 @@ async def test_job_lifecycle_metrics_gate_and_no_text(db, admin, monkeypatch, ca
     cards = {c["category"]: c for c in report["questions"]}
     assert set(cards) == {"labs_latest", "labs_trend", "last_report", "institution_documents",
                           "next_planned", "unanswerable", "other_person", "all_patients",
-                          "follow_up"}  # fmt: skip
+                          "follow_up", "other_language_de", "other_language_cs"}  # fmt: skip
     for cat in ("labs_latest", "labs_trend", "last_report", "institution_documents",
                 "next_planned"):  # fmt: skip
         assert cards[cat]["result"] == "answered", (cat, cards[cat])
@@ -150,6 +161,12 @@ async def test_job_lifecycle_metrics_gate_and_no_text(db, admin, monkeypatch, ca
     assert cards["labs_latest"]["citation_checks"]["found"] >= 1
     assert cards["unanswerable"]["result"] == "not_found" and cards["unanswerable"]["expected_met"]
     assert cards["follow_up"]["route"] == "json" and cards["follow_up"]["result"] == "answered"
+    # #1020 user language: a German / Czech question takes the JSON loop and
+    # is answered in its own language
+    for cat, lang in (("other_language_de", "de"), ("other_language_cs", "cs")):
+        assert cards[cat]["route"] == "json" and cards[cat]["result"] == "answered", cards[cat]
+        assert cards[cat]["question_lang"] == lang and cards[cat]["answer_language_match"]
+        assert cards[cat]["citations"] >= 1 and cards[cat]["ungrounded_shown"] == 0
     for cat in ("other_person", "all_patients"):
         assert cards[cat]["result"] == "refused" and cards[cat]["model_calls"] == 0
     t = report["totals"]
@@ -157,15 +174,19 @@ async def test_job_lifecycle_metrics_gate_and_no_text(db, admin, monkeypatch, ca
     assert wp["attempts"] == wp["refused"] == wp["refused_without_model_call"] == TWO
     assert wp["model_calls"] == 0 and wp["pct_refused"] == 100.0
     assert t["empty_answer_guard"]["hits"] == 1
-    assert t["results"]["answered"] == 6 and t["results"]["refused"] == 2
+    assert t["results"]["answered"] == 8 and t["results"]["refused"] == 2
+    sk_questions = t["language"]["checked"] - TWO
+    assert t["language"] == {"checked": 11, "matched": 11, "answer_language_match": 100.0,
+                             "questions_by_lang": {"cs": ONE, "de": ONE,
+                                                   "sk": sk_questions}}  # fmt: skip
     assert t["citations"]["pct_answered_with_citations"] == 100.0
     # the planned visit's date is in the timeline row citing the report, not in
     # the report's detail (the fixture stores no fact for it): measured as missing
     assert cards["next_planned"]["citation_checks"] == {"found": 0, "missing": 1,
                                                         "unavailable": 0}  # fmt: skip
-    assert t["citations"]["value_missing"] == 1 and t["citations"]["value_found"] == 6
+    assert t["citations"]["value_missing"] == 1 and t["citations"]["value_found"] == 8
     assert t["grounding"]["answers_ungrounded"] == 0
-    assert t["routes"]["json"] == t["routes"]["refused"] == TWO
+    assert t["routes"]["json"] == 4 and t["routes"]["refused"] == TWO
     assert t["routes"]["router"] == 5
     assert t["model"]["calls"] == len(fake.calls)
     assert t["speed"]["seconds_p95"] is not None and t["expectations"]["pct_met"] == 100.0
@@ -228,8 +249,8 @@ async def test_second_run_gets_a_delta_and_another_model_withholds_it(
 async def test_repeat_measures_stability(db, admin, monkeypatch):
     status, _ = await _run(db, monkeypatch, repeat=2)
     t = status["report"]["totals"]
-    assert t["questions"]["turns"] == 18
-    assert t["repeat"]["repeat"] == TWO and t["repeat"]["stable"] == 9
+    assert t["questions"]["turns"] == 22
+    assert t["repeat"]["repeat"] == TWO and t["repeat"]["stable"] == 11
     assert t["repeat"]["unstable"] == 0 and t["repeat"]["pct_stable"] == 100.0
 
 
@@ -333,6 +354,7 @@ def test_default_set_without_data_skips_by_reason_and_avoids_names_on_record():
     assert "labs_latest" not in cats and "follow_up" not in cats
     assert dict(qset.skipped) == {"labs_latest": "no_lab_codes", "labs_trend": "no_lab_codes",
                                   "follow_up": "no_lab_codes",
+                                  "other_language_de": "no_lab_codes",
                                   "institution_documents": "no_institution"}  # fmt: skip
     other = next(q for q in qset.questions if q.category == "other_person")
     assert "Zuzan" not in other.text  # a name on the record is never "another person"

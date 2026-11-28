@@ -3,8 +3,17 @@
 ``answer(db, patient_id=…, principal=…, messages=…, lang=…)`` streams
 ``ChatEvent`` s: ``status`` (queued | routing | tool:<name> | writing),
 ``delta`` (text), ``citation`` (document_id, page, label, date, verification),
-``done`` (counts, seconds, model, route, grounding) or ``error`` (code + SK/EN
-message). ``answer_text`` collects them into one dict.
+``done`` (counts, seconds, model, route, grounding, ``answer_lang``) or
+``error`` (code + message). ``answer_text`` collects them into one dict.
+
+Language (#1020): the answer comes in the language of the QUESTION
+(``language.detect``); the caller's ``lang`` (the UI or adapter language) is
+only the fallback when the question is short or ambiguous. The prompt names
+the language; the fixed phrases (disclaimer, not found, refusal, errors) come
+from the ``prompts`` tables in that language, English for a language the
+tables lack. ``done.answer_lang`` is the language asked for,
+``done.phrase_lang`` the language of the fixed phrases. A question detected
+as a language other than SK/EN never takes a keyword route (JSON loop).
 
 Contract with the caller (the adapter: dashboard route #1023, WhatsApp, …):
 ``patient_id`` is already resolved and ACL-checked (caregiver of that
@@ -35,7 +44,7 @@ slug can widen it) and ``cloud_guard.local_only("chat")`` covers every step.
    this turn's tool results or the question (``grounding``), otherwise one
    regeneration naming the offending tokens, then the safe not-found text.
 4. Citations only from tool results, unverified values marked, one fixed
-   SK/EN disclaimer line on every answer. An ``answered`` result always
+   disclaimer line (in the answer's language) on every answer. An ``answered`` result always
    carries at least one citation (a ``timeline`` citation without a document
    id when a planned row names none); an answer no tool result supports is
    replaced by the not-found text (``uncited_replaced``).
@@ -61,7 +70,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
 from oncofiles import cloud_guard
-from oncofiles.chat import grounding, prompts, router
+from oncofiles.chat import grounding, language, prompts, router
 from oncofiles.chat import tools as chat_tools
 from oncofiles.chat.scope import chat_scope
 from oncofiles.curated import llm
@@ -75,8 +84,11 @@ MAX_TOTAL_BYTES = 16_000
 MAX_STEPS = 3  # model calls of the JSON loop (the regeneration is extra)
 # #1020 tuning after the first #1025 scorecard: the model writes ~17 tokens/s,
 # so the answer length is the speed; the prompt asks for ~120 words.
-ROUTER_ANSWER_BUDGET = 400  # max_tokens of the router's answer call, thinking off
-JSON_STEP_BUDGET = 500  # max_tokens of one JSON-loop reply (an action or the answer)
+# Production scorecard "second" (#1043): without the reasoning marker the MLX
+# build ignored ``/no_think`` and reasoning ate 400/500 tokens; every call now
+# sends the marker (``_call_llm``) and keeps headroom.
+ROUTER_ANSWER_BUDGET = 800  # max_tokens of the router's answer call, thinking off
+JSON_STEP_BUDGET = 800  # max_tokens of one JSON-loop reply (an action or the answer)
 TOOL_RESULT_MODEL_BYTES = 2_500  # one tool result as the JSON loop shows it
 TOOL_CONTEXT_BYTES = 6_000  # all tool results of one JSON-loop prompt
 EMPTY_RESULTS_STOP = 2  # tool calls in a row without new data end the JSON loop
@@ -136,6 +148,12 @@ class Stats:
     )
     result: str = "answered"  # answered | not_found | refused | grounding_replaced
     uncited_replaced: bool = False  # an answer without any citation became not-found
+    finish_reason: str | None = None  # of the last model call (stop | length | …)
+    reasoning_tokens: int = 0  # summed over the turn's model calls
+    retried_short: bool = False  # a cut reply was asked again once, shorter
+    # why a not_found / grounding_replaced result: truncated | answer_error |
+    # uncited | early_stop | max_steps | no_data | grounding
+    not_found_reason: str | None = None
 
 
 def _today() -> str:
@@ -186,7 +204,14 @@ def validate(messages, lang) -> list[dict] | None:
 
 def _error(code: str, lang: str) -> ChatEvent:
     texts = prompts.ERRORS.get(code, prompts.ERRORS["internal_error"])
-    return ChatEvent("error", {"code": code, "message": texts.get(lang, texts["en"])})
+    return ChatEvent("error", {"code": code, "message": prompts.phrase(texts, lang)})
+
+
+def answer_language(question: str, fallback: str) -> tuple[str, str | None]:
+    """(language to answer in, detected language or None): the question's
+    language, else the caller's ``fallback`` (UI / adapter language)."""
+    detected = language.detect(question, None)
+    return detected or fallback, detected
 
 
 # ── public API ──
@@ -195,7 +220,10 @@ def _error(code: str, lang: str) -> ChatEvent:
 async def answer(
     db, *, patient_id: str, principal: str, messages: list[dict], lang: str
 ) -> AsyncIterator[ChatEvent]:
-    """Stream the answer to the last user message (see the module docstring)."""
+    """Stream the answer to the last user message (see the module docstring).
+
+    ``lang`` (the UI or adapter language) is only the fallback for a question
+    whose language ``language.detect`` cannot tell."""
     lang_ok = lang if lang in prompts.LANGS else "en"
     clean = validate(messages, lang)
     if (
@@ -207,17 +235,20 @@ async def answer(
     ):
         yield _error("invalid_request", lang_ok)
         return
+    answer_lang, detected = answer_language(clean[-1]["content"], lang)
     if principal in _running:
-        yield _error("busy", lang)
+        yield _error("busy", answer_lang)
         return
     day_key = (patient_id, _utc_day())
     if _turns.get(day_key, 0) >= DAILY_TURNS_PER_PATIENT:
-        yield _error("daily_limit", lang)
+        yield _error("daily_limit", answer_lang)
         return
     _turns[day_key] = _turns.get(day_key, 0) + 1
     _running.add(principal)
     queue: asyncio.Queue[ChatEvent | None] = asyncio.Queue()
-    task = asyncio.create_task(_turn(db, patient_id, principal, clean, lang, queue.put_nowait))
+    task = asyncio.create_task(
+        _turn(db, patient_id, principal, clean, answer_lang, detected, queue.put_nowait)
+    )
     try:
         while True:
             event = await queue.get()
@@ -328,6 +359,9 @@ def _call_llm(system: str, user: str, info: dict, max_tokens: int = ROUTER_ANSWE
         max_tokens=max_tokens,
         timeout=call_timeout,
         thinking=False,
+        # per call, never global state: the MLX build ignores ``/no_think``;
+        # the marker is what turns reasoning off (CLAUDE.md #770, #1043)
+        reasoning_marker=True,
         info=info,
         lane="interactive",  # #1021/#1023: a person is waiting for this answer
         slot_timeout=slot_wait,
@@ -354,25 +388,60 @@ def _lane_counts(stats: Stats, info: dict) -> None:
         stats.lane_timeouts += 1
 
 
-async def _model(system: str, user: str, stats: Stats, max_tokens: int) -> str:
+def _count_tokens(stats: Stats, info: dict) -> None:
+    """Token counts of one call, read from ``info`` also when the call raised."""
+    for key in ("prompt_tokens", "completion_tokens", "reasoning_tokens"):
+        value = info.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            setattr(stats, key, getattr(stats, key) + value)
+
+
+async def _model_call(system: str, user: str, stats: Stats, max_tokens: int) -> tuple[str, bool]:
+    """(text, truncated). A cut reply (``finish_reason=length``, or the
+    answer error ``llm.chat`` raises when reasoning used the whole budget) is
+    never shown: ``("", True)``. Tokens are counted on every path."""
     stats.model_calls += 1
     info: dict = {}
     try:
         text = await asyncio.to_thread(_call_llm, system, user, info, max_tokens)
     except llm.LocalLLMAnswerError:
         _lane_counts(stats, info)
-        stats.answer_errors += 1
-        return ""
+        _count_tokens(stats, info)
+        truncated = info.get("finish_reason") == "length"
+        stats.finish_reason = "length" if truncated else "answer_error"
+        if truncated:
+            stats.truncated += 1
+        else:
+            stats.answer_errors += 1
+        return "", truncated
     except llm.LocalLLMError as exc:
         _lane_counts(stats, info)
+        _count_tokens(stats, info)
         raise ModelUnavailableError(_unavailable_code(exc)) from exc
     _lane_counts(stats, info)
-    stats.prompt_tokens += int(info.get("prompt_tokens") or 0)
-    stats.completion_tokens += int(info.get("completion_tokens") or 0)
-    if info.get("finish_reason") == "length":
-        stats.truncated += 1  # never a silent cut: the safe path takes over
-        return ""
-    return (text or "").strip()
+    _count_tokens(stats, info)
+    reason = info.get("finish_reason")
+    stats.finish_reason = reason if isinstance(reason, str) and len(reason) <= 32 else None
+    if reason == "length":
+        stats.truncated += 1  # never a silent cut: the short retry or the safe path
+        return "", True
+    return (text or "").strip(), False
+
+
+async def _model(system: str, user: str, stats: Stats, max_tokens: int) -> str:
+    return (await _model_call(system, user, stats, max_tokens))[0]
+
+
+async def _model_retry_short(
+    system: str, user: str, stats: Stats, max_tokens: int, note: str
+) -> str:
+    """One call; a cut reply is asked ONCE more with ``note`` (answer in at
+    most ``prompts.SHORT_ANSWER_WORDS`` words) before the safe path."""
+    text, truncated = await _model_call(system, user, stats, max_tokens)
+    if truncated and not stats.retried_short:
+        stats.retried_short = True
+        text, _ = await _model_call(system, user + "\n\n" + note, stats, max_tokens)
+    return text
 
 
 async def _tool(db, name: str, args, stats: Stats, emit) -> chat_tools.ToolResult:
@@ -393,7 +462,7 @@ def _newest_document_id(result: chat_tools.ToolResult) -> int | None:
     return max(rows, key=lambda d: (str(d.get("document_date") or ""), d["id"]))["id"]
 
 
-async def _router_path(db, frame, plan, question, history, today, stats, emit):
+async def _router_path(db, frame, plan, question, history, today, stats, emit, answer_lang):
     results: list[chat_tools.ToolResult] = []
     for name, args in plan.calls:
         result = await _tool(db, name, args, stats, emit)
@@ -405,9 +474,11 @@ async def _router_path(db, frame, plan, question, history, today, stats, emit):
         prompts.history_block(history)
         + f"Question: {question}\n\nTool results:\n{blocks or '(none)'}"
     )
-    system = prompts.router_system(frame.patient_name, today)
+    system = prompts.router_system(frame.patient_name, today, answer_lang)
     emit(ChatEvent("status", {"status": "writing"}))
-    text = await _model(system, user, stats, ROUTER_ANSWER_BUDGET)
+    text = await _model_retry_short(
+        system, user, stats, ROUTER_ANSWER_BUDGET, prompts.SHORT_RETRY_NOTE
+    )
 
     async def regenerate(bad: list[str]) -> str:
         emit(ChatEvent("status", {"status": "writing"}))
@@ -507,9 +578,13 @@ def _model_view(result: chat_tools.ToolResult) -> str:
     return prompts.data_block(result.name, result.args, text)
 
 
-async def _json_path(db, frame, question, history, today, stats, emit):
+async def _json_path(db, frame, question, history, today, stats, emit, answer_lang):
     system = prompts.json_system(
-        frame.patient_name, today, chat_tools.tools_text(), max_steps=MAX_STEPS
+        frame.patient_name,
+        today,
+        chat_tools.tools_text(),
+        max_steps=MAX_STEPS,
+        answer_lang=answer_lang,
     )
     head = prompts.history_block(history) + f"Question: {question}\n"
     steps: list[_Step] = []
@@ -523,7 +598,13 @@ async def _json_path(db, frame, question, history, today, stats, emit):
         last = step == MAX_STEPS - 1
         tail = notes + ("\n" + prompts.LAST_STEP_NOTE + "\n" if last else "")
         emit(ChatEvent("status", {"status": "routing"}))
-        raw = await _model(system, _render(head, steps, tail, stats), stats, JSON_STEP_BUDGET)
+        raw = await _model_retry_short(
+            system,
+            _render(head, steps, tail, stats),
+            stats,
+            JSON_STEP_BUDGET,
+            prompts.SHORT_RETRY_JSON_NOTE,
+        )
         action = _parse_action(raw)
         if action is None:
             stats.invalid_actions += 1
@@ -587,6 +668,7 @@ async def _json_path(db, frame, question, history, today, stats, emit):
 
 
 def _not_found_text(results: list[chat_tools.ToolResult], lang: str) -> str:
+    lang = language.phrase_lang(lang)
     names = list(dict.fromkeys(r.name for r in results))
     searched = ", ".join(names) if names else prompts.NOTHING_SEARCHED[lang]
     lines = [prompts.NOT_FOUND[lang], f"{prompts.SEARCHED[lang]}: {searched}."]
@@ -679,7 +761,7 @@ def _fallback_citations(text: str, results: list[chat_tools.ToolResult], route: 
 async def _guard(text, results, question, today, regenerate, stats, lang) -> str:
     """Empty-answer and grounding guards; returns the text to show."""
     if not text.strip():
-        stats.result = "not_found"
+        stats.result, stats.not_found_reason = "not_found", _empty_reason(stats, results)
         return _not_found_text(results, lang)
     sources = [r.text for r in results] + [question, today]
     check = grounding.check(text, sources)
@@ -691,7 +773,7 @@ async def _guard(text, results, question, today, regenerate, stats, lang) -> str
     stats.grounding["regenerated"] += 1
     text = await regenerate(check.ungrounded)
     if not text.strip():
-        stats.result = "not_found"
+        stats.result, stats.not_found_reason = "not_found", "grounding"
         return _not_found_text(results, lang)
     check = grounding.check(text, sources)
     stats.grounding["checked"] += check.checked
@@ -700,13 +782,31 @@ async def _guard(text, results, question, today, regenerate, stats, lang) -> str
         return text
     stats.grounding["ungrounded"] += len(check.ungrounded)
     stats.grounding["replaced"] += 1
-    stats.result = "grounding_replaced"
+    stats.result, stats.not_found_reason = "grounding_replaced", "grounding"
     return _not_found_text(results, lang)
 
 
-async def _turn(db, pid, principal, messages, lang, emit: Callable[[ChatEvent | None], None]):
+def _empty_reason(stats: Stats, results: list[chat_tools.ToolResult]) -> str:
+    """Why the answer came back empty (a code for the scorecard and ``done``)."""
+    if stats.finish_reason == "length":
+        return "truncated"
+    if stats.finish_reason == "answer_error":
+        return "answer_error"
+    if stats.early_stop:
+        return "early_stop"
+    if stats.max_steps_hit:
+        return "max_steps"
+    return "no_data"
+
+
+async def _turn(
+    db, pid, principal, messages, lang, detected, emit: Callable[[ChatEvent | None], None]
+):
+    """One turn. ``lang`` = the language to answer in; ``detected`` = the
+    question's detected language or None (the router only takes SK/EN)."""
     t0 = time.monotonic()
     stats = Stats()
+    phrase_lang = language.phrase_lang(lang)
     error_code: str | None = None
     try:
         with chat_scope(pid), cloud_guard.local_only(CHAT_JOB):
@@ -716,19 +816,19 @@ async def _turn(db, pid, principal, messages, lang, emit: Callable[[ChatEvent | 
             today = _today()
             emit(ChatEvent("status", {"status": "routing"}))
             citations: list[dict] = []
-            if router.other_person(question, frame.vocab.allowed_names):
+            if router.other_person(question, frame.vocab.allowed_names, detected):
                 stats.route, stats.result = "refused", "refused"
-                shown = prompts.REFUSE_OTHER_PERSON[lang]
+                shown = prompts.REFUSE_OTHER_PERSON[phrase_lang]
             else:
-                plan = router.route(question, frame.vocab, today)
+                plan = router.route(question, frame.vocab, today, detected)
                 if plan is not None:
                     stats.route = f"router:{plan.intent}"
                     text, results, regen = await _router_path(
-                        db, frame, plan, question, history, today, stats, emit
+                        db, frame, plan, question, history, today, stats, emit, lang
                     )
                 else:
                     text, results, regen = await _json_path(
-                        db, frame, question, history, today, stats, emit
+                        db, frame, question, history, today, stats, emit, lang
                     )
                 shown = await _guard(text, results, question, today, regen, stats, lang)
                 if stats.result == "answered":
@@ -737,13 +837,14 @@ async def _turn(db, pid, principal, messages, lang, emit: Callable[[ChatEvent | 
                     )
                     if not citations:  # invariant: an answer always names its source
                         stats.result, stats.uncited_replaced = "not_found", True
+                        stats.not_found_reason = "uncited"
                         shown = _not_found_text(results, lang)
             emit(ChatEvent("delta", {"text": shown}))
             if any(c["unverified"] for c in citations):
-                emit(ChatEvent("delta", {"text": "\n\n" + prompts.UNVERIFIED_NOTE[lang]}))
+                emit(ChatEvent("delta", {"text": "\n\n" + prompts.UNVERIFIED_NOTE[phrase_lang]}))
             for c in citations:
                 emit(ChatEvent("citation", c))
-            emit(ChatEvent("delta", {"text": "\n\n" + prompts.DISCLAIMER[lang]}))
+            emit(ChatEvent("delta", {"text": "\n\n" + prompts.DISCLAIMER[phrase_lang]}))
             emit(ChatEvent("done", _done(stats, t0, len(citations), lang)))
     except ModelUnavailableError as exc:
         error_code = exc.code
@@ -763,13 +864,13 @@ async def _turn(db, pid, principal, messages, lang, emit: Callable[[ChatEvent | 
         seconds = time.monotonic() - t0
         logger.info(
             "chat turn: route=%s result=%s model_calls=%d tool_calls=%d tool_errors=%d "
-            "invalid_actions=%d grounding=%s seconds=%.1f model=%s error=%s",
+            "invalid_actions=%d grounding=%s seconds=%.1f model=%s error=%s lang=%s",
             stats.route, stats.result, stats.model_calls, stats.tool_calls, stats.tool_errors,
             stats.invalid_actions, json.dumps(stats.grounding, sort_keys=True), seconds,
-            llm.model_id(), error_code,
+            llm.model_id(), error_code, lang,
         )  # fmt: skip
         if error_code != "cancelled":
-            await _audit(db, pid, principal, stats, seconds, error_code)
+            await _audit(db, pid, principal, stats, seconds, error_code, lang)
         emit(None)
 
 
@@ -779,12 +880,14 @@ def _done(stats: Stats, t0: float, n_citations: int, lang: str) -> dict:
         "seconds": round(time.monotonic() - t0, 2),
         "model": llm.model_id(),
         "citations": n_citations,
-        "disclaimer": prompts.DISCLAIMER[lang],
+        "disclaimer": prompts.phrase(prompts.DISCLAIMER, lang),
+        "answer_lang": lang,
+        "phrase_lang": language.phrase_lang(lang),
     })  # fmt: skip
     return data
 
 
-async def _audit(db, pid, principal, stats: Stats, seconds: float, error_code) -> None:
+async def _audit(db, pid, principal, stats: Stats, seconds: float, error_code, lang=None) -> None:
     """One ``activity_log`` row per turn: counts and codes, the caller as a keyed hash."""
     from oncofiles.models import ActivityLogEntry
 
@@ -806,9 +909,14 @@ async def _audit(db, pid, principal, stats: Stats, seconds: float, error_code) -
         "truncated": stats.truncated,
         "early_stop": stats.early_stop,
         "uncited_replaced": stats.uncited_replaced,
+        "finish_reason": stats.finish_reason,
+        "reasoning_tokens": stats.reasoning_tokens,
+        "retried_short": stats.retried_short,
+        "not_found_reason": stats.not_found_reason,
         "lane_wait_seconds": stats.lane_wait_seconds,
         "lane_timeouts": stats.lane_timeouts,
         "model": llm.model_id(),
+        "answer_lang": lang,
     }
     try:
         await db.insert_activity_log(
