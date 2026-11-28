@@ -220,6 +220,8 @@ def patient_default_violations(s: dict[str, Table]) -> dict[str, str]:
 EXTERNAL_ID_NAMES: dict[str, str] = {
     "fhir_id": "public UUID of a row (rule 1 identity column)",
     "session_id": "MCP / chat session id sent by the client",
+    "conversation_id": "chat conversation UUID chosen by the chat core (#1022); "
+    "the rows of one conversation share it, there is no conversations table",
     "agent_id": "name of the calling agent",
     "run_id": "curated runner's run id, also in the Drive journal",
     "file_id": "Files API id or 'gdrive:<id>'",

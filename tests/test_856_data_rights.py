@@ -1229,7 +1229,7 @@ async def test_privacy_and_terms_describe_the_data_rights():
     assert "encrypted backups for up to 6 months" in privacy
     assert '"Disconnect Google Drive" on the dashboard' in terms
     assert "within 30 days" in terms
-    assert "Consent version 2026-11-27.3" in privacy and "Consent version 2026-11-27.3" in terms
+    assert "Consent version 2026-11-28" in privacy and "Consent version 2026-11-28" in terms
     # #1008: the Slovak pages state the same rights
     privacy_sk = " ".join((await server.privacy_policy_sk(None)).body.decode().split())
     terms_sk = " ".join((await server.terms_of_service_sk(None)).body.decode().split())
@@ -1245,7 +1245,7 @@ async def test_privacy_and_terms_describe_the_data_rights():
     assert "v šifrovaných zálohách najviac 6 mesiacov" in privacy_sk
     assert "„Odpojiť Google Drive“ v dashboarde" in terms_sk
     assert "do 30 dní" in terms_sk
-    assert "Verzia súhlasu 2026-11-27.3" in privacy_sk and "Verzia súhlasu 2026-11-27.3" in terms_sk
+    assert "Verzia súhlasu 2026-11-28" in privacy_sk and "Verzia súhlasu 2026-11-28" in terms_sk
 
 
 # ── wiring ────────────────────────────────────────────────────────────────

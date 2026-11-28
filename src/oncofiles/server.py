@@ -492,6 +492,21 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
         ),
     )
 
+    # #1022: the chat history retention (daily 04:45 UTC: 90 days -> trash,
+    # 30 more days -> text purged). A lifespan loop from the start (never an
+    # APScheduler job); it touches nothing unless CHAT_RETENTION_MODE says
+    # report / on (default off, infra condition). One per process.
+    from oncofiles.chat_retention import JOB_ID as CHAT_RETENTION_JOB
+    from oncofiles.chat_retention import chat_retention_loop
+
+    chat_retention_task, _ = scheduler_singleton.ensure_background_loop(
+        CHAT_RETENTION_JOB,
+        lambda: asyncio.create_task(
+            # literal job name: the #925 lock reads it (== CHAT_RETENTION_JOB, tested)
+            local_only_task("chat_history_retention", chat_retention_loop)(db, _sync_semaphore)
+        ),
+    )
+
     # #999: the MCP OAuth token cleanup (daily 04:00 UTC, expired rows past a
     # 30-day grace) was an APScheduler job, which never starts in prod. This
     # loop is its only owner (startup grace, catch-up past the slot, once per
@@ -561,6 +576,7 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
             (HOLDING_EXTRACT_JOB, holding_extract_task),
             (INBOUND_QUEUE_JOB, inbound_queue_task),
             (ACCESS_LOG_RETENTION_JOB, access_log_task),
+            (CHAT_RETENTION_JOB, chat_retention_task),
             (OAUTH_TOKEN_CLEANUP_JOB, oauth_cleanup_task),
             (MEMORY_CHECK_JOB, memory_check_task),
         ):
@@ -2645,8 +2661,8 @@ async def privacy_policy(request: Request) -> HTMLResponse:
             "Privacy Policy",
             path="/privacy",
             body_html="""
-<p class="meta">Effective: March 25, 2026 · Last updated: November 27, 2026 ·
-Consent version 2026-11-27.3</p>
+<p class="meta">Effective: March 25, 2026 · Last updated: November 28, 2026 ·
+Consent version 2026-11-28</p>
 
 <p>Oncofiles is operated by <strong>Instarea s.r.o.</strong> ("we", "us").
 This policy describes how Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>)
@@ -2724,6 +2740,13 @@ plain text of such an e-mail is kept with them,
 encrypted, for the same period and deleted together with the files, and the caregiver's
 dashboard shows a small preview picture of each attachment. Documents removed after an
 unclaimed trial can still be restored from encrypted backups for up to 6 months.</p>
+<h3 id="chat">Chat with your records</h3>
+<p>If you use the chat built into Oncofiles, your questions and its answers are stored on our
+server, encrypted separately for each patient, so that a conversation can be continued. They are
+processed only by the local AI model on our own server, never by a cloud AI model. After 90 days
+a conversation moves to the trash, where it can still be restored, and 30 days later its text is
+permanently deleted. The chat history is included in the patient's data export and is deleted
+together with the patient.</p>
 <p>We do <strong>not</strong> use your data for advertising, profiling, or any purpose
 unrelated to managing your medical documents.</p>
 
@@ -2732,8 +2755,8 @@ unrelated to managing your medical documents.</p>
 <li><strong>On our server in Slovakia (EU), on an encrypted disk</strong> — the patient profile
 (name, date of birth, patient type, an optional diagnosis note and the caregiver's e-mail
 address), the Google access token for Drive, the document index, the recognised text, extracted
-values with their verification state, the consent record (section 2) and the access log
-(section 6).</li>
+values with their verification state, the encrypted chat history (section 3), the consent
+record (section 2) and the access log (section 6).</li>
 <li><strong>Backups</strong> — local and encrypted, kept for a limited time. Before a bulk update
 of extracted values, and before deleting a patient on request, the server also makes a safety
 copy of the database; only the 5 newest safety copies are kept.</li>
@@ -2783,7 +2806,8 @@ itself). These rows are deleted automatically after 90 days.</p>
 <p>Your data is retained as long as your account is active. Oncofiles does not delete your
 documents, their text, extracted values or patient records automatically. Only technical
 records expire on a schedule, for example the application log after 7 days, other server logs
-after at most 30 days (section 4) and the dashboard access log after 90 days (section 6). You
+after at most 30 days (section 4) and the dashboard access log after 90 days (section 6). Chat
+history moves to the trash after 90 days and its text is deleted 30 days later (section 3). You
 can ask us to delete all data stored about a patient, including extracted values and the
 access log; see section 8.
 Original files in your Google Drive are never deleted by Oncofiles.</p>
@@ -2837,7 +2861,7 @@ async def terms_of_service(request: Request) -> HTMLResponse:
             path="/terms",
             body_html="""
 <p class="meta">Effective: March 25, 2026 · Last updated: November 27, 2026 ·
-Consent version 2026-11-27.3</p>
+Consent version 2026-11-28</p>
 
 <p>These terms govern your use of Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>),
 operated by <strong>Instarea s.r.o.</strong> ("we", "us").</p>
@@ -4330,6 +4354,10 @@ async def readiness(request: Request) -> JSONResponse:
                 jobs[job_id]["last_deleted"] = st["last_deleted"]
             if "memory" in st:  # the memory check's report (#999 job 5), counts + codes
                 jobs[job_id]["memory"] = st["memory"]
+            if "mode" in st:  # #1022 chat retention: off | report | on
+                jobs[job_id]["mode"] = st["mode"]
+            if "chat_history" in st:  # #1022 storage API counters (codes, counts)
+                jobs[job_id]["chat_history"] = st["chat_history"]
         result["jobs"] = jobs
         # #441 Layer 6: cluster-wide AI cost in the last 24h. Cheap aggregate
         # query — operator-only, like the rest of the readiness payload.

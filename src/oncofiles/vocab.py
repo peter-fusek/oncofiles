@@ -407,6 +407,8 @@ _SPECS: dict[str, _Spec] = {
     "inbound_quarantine_action": _from(
         "oncofiles.database._inbound_quarantine", "QUARANTINE_ACTIONS"
     ),
+    "chat_channel": _from("oncofiles.database._chat", "CHAT_CHANNELS"),
+    "chat_role": _from("oncofiles.database._chat", "CHAT_ROLES"),
 }
 
 # (table, column) → domain. Every enum-like column is here, in
@@ -486,6 +488,8 @@ COLUMN_DOMAINS: dict[tuple[str, str], str] = {
     ("trial_accounts", "source"): "trial_source",
     ("inbound_quarantine", "state"): "inbound_quarantine_state",
     ("inbound_quarantine_tokens", "action"): "inbound_quarantine_action",
+    ("chat_messages", "channel"): "chat_channel",
+    ("chat_messages", "role"): "chat_role",
 }
 
 # Codes used as keys into a reference table or an external code system that this
@@ -950,6 +954,15 @@ _LABELS: dict[str, dict[str, tuple[str, str]]] = {
     "inbound_quarantine_action": {
         "approve": ("Schváliť", "Approve"),
         "reject": ("Odmietnuť", "Reject"),
+    },
+    "chat_channel": {
+        "dashboard": ("Dashboard", "Dashboard"),
+        "signal": ("Signal", "Signal"),
+        "whatsapp": ("WhatsApp", "WhatsApp"),
+    },
+    "chat_role": {
+        "user": ("Otázka používateľa", "User question"),
+        "assistant": ("Odpoveď asistenta", "Assistant answer"),
     },
 }
 

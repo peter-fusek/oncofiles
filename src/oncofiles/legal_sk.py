@@ -13,8 +13,8 @@ PRIVACY_TITLE = "Zásady ochrany osobných údajov"
 TERMS_TITLE = "Podmienky používania"
 
 PRIVACY_BODY = """
-<p class="meta">Účinné od: 25. marca 2026 · Naposledy aktualizované: 27. novembra 2026 ·
-Verzia súhlasu 2026-11-27.3</p>
+<p class="meta">Účinné od: 25. marca 2026 · Naposledy aktualizované: 28. novembra 2026 ·
+Verzia súhlasu 2026-11-28</p>
 
 <p>Oncofiles prevádzkuje spoločnosť <strong>Instarea s.r.o.</strong> („my“). Tieto zásady
 opisujú, ako Oncofiles (<a href="https://oncofiles.com">oncofiles.com</a>) zaobchádza s vašimi
@@ -90,6 +90,12 @@ a odosielateľ nedostane žiadnu odpoveď. Aby sa opatrovateľ mohol rozhodnúť
 e-mailu sa uchováva spolu s nimi, zašifrovaný, rovnako dlho a vymaže sa spolu so súbormi;
 v dashboarde opatrovateľa sa zobrazí malý náhľad každej prílohy. Dokumenty odstránené po
 nevyužitej skúšobnej dobe sa ešte najviac 6 mesiacov dajú obnoviť zo šifrovaných záloh.</p>
+<h3 id="chat">Chat s vašimi záznamami</h3>
+<p>Ak používate chat zabudovaný v Oncofiles, vaše otázky a jeho odpovede sa ukladajú na našom
+serveri, zašifrované zvlášť pre každého pacienta, aby sa v konverzácii dalo pokračovať. Spracúva
+ich len lokálny AI model na našom vlastnom serveri, nikdy cloudový AI model. Po 90 dňoch sa
+konverzácia presunie do koša, kde sa ešte dá obnoviť, a o 30 dní neskôr sa jej text natrvalo
+vymaže. História chatu je súčasťou exportu údajov pacienta a vymaže sa spolu s pacientom.</p>
 <p>Vaše údaje <strong>nepoužívame</strong> na reklamu, profilovanie ani na žiadny účel, ktorý
 nesúvisí so správou vašich zdravotných dokumentov.</p>
 
@@ -98,7 +104,8 @@ nesúvisí so správou vašich zdravotných dokumentov.</p>
 <li><strong>Na našom serveri na Slovensku (EÚ), na šifrovanom disku</strong> — profil pacienta
 (meno, dátum narodenia, typ pacienta, voliteľná poznámka o diagnóze a e-mailová adresa
 opatrovateľa), prístupový token Google pre Drive, index dokumentov, rozpoznaný text, vyťažené
-hodnoty so stavom overenia, záznam o súhlase (časť 2) a záznam prístupov (časť 6).</li>
+hodnoty so stavom overenia, zašifrovaná história chatu (časť 3), záznam o súhlase (časť 2)
+a záznam prístupov (časť 6).</li>
 <li><strong>Zálohy</strong> — lokálne a šifrované, uchovávané obmedzený čas. Pred hromadnou
 úpravou vyťažených hodnôt a pred vymazaním pacienta na žiadosť server urobí aj bezpečnostnú
 kópiu databázy; uchováva sa len 5 najnovších bezpečnostných kópií.</li>
@@ -150,7 +157,8 @@ samotnú adresu). Tieto riadky sa automaticky vymažú po 90 dňoch.</p>
 <p>Vaše údaje uchovávame, kým je váš účet aktívny. Oncofiles automaticky nemaže vaše dokumenty,
 ich text, vyťažené hodnoty ani záznamy pacientov. Podľa plánu expirujú len technické záznamy,
 napríklad log aplikácie po 7 dňoch, ostatné serverové logy najneskôr po 30 dňoch (časť 4)
-a záznam prístupov do dashboardu po 90 dňoch (časť 6). Môžete nás požiadať o vymazanie všetkých
+a záznam prístupov do dashboardu po 90 dňoch (časť 6). História chatu sa po 90 dňoch presunie
+do koša a jej text sa o 30 dní neskôr vymaže (časť 3). Môžete nás požiadať o vymazanie všetkých
 údajov uložených o pacientovi vrátane vyťažených hodnôt a záznamu prístupov; pozri časť 8.
 Pôvodné súbory vo vašom Google Drive Oncofiles nikdy nemaže.</p>
 
@@ -189,7 +197,7 @@ Services User Data Policy</a> vrátane požiadaviek Limited Use.</p>
 
 TERMS_BODY = """
 <p class="meta">Účinné od: 25. marca 2026 · Naposledy aktualizované: 27. novembra 2026 ·
-Verzia súhlasu 2026-11-27.3</p>
+Verzia súhlasu 2026-11-28</p>
 
 <p>Tieto podmienky upravujú používanie služby Oncofiles
 (<a href="https://oncofiles.com">oncofiles.com</a>), ktorú prevádzkuje spoločnosť
