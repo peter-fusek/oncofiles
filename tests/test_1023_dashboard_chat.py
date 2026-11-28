@@ -538,17 +538,19 @@ def test_chat_js_rules():
     assert "textContent" in block
     # Enter goes through the dispatcher, so the demo block applies to it too
     assert "window._dispatch('sendChat', input)" in block
-    assert "if (DEMO) { demoNotice(); return; }" in block
-    assert "chatEnabled && !isAdminMode" in block
+    # #1024: the demo answers from its scripted set, never with a request
+    assert "if (DEMO) { await demoSendChat(); return; }" in block
+    assert "(chatEnabled || DEMO) && !isAdminMode" in block
     assert "new AbortController()" in block and "function stopChat(" in block
     assert "openQuickLook(docId, el)" in block
     for code in ("model_busy", "model_unavailable", "busy", "refused", "rate_limited"):
         assert re.search(rf"\b{code}: \['", block), code
 
 
-def test_demo_blocks_the_chat_and_has_a_suggestions_twin():
+def test_demo_chat_is_scripted_and_has_a_suggestions_twin():
+    # #1024: sendChat runs the scripted demo engine instead of the demo notice
     block = JS[JS.index("var DEMO_BLOCKED_ACTIONS = {") : JS.index("window._dispatch")]
-    assert "sendChat: 1" in block
+    assert "sendChat: 1" not in block
     assert "if (path === '/api/chat/suggestions') return d.chat_suggestions;" in JS
     assert "var DEMO_ALLOWED_PATHS = ['/api/demo-data'];" in JS
 
@@ -559,7 +561,8 @@ async def test_demo_twin_has_the_route_shape():
     req = Request({"type": "http", "method": "GET", "path": "/api/demo-data", "headers": []})
     data = json.loads((await server.api_demo_data(req)).body)["dashboard"]
     items = data["chat_suggestions"]["suggestions"]
-    assert 3 <= len(items) <= 5 and all(set(q) == {"sk", "en"} for q in items)
+    # the real route gives three to five; the scripted demo (#1024) shows six
+    assert 3 <= len(items) <= 6 and all(set(q) == {"sk", "en"} for q in items)
     assert data["patients"]["chat_enabled"] is True
 
 

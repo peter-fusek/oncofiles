@@ -50,8 +50,8 @@
       generateShareCode: 1, togglePatientArchive: 1, logout: 1, rotateInboundAddress: 1,
       approveQuarantine: 1, rejectQuarantine: 1, restoreQuarantine: 1, confirmReviewAsIs: 1,
       disconnectDrive: 1, downloadPatientExport: 1,
-      // #1023: the demo never calls the chat (the scripted demo chat is #1024)
-      sendChat: 1,
+      // #1024: sendChat is NOT here: in the demo it answers from the scripted
+      // set inside the page (demoSendChat) and never sends anything
       // #1022: deleting and restoring a saved conversation write on the server
       deleteChatConversation: 1, restoreChatConversation: 1
     };
@@ -658,8 +658,10 @@
     // turns, as before. The conversation list (newest first), delete (armed
     // second click) and the trash (Restore, days until the purge) use
     // /api/chat/conversations, /api/chat/conversation, …/delete, …/restore.
-    // In the demo nothing is sent: sendChat, deleteChatConversation and
-    // restoreChatConversation are in DEMO_BLOCKED_ACTIONS.
+    // In the demo nothing is sent (#1024): sendChat answers from the scripted
+    // set of /api/demo-data (demoSendChat, streamed in the page), and
+    // deleteChatConversation / restoreChatConversation are in
+    // DEMO_BLOCKED_ACTIONS.
 
     var chatEnabled = false;
     var chatFor = null;          // patient whose suggestions are shown
@@ -709,12 +711,16 @@
     function updateChatVisibility() {
       var card = document.getElementById('chat-card');
       if (!card) return;
-      var show = chatEnabled && !isAdminMode && !!currentPatientId;
+      // the demo (#1024) always shows the chat on its invented patient
+      var show = (chatEnabled || DEMO) && !isAdminMode && !!currentPatientId;
       card.hidden = !show;
       if (!show) { resetChat(); return; }
       var p = chatCurrentPatient();
       var nameEl = document.getElementById('chat-patient-name');
-      if (nameEl) nameEl.textContent = p ? loc(p, 'display_name') : '';
+      if (nameEl) {
+        var nameSk = p ? String(p.display_name || '') : '';
+        setI18n(nameEl, nameSk, p ? String(p.display_name_en || nameSk) : '');
+      }
     }
 
     function clearChatLog() {
@@ -910,7 +916,10 @@
         if (t.role === 'assistant') {
           var cites = (Array.isArray(t.citations) ? t.citations : []).map(function (c) {
             var doc = c ? findDoc(c.document_id) : null;
-            return { document_id: c && c.document_id, page: c && c.page, label: doc ? doc.filename : '' };
+            return {
+              document_id: c && c.document_id, page: c && c.page,
+              label: doc ? doc.filename : '', label_en: doc ? (doc.filename_en || doc.filename) : ''
+            };
           });
           chatAppendSources(bubble, cites);
         }
@@ -992,7 +1001,7 @@
       var input = document.getElementById('chat-input');
       if (!q || !input) return;
       input.value = dashLang === 'sk' ? q.sk : q.en;
-      window._dispatch('sendChat', el);  // the demo stops here with its notice
+      window._dispatch('sendChat', el);  // the demo answers from its scripted set
     }
 
     function setChatState(kind, sk, en) {
@@ -1064,11 +1073,14 @@
       b.className = 'chat-cite' + (c.unverified ? ' is-unverified' : '');
       b.setAttribute('data-action', 'openChatCitation|' + Number(c.document_id) + '|@this');
       var label = String(c.label || '').slice(0, 60);
+      // the demo's scripted citations (#1024) carry an English twin of the label
+      var labelEn = String(c.label_en || c.label || '').slice(0, 60);
       var date = c.date ? fmtDate(String(c.date).slice(0, 10)) : '';
-      var parts = [label || (dashLang === 'sk' ? 'Dokument' : 'Document')];
-      if (date) parts.push(date);
+      var parts = [label || 'Dokument'];
+      var partsEn = [labelEn || 'Document'];
+      if (date) { parts.push(date); partsEn.push(date); }
       var sk = parts.join(' · ') + (c.page ? ' · s. ' + Number(c.page) : '');
-      var en = parts.join(' · ') + (c.page ? ' · p. ' + Number(c.page) : '');
+      var en = partsEn.join(' · ') + (c.page ? ' · p. ' + Number(c.page) : '');
       if (c.unverified) {
         var mark = document.createElement('span');
         mark.className = 'state-mark progress';
@@ -1095,8 +1107,125 @@
       return chatTurns.slice(-CHAT_MAX_TURNS).map(function (t) { return { role: t.role, content: t.content }; });
     }
 
+    // ── the scripted demo chat (#1024) ──
+    // /demo answers from chat_script in the /api/demo-data payload: a suggested
+    // question gets its pre-written answer and citations, any other text the
+    // one fixed free-text answer. The answer is streamed here in small chunks
+    // (20–40 ms apart) so it looks like the real thing; with
+    // prefers-reduced-motion it appears at once. No request is ever made.
+    var DEMO_CHUNK_MIN_MS = 20;
+    var DEMO_CHUNK_MAX_MS = 40;
+
+    function demoChatScript() {
+      return (demoData && demoData.dashboard && demoData.dashboard.chat_script) || {};
+    }
+
+    function demoChatNorm(s) {
+      return String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    /** The scripted answer for a question: a suggestion's, else the free-text one. */
+    function demoChatAnswer(text) {
+      var script = demoChatScript();
+      var answers = Array.isArray(script.answers) ? script.answers : [];
+      var q = demoChatNorm(text);
+      for (var i = 0; i < chatSuggestionsData.length; i++) {
+        var s = chatSuggestionsData[i] || {};
+        if (answers[i] && (demoChatNorm(s.sk) === q || demoChatNorm(s.en) === q)) return answers[i];
+      }
+      var free = script.free_text || {};
+      return { status: [], text: String(free.text || ''), text_en: String(free.text_en || ''), citations: [] };
+    }
+
+    function demoReducedMotion() {
+      try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+      catch (e) { return false; }
+    }
+
+    function demoSleep(ms, signal) {
+      return new Promise(function (resolve) {
+        if (signal.aborted) { resolve(); return; }
+        var t = setTimeout(resolve, ms);
+        signal.addEventListener('abort', function () { clearTimeout(t); resolve(); }, { once: true });
+      });
+    }
+
+    /** Small chunks of a few words each, keeping the spaces. */
+    function demoChunks(text) {
+      var words = String(text).match(/\S+\s*/g) || [];
+      var out = [];
+      for (var i = 0; i < words.length;) {
+        var n = 1 + Math.floor(Math.random() * 3);
+        out.push(words.slice(i, i + n).join(''));
+        i += n;
+      }
+      return out;
+    }
+
+    async function demoSendChat() {
+      var input = document.getElementById('chat-input');
+      if (!input || chatAbort) return;
+      var text = String(input.value || '').trim().slice(0, CHAT_MAX_CHARS);
+      if (!text) { input.focus(); return; }
+      input.value = '';
+      var forPatient = currentPatientId;
+      var reply = demoChatAnswer(text);
+      chatTurns.push({ role: 'user', content: text });
+      var sugg = document.getElementById('chat-suggestions');
+      if (sugg) clearEl(sugg);
+      chatBubble('user').body.textContent = text;
+      var answer = chatBubble('assistant');
+      answer.msg.classList.add('is-streaming');
+      var ac = new AbortController();
+      chatAbort = ac;
+      setChatRunning(true);
+      var sk = String(reply.text || '');
+      var en = String(reply.text_en || sk);
+      var shown = dashLang === 'sk' ? sk : en;
+      var log = document.getElementById('chat-log');
+      try {
+        if (demoReducedMotion()) {
+          answer.body.textContent = shown;  // no animation: the whole text at once
+        } else {
+          var steps = ['queued', 'routing'].concat((reply.status || []).map(function (t) { return 'tool:' + t; }), ['writing']);
+          for (var s = 0; s < steps.length && !ac.signal.aborted; s++) {
+            var st = chatStatusText(steps[s]);
+            setChatState('progress', st[0], st[1]);
+            await demoSleep(260, ac.signal);
+          }
+          var raw = '';
+          var chunks = demoChunks(shown);
+          for (var c = 0; c < chunks.length && !ac.signal.aborted; c++) {
+            raw += chunks[c];
+            answer.body.textContent = raw;
+            if (log) log.scrollTop = log.scrollHeight;
+            await demoSleep(DEMO_CHUNK_MIN_MS + Math.floor(Math.random() * (DEMO_CHUNK_MAX_MS - DEMO_CHUNK_MIN_MS + 1)), ac.signal);
+          }
+        }
+      } finally {
+        if (chatAbort === ac) chatAbort = null;
+        setChatRunning(false);
+      }
+      if (forPatient !== currentPatientId) return;
+      answer.msg.classList.remove('is-streaming');
+      if (ac.signal.aborted) {
+        answer.msg.classList.add('is-stopped');
+        var note = document.createElement('p');
+        note.className = 'chat-stopped';
+        answer.msg.appendChild(setI18n(note, 'Zastavené.', 'Stopped.'));
+        chatTurns.pop();
+        setChatState(null);
+        return;
+      }
+      setI18n(answer.body, sk, en);  // both languages, so the language switch follows
+      chatTurns.push({ role: 'assistant', content: shown.slice(0, 3500) });
+      chatAppendSources(answer, Array.isArray(reply.citations) ? reply.citations : []);
+      setChatState(null);
+      if (log) log.scrollTop = log.scrollHeight;
+    }
+
     async function sendChat() {
-      if (DEMO) { demoNotice(); return; }
+      if (DEMO) { await demoSendChat(); return; }  // #1024: scripted, never a request
       var input = document.getElementById('chat-input');
       if (!input || chatAbort) return;
       var text = String(input.value || '').trim().slice(0, CHAT_MAX_CHARS);
