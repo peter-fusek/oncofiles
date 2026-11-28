@@ -8262,10 +8262,14 @@ async def api_chat(request: Request) -> Response:
     → flag (off = the unknown-path 404) → dashboard auth → body (capped again
     here) → ``_dashboard_body_patient`` (#867: unknown and foreign are the same
     404) → caregiver only (admin non-caregiver and operator bearer: the same
-    404, recorded as #868) → Origin check → request validation → one running
+    404, recorded as #868) → Origin check → request validation and the
+    conversation (``chat_dashboard.plan_turn``, #1022: an optional
+    ``conversation_id`` of THIS patient, else the same 404; with a key the
+    recent turns come from the encrypted history, not the client) → one running
     answer per principal (409 ``busy``) → turn limits per principal and per IP
     (429 + Retry-After) → ``chat.core.answer`` streamed as NDJSON lines
-    ``{"type": status|delta|citation|done|error, "data": …}``. The local model
+    ``{"type": status|delta|citation|done|error, "data": …}``; the turn is
+    stored before ``done``, which carries ``conversation_id``. The local model
     only (the core; no cloud fallback). Logs: counts and codes only.
     """
     if _chat_disabled():
@@ -8308,8 +8312,17 @@ async def api_chat(request: Request) -> Response:
     if bad_origin is not None:
         return bad_origin
     lang = body.get("lang")
-    messages = chat_core.validate(body.get("messages"), lang)
-    if messages is None:
+    plan = await chat_dashboard.plan_turn(
+        db_inst,
+        patient_id=patient_id,
+        conversation_id=body.get("conversation_id"),
+        messages=body.get("messages"),
+        lang=lang,
+    )
+    if plan == "not_found":
+        logger.info("chat http: conversation not_found patient=%s", patient_id[:4])
+        return _patient_not_found()
+    if not isinstance(plan, chat_dashboard.TurnPlan):
         return JSONResponse({"error": "invalid_request"}, status_code=400)
     email = (_get_dashboard_email(request) or "").strip().lower()
     if chat_core.is_busy(email):
@@ -8334,7 +8347,12 @@ async def api_chat(request: Request) -> Response:
         )
     return StreamingResponse(
         chat_dashboard.stream(
-            db_inst, patient_id=patient_id, principal=email, messages=messages, lang=lang
+            db_inst,
+            patient_id=patient_id,
+            principal=email,
+            messages=plan.messages,
+            lang=lang,
+            plan=plan,
         ),
         media_type=chat_dashboard.MEDIA_TYPE,
         headers=chat_dashboard.STREAM_HEADERS,
@@ -8369,6 +8387,169 @@ async def api_chat_suggestions(request: Request) -> JSONResponse:
         logger.warning("chat suggestions failed (%s)", type(exc).__name__)
         items = []
     return JSONResponse({"suggestions": items}, headers={"Cache-Control": "no-store"})
+
+
+async def _chat_get_patient(request: Request) -> tuple[Database, str | None, Response | None]:
+    """The chat GET ACL after the route's auth gate: #867 helper → caregiver only."""
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    patient_id, refusal = await _dashboard_patient_or_refusal(request)
+    if refusal is not None:
+        return db_inst, None, refusal
+    refusal = await _chat_caregiver_refusal(request, db_inst, patient_id)
+    if refusal is not None:
+        return db_inst, None, refusal
+    return db_inst, patient_id, None
+
+
+@mcp.custom_route("/api/chat/conversations", methods=["GET"])
+async def api_chat_conversations(request: Request) -> Response:
+    """The patient's chat conversations, newest first (#1022/#1023).
+
+    ``?patient_id=&trash=0|1``. The same ACL as the chat (flag → auth → #867
+    helper → caregiver only; an admin non-caregiver and the operator bearer
+    get the same 404). Per conversation: id, a short title (the start of its
+    first question), last activity, turn count; in the trash also the days
+    until the purge. No other text. Logs: counts only."""
+    if _chat_disabled():
+        from oncofiles.hidden_routes import unknown_path
+
+        raise unknown_path()
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    from oncofiles import chat_dashboard
+
+    db_inst, patient_id, refusal = await _chat_get_patient(request)
+    if refusal is not None:
+        return refusal
+    trashed = str(request.query_params.get("trash") or "0") == "1"
+    try:
+        data = await chat_dashboard.conversations(db_inst, patient_id, trashed=trashed)
+    except Exception as exc:
+        logger.warning("chat conversations failed (%s)", type(exc).__name__)
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    logger.info(
+        "chat conversations: trash=%s count=%d patient=%s",
+        int(trashed),
+        len(data["conversations"]),
+        patient_id[:4],
+    )
+    return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/api/chat/conversation", methods=["GET"])
+async def api_chat_conversation(request: Request) -> Response:
+    """The turns of one live conversation for rendering (#1022/#1023).
+
+    ``?patient_id=&conversation_id=``. The chat ACL; a conversation that is
+    not a live one of THIS patient (foreign, unknown, malformed, trashed) is
+    the same 404 as a foreign patient. Turns: role, text, citations (document
+    ids + pages), time. Logs: counts only."""
+    if _chat_disabled():
+        from oncofiles.hidden_routes import unknown_path
+
+        raise unknown_path()
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    from oncofiles import chat_dashboard
+
+    db_inst, patient_id, refusal = await _chat_get_patient(request)
+    if refusal is not None:
+        return refusal
+    try:
+        turns = await chat_dashboard.conversation_turns(
+            db_inst, patient_id, request.query_params.get("conversation_id")
+        )
+    except Exception as exc:
+        logger.warning("chat conversation failed (%s)", type(exc).__name__)
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    if turns is None:
+        logger.info("chat conversation: not_found patient=%s", patient_id[:4])
+        return _patient_not_found()
+    logger.info("chat conversation: turns=%d patient=%s", len(turns), patient_id[:4])
+    return JSONResponse({"turns": turns}, headers={"Cache-Control": "no-store"})
+
+
+CHAT_WRITE_MAX_BODY_BYTES = 4096
+
+
+async def _chat_conversation_write(request: Request, action: str) -> Response:
+    """Delete (to the trash) or restore one conversation, after the route's flag
+    and auth gate: body → #867 body helper → caregiver only → Origin check.
+    Unknown, foreign, malformed or already-moved = the same 404. Logs: code
+    and count only."""
+    from oncofiles import chat_history
+
+    db_inst: Database = request.app.state.fastmcp_server._lifespan_result["db"]
+    raw = await request.body()
+    if len(raw) > CHAT_WRITE_MAX_BODY_BYTES:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    try:
+        body = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad_request"}, status_code=400)
+    patient_id, acl_err = await _dashboard_body_patient(
+        request, db_inst, str(body.get("patient_id") or "")
+    )
+    if acl_err is not None:
+        return acl_err
+    refusal = await _chat_caregiver_refusal(request, db_inst, patient_id)
+    if refusal is not None:
+        return refusal
+    bad_origin = _cross_origin(request)
+    if bad_origin is not None:
+        return bad_origin
+    fn = (
+        chat_history.delete_conversation
+        if action == "delete"
+        else chat_history.restore_conversation
+    )
+    try:
+        result = await fn(
+            db_inst, patient_id=patient_id, conversation_id=body.get("conversation_id")
+        )
+    except Exception as exc:
+        logger.warning("chat conversation %s failed (%s)", action, type(exc).__name__)
+        return JSONResponse({"error": "internal error"}, status_code=500)
+    logger.info(
+        "chat conversation %s: status=%s messages=%d patient=%s",
+        action,
+        result["status"],
+        result["messages"],
+        patient_id[:4],
+    )
+    if result["status"] == "not_found":
+        return _patient_not_found()
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/api/chat/conversation/delete", methods=["POST"])
+async def api_chat_conversation_delete(request: Request) -> Response:
+    """Move one conversation to the trash (restorable until the purge, #1022)."""
+    if _chat_disabled():
+        from oncofiles.hidden_routes import unknown_path
+
+        raise unknown_path()
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    return await _chat_conversation_write(request, "delete")
+
+
+@mcp.custom_route("/api/chat/conversation/restore", methods=["POST"])
+async def api_chat_conversation_restore(request: Request) -> Response:
+    """Bring one conversation back from the trash (#1022)."""
+    if _chat_disabled():
+        from oncofiles.hidden_routes import unknown_path
+
+        raise unknown_path()
+    err = _check_dashboard_auth(request)
+    if err:
+        return err
+    return await _chat_conversation_write(request, "restore")
 
 
 @mcp.custom_route("/api/inbound-unmatched", methods=["GET"])
