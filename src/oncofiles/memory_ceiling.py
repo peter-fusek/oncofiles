@@ -23,7 +23,8 @@ operation. Now:
   (the #1011 busy signals, ``memory_check_loop.busy_reason``; unknown = busy).
   While work runs it stays alive and the operator ``/readiness.memory`` block
   reads ``state: degraded`` with ``since``; ``/health`` keeps answering 200 so
-  Coolify (three failed checks) never replaces the container mid-work. With
+  Coolify (three failed checks) never replaces the container mid-work, with
+  only ``memory_state: "degraded"`` (a code, no numbers; #1027). With
   ``MEMORY_CHECK_RESTART`` off nothing restarts a degraded process once idle
   except this probe's own idle exit.
 * **Above the last resort** it always exits (a kernel OOM kill would skip the

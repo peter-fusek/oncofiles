@@ -799,7 +799,7 @@ class _Watch:
 
 _watch: dict[str, _Watch] = {}
 
-# ── heartbeat and loop detection (in-memory; /health shows booleans and ages only) ──
+# ── heartbeat and loop detection (in-memory; operator /readiness, #1027) ──
 LOOP_ALERT_RUNS = 5  # this many real runs in a row, moving nothing, over the same documents
 _last_probe_at: float | None = None  # monotonic time of the last completed probe
 _empty_streak: dict[str, tuple[tuple, int]] = {}  # pid -> (documents seen, consecutive runs)
@@ -828,7 +828,7 @@ def loop_suspected_patients() -> list[str]:
 
 
 def heartbeat() -> dict:
-    """Public, non-sensitive: an age and a boolean (no counts, ids or names)."""
+    """An age and a boolean (no counts, ids or names); operator /readiness since #1027."""
     age = None if _last_probe_at is None else int(time.monotonic() - _last_probe_at)
     return {
         "curated_last_probe_age_s": age,
